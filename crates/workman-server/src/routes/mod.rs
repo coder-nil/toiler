@@ -71,6 +71,9 @@ pub fn router(state: AppState) -> Router {
             get(crate::routes::agent_extra::running_events),
         )
         // ---- files ----
+        // 路径为空时落到默认 cwd（前端文件面板首屏会请求根路径）
+        .route("/api/files", get(crate::routes::files::read_root))
+        .route("/api/files/", get(crate::routes::files::read_root))
         .route("/api/files/{*path}", get(crate::routes::files::read))
         // ---- models ----
         .route("/api/models", get(crate::routes::misc::models))
@@ -162,4 +165,7 @@ pub fn router(state: AppState) -> Router {
             post(crate::routes::misc::default_cwd),
         )
         .with_state(state)
+        // 其余路径一律交给内嵌的前端产物：`/api/*` 会先命中上面的具体路由，
+        // 所以这里只需处理静态文件、客户端路由与 404。
+        .fallback(get(crate::assets::serve_static))
 }

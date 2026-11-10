@@ -99,14 +99,52 @@ tree/paging/totalActiveMs 形状与 pi 一致；新会话里 `prompt` 触发的
 | `bash-output` | 真实 `pi-bash-*.log`：读 787KB / 下载 200；越权会话 403；非白名单 400 |
 | `agent/new` + `prompt` | 新会话建好、项目登记、一轮对话落盘（5 条 v3 记录） |
 
-## 阶段 4 — Tauri 单进程（1 周）
+## 阶段 4 — Tauri 单进程 ✅ 已完成
 
-- [ ] axum server 跑在 Tauri 的 tokio runtime 上，不 spawn 子进程
-- [ ] 前端产物 `include_dir!` 嵌入二进制
-- [ ] 删除 `desktop-dist/runtime/node` 与 `spawn_server`
-- [ ] 保留 `lan_proxy.rs` 与 `tunnel.rs`（手机访问要用）
+交付物：`crates/workman-desktop`（Tauri 壳 + 同进程 axum）+ `workman-server` 的
+`boot.rs` / `assets.rs`（约 2,900 行：壳 700 行 + 移植的 lan_proxy/tunnel 2,100 行 +
+静态托管 300 行）
 
-验收：单进程启动，安装包显著瘦身，冷启动 < 1s。
+- [x] axum server 跑在 Tauri 的 tokio runtime 上，不 spawn 子进程
+  - `boot::bind`（`port = 0`，内核分配）→ `tauri::async_runtime::spawn(boot::serve)`
+  - 启动引导抽到 `workman_server::boot`，CLI（`main.rs`）与桌面壳共用同一套
+  - 会话列表在服务起来后立刻后台预热（`spawn_blocking`），首屏不等扫描
+- [x] 前端产物 `include_dir!` 嵌入二进制
+  - `crates/workman-server/src/assets.rs`：`/_next/static/*`（immutable 缓存）、
+    目录 index、RSC `.txt` 载荷、客户端路由兜底 `index.html`、404 页
+  - 产物目录由 `WORKMAN_FRONTEND_DIR` 决定（`build.rs` 注入 `rustc-env`），
+    默认是 crate 内占位页 —— 没有前端也能 `cargo build`，API 照常可用
+  - 静态资源挂在 `Router::fallback` 上：`/api/*` 仍是具体路由，不会被兜底吞掉
+- [x] 删除 `desktop-dist/runtime/node` 与 `spawn_server`
+  - 新壳里没有 `Command::new(node)`、没有端口轮询、没有 `STARTUP_TIMEOUT = 45s`
+  - `tauri.conf.json` 不再打包 `desktop-dist` 资源
+- [x] 保留 `lan_proxy.rs` 与 `tunnel.rs`（手机访问要用）
+  - 原样移植，只把 `agent_dir()` 接到 `workman_server::paths::agent_dir()`
+  - 与 pi 共用 `desktop-access.json` / `.runtime.json` / `.tunnel.json`
+  - 退出（含 SIGTERM/SIGINT）会先断隧道再关代理，不留孤儿 `cloudflared`
+
+**验收结果（真实数据 + 真实产物）**：
+
+| 项 | 结果 |
+|---|---|
+| 单进程 | 只有一个 `workman-desktop` 进程；无 `node`，除用户启用的 `cloudflared` 外无子进程 |
+| 冷启动（exec → `GET /` 200） | 中位 **114ms**（5 次：496/106/114/110/120，首次含冷文件缓存） |
+| 二进制 | 51MB（含 24MB 前端产物）；pi 的 `Pi Desktop.app` 是 255MB（`runtime/node` 106MB + `server` 109MB） |
+| 前端渲染 | 真实 pi 静态导出产物内嵌后，界面完整：会话列表（559）/ 项目切换 / 模型选择器 / 文件面板（含 git 状态标记） |
+| 顺带修好的契约 | `/api/files` 新增空路径与「去前导斜杠的绝对路径」两种形状；`isDir` 字段对齐 pi（否则文件面板显示 “Not found”） |
+| 静态资源 | `/_next/static/chunks/webpack-*.js` 200，`immutable` 缓存；`/` 200 `no-cache` |
+| `/api` 同源 | `/api/sessions` 559 个会话；`/api/does-not-exist` → 404 JSON（不被兜底成 HTML） |
+| 会话列表性能 | 并行扫描：首次 7.8s → **1.68s**；预热后 13ms |
+| 手机访问 | LAN 代理随机端口 200（Basic Auth）+ 无凭据 401；隧道 `named` 模式起停正常 |
+| 测试 | 151 个全绿（新增 34 个桌面壳 + 9 个静态托管 + 2 个 boot），`cargo build` 0 warning |
+
+**已知差异（阶段 5 处理）**：
+
+| 项 | 说明 |
+|---|---|
+| 内置终端 | `terminal_*` 命令存在但返回明确错误（PTY 未移植） |
+| `files?type=diff` / 图片缩略 | 沿用阶段 3 的欠账 |
+| 手机端「开关」写入接口 | 壳能读 `desktop-access.json`，但写它的 `/api/mobile/access` 还没实现 |
 
 ## 阶段 5 — 回归（1 周）
 

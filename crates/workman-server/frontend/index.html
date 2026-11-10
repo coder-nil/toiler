@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>workman</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    max-width: 44rem; margin: 12vh auto; padding: 0 1.5rem; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em;
+         background: color-mix(in srgb, currentColor 8%, transparent);
+         padding: 0.15em 0.4em; border-radius: 4px; }
+  pre { padding: 0.9rem 1rem; border-radius: 10px; overflow-x: auto;
+        background: color-mix(in srgb, currentColor 7%, transparent); }
+  ul { padding-left: 1.2rem; }
+  .hint { opacity: 0.72; font-size: 0.94em; }
+</style>
+<h1>workman</h1>
+<p>这是内置的占位页：二进制里没有嵌入真实前端产物。</p>
+<p>后端已经完全可用，接口同源挂在 <code>/api</code> 下：</p>
+<ul>
+  <li><a href="/api/sessions">GET /api/sessions</a> — 会话列表</li>
+  <li><a href="/api/models">GET /api/models</a> — 模型目录</li>
+  <li><a href="/api/mobile/state">GET /api/mobile/state</a> — 手机访问状态</li>
+</ul>
+<p class="hint">要嵌入真实前端，构建时指定产物目录后重新编译：</p>
+<pre>WORKMAN_FRONTEND_DIR=/path/to/frontend cargo build -p workman-desktop --release</pre>
+<p class="hint">产物需包含 <code>index.html</code>（pi 的 Next 静态导出形状：
+<code>index.html</code> / <code>index.txt</code> / <code>_next/</code> / <code>icons/</code>）。</p>

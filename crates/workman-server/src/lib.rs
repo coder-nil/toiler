@@ -1,5 +1,7 @@
 pub mod agent_runtime;
+pub mod assets;
 pub mod auth;
+pub mod boot;
 pub mod catalog;
 pub mod gitsvc;
 pub mod models_json;

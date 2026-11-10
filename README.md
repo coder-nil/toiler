@@ -6,8 +6,9 @@
 当前锁定 **rpi 0.21.2**（2026-11-09 发布）。从 0.6.2 升级到 0.21.2 零代码改动，
 四项验证在 0.21.2 下重新跑通。
 
-当前状态：**阶段 0（PoC）+ 阶段 1（v3 会话层）完成**。
-四项关键验证全部通过；554 个真实 pi 会话全量可读，且能原地追加。
+当前状态：**阶段 0（PoC）+ 阶段 1（v3 会话层）+ 阶段 2/3（HTTP 服务与全部 route）
++ 阶段 4（Tauri 单进程）完成**，只剩阶段 5 回归。
+四项关键验证全部通过；559 个真实 pi 会话全量可读，且能原地追加。
 
 ## 四项验证结论
 
@@ -233,8 +234,47 @@ curl -s "localhost:8787/api/auth/providers" | jq .
 ### 仍未做
 
 `files?type=diff` 与图片缩略、手机端消息二次裁剪、模型价格目录（models.dev 已按
-计划砍掉）、OAuth 登录（返回 501）。前端联调要等阶段 4（Tauri 单进程）或
-「前端 dev server + 反向代理」。
+计划砍掉）、OAuth 登录（返回 501）。前端联调已在阶段 4 打通（见下）。
+
+## 阶段 4：Tauri 单进程（`crates/workman-desktop`）
+
+一个可执行文件里同时跑壳、后端与前端：**没有 node，没有子进程**。
+
+```bash
+# 不嵌真实前端（二进制里是占位页，API 照常可用）
+cargo run -p workman-desktop
+
+# 嵌 pi 的静态导出产物后构建 release
+tools/frontend/build-release.sh /path/to/pi-desktop/src-tauri/frontend
+./target/release/workman-desktop
+```
+
+### 结构
+
+| 模块 | 作用 |
+|---|---|
+| `workman_server::boot` | 启动引导：会话根 → 模型目录 → `AppState` → `bind` / `serve`；CLI 与桌面壳共用 |
+| `workman_server::assets` | `include_dir!` 嵌前端；`_next/static` immutable、目录 index、RSC `.txt`、客户端路由兜底 |
+| `workman-desktop::server` | 把 `bind(127.0.0.1:0)` → `tauri::async_runtime::spawn(serve)`，顺手预热会话列表 |
+| `workman-desktop::{lan_proxy,tunnel}` | 从 pi 原样移植的手机访问件（局域网反代 + Cloudflare 隧道） |
+
+三处与 pi 的关键差别：
+
+1. **同源**：窗口直接加载 `http://127.0.0.1:<port>/`（pi 是 `index.html` + 另一个
+   API origin）。`/api` 与前端一个端口，SSE/fetch 不用处理跨域。
+2. **端口由内核分配**（`port = 0`）：不再抢 8787，也不会出现「端口被占用」。
+3. **没有启动探测**：`bind` 完成即可用（pi 是轮询 45s 等 node 起来）。
+
+### 验收
+
+| 项 | 结果 |
+|---|---|
+| 冷启动（exec → 首页 200） | 中位 **114ms** |
+| 二进制 | 51MB（含 24MB 前端）；pi 的 `.app` 是 255MB |
+| 前端渲染 | 真实 pi 产物内嵌后界面完整：会话列表 / 项目切换 / 模型选择 / 文件面板（含 git 状态） |
+| `/api/sessions` | 559 个会话；首次扫描 7.8s → **1.68s**（并行），预热后 13ms |
+| 手机访问 | LAN 代理 200（Basic Auth）/ 无凭据 401；隧道起停正常，退出不留孤儿 |
+| 测试 | 151 个全绿 |
 
 ## 后续阶段
 

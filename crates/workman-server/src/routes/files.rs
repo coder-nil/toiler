@@ -34,30 +34,47 @@ pub struct FileParams {
     kind: Option<String>,
 }
 
-/// 解析请求路径为绝对路径；拒绝 `..` 逃逸（pi 同样校验）。
+/// 解析请求路径为绝对路径。
+///
+/// 两种形状都要认：
+///
+/// * `/api/files//Users/me/proj/a.ts` → 绝对路径
+/// * `/api/files/Users/me/proj?type=list` → pi 前端把绝对路径**去掉前导斜杠**后拼进 URL，
+///   所以非绝对形式的候选依次试「默认 cwd 相对」与「从根开始」。
+///
+/// `..` 一律拒绕（pi 同样校验），避免把请求变成任意文件读取。
 #[allow(clippy::result_large_err)] // axum 的 Response 本身就是大结构，包一层只会更绕
 pub fn resolve(state: &AppState, raw: &str) -> Result<PathBuf, Response> {
     let decoded = percent_decode(raw);
-    let candidate = PathBuf::from(&decoded);
-    let absolute = if candidate.is_absolute() {
-        candidate
-    } else {
-        state.default_cwd().join(candidate)
-    };
-    let normalized = crate::sessions_store::normalize_path(&absolute.to_string_lossy());
-    if !normalized.starts_with(
-        &crate::sessions_store::normalize_path(&state.default_cwd().to_string_lossy()),
-    ) {
-        // 允许绝对路径（前端会传 cwd 下的绝对路径），但拒绝路径穿越产物
-        if normalized.split('/').any(|seg| seg == "..") {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "Invalid path" })),
-            )
-                .into_response());
-        }
+    if decoded.split('/').any(|seg| seg == "..") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Invalid path" })),
+        )
+            .into_response());
     }
-    Ok(PathBuf::from(normalized))
+
+    let candidate = PathBuf::from(&decoded);
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if candidate.is_absolute() {
+        candidates.push(candidate);
+    } else {
+        candidates.push(state.default_cwd().join(&candidate));
+        candidates.push(Path::new("/").join(&candidate));
+    }
+
+    let mut first_normalized: Option<PathBuf> = None;
+    for candidate in candidates {
+        let normalized = PathBuf::from(crate::sessions_store::normalize_path(
+            &candidate.to_string_lossy(),
+        ));
+        if normalized.exists() {
+            return Ok(normalized);
+        }
+        first_normalized.get_or_insert(normalized);
+    }
+    // 都不存在：把第一个候选交回去，由调用方给出 404（而不是 400）。
+    Ok(first_normalized.unwrap_or_else(|| state.default_cwd().to_path_buf()))
 }
 
 fn percent_decode(input: &str) -> String {
@@ -86,7 +103,24 @@ pub async fn read(
     UrlPath(path): UrlPath<String>,
     Query(params): Query<FileParams>,
 ) -> Response {
-    let target = match resolve(&state, &path) {
+    serve(&state, &path, params).await
+}
+
+/// `GET /api/files` 与 `/api/files/`：路径为空时落到默认 cwd。
+///
+/// 前端文件面板首次打开、还没拿到具体路径时会请求根路径；没有这条路由时
+/// 会被静态兜底成 404 JSON，面板上直接显示 "Not found"。
+pub async fn read_root(
+    State(state): State<AppState>,
+    _trusted: Trusted,
+    Query(params): Query<FileParams>,
+) -> Response {
+    let cwd = state.default_cwd().to_string_lossy().to_string();
+    serve(&state, &cwd, params).await
+}
+
+async fn serve(state: &AppState, path: &str, params: FileParams) -> Response {
+    let target = match resolve(state, path) {
         Ok(p) => p,
         Err(resp) => return resp,
     };
@@ -154,6 +188,8 @@ fn list_dir(target: &Path) -> Response {
             json!({
                 "name": entry.file_name().to_string_lossy(),
                 "path": path.to_string_lossy(),
+                // pi 的前端读 `isDir`；`isDirectory` 是阶段 2 的旧字段名，���着保留
+                "isDir": is_dir,
                 "isDirectory": is_dir,
                 "size": meta.as_ref().map(|m| m.len()).unwrap_or(0),
                 "mtime": meta.as_ref().map(mtime_ms).unwrap_or(0),

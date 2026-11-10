@@ -30,6 +30,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 bytes = "1"
 url = "2"
+# 前端产物在编译期嵌入二进制（阶段 4：不再带 node 运行时）
+include_dir = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]

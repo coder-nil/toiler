@@ -1,29 +1,28 @@
-//! workman 服务入口。
+//! workman 服务入口（CLI 宿主）。
 //!
 //! ```bash
 //! workman-server                      # 127.0.0.1:8787，会话根 = ~/.pi/agent/sessions
 //! workman-server --port 3000 --host 0.0.0.0
+//! workman-server --port 0             # 让内核分配端口（先打印再服务）
 //! ```
+//!
+//! 启动流程全在 [`workman_server::boot`] 里：桌面壳（`workman-desktop`）复用同一套
+//! 逻辑，只是把 `serve` 交给 Tauri 的 tokio runtime，不再 spawn 子进程。
 //!
 //! 环境变量：
 //! - `WORKMAN_SESSIONS_ROOT`：会话根（默认 `~/.pi/agent/sessions`，与 pi 共用）
 //! - `WORKMAN_MODELS`：`models.json` 路径（默认 `~/.workman/agent/models.json` → `~/.pi/agent/models.json`）
 //! - `PI_WEB_HOSTNAME` / `PI_WEB_ALLOWED_HOSTS` / `PI_WEB_DESKTOP_API_ORIGIN`：可信 host / origin
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use workman_server::{catalog::ModelCatalog, routes, state::AppState};
+use tokio::sync::oneshot;
+use workman_server::{assets, boot, routes};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "workman_server=info,tower_http=warn".into()),
-        )
-        .init();
+    boot::init_tracing();
 
     let mut host = "127.0.0.1".to_string();
     let mut port: u16 = 8787;
@@ -60,34 +59,37 @@ async fn main() -> Result<()> {
         }
     }
 
-    let sessions_root = match sessions_root {
-        Some(p) => p,
-        None => match std::env::var("WORKMAN_SESSIONS_ROOT") {
-            Ok(p) if !p.trim().is_empty() => PathBuf::from(p),
-            _ => default_sessions_root()?,
+    let options = boot::BootOptions {
+        sessions_root: match sessions_root {
+            Some(path) => path,
+            None => boot::sessions_root_from_env()?,
         },
+        default_cwd,
     };
-    std::fs::create_dir_all(&sessions_root)
-        .with_context(|| format!("创建会话根 {} 失败", sessions_root.display()))?;
+    let state = boot::prepare_state(&options)?;
 
-    let mut catalog = ModelCatalog::load()?;
-    // 「上次用的模型」作为默认：最近会话里最后一个 model_change
-    catalog.apply_default_hint(last_used_model(&sessions_root));
-    let state = AppState::with_cwd(
-        &sessions_root,
-        catalog,
-        default_cwd
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))),
-    );
+    let (listener, addr) = boot::bind(&host, port).await?;
+    log_startup(&state, addr, &options.sessions_root);
 
-    let app = routes::router(state.clone());
-    let addr: SocketAddr = format!("{host}:{port}")
-        .parse()
-        .with_context(|| format!("解析监听地址 {host}:{port} 失败"))?;
+    // Ctrl-C 也要走优雅退出：正在跑的 agent 任务会收到停止信号。
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        let _ = shutdown_tx.send(());
+    });
 
+    boot::serve(listener, routes::router(state), shutdown_rx).await
+}
+
+fn log_startup(state: &workman_server::state::AppState, addr: std::net::SocketAddr, root: &std::path::Path) {
     tracing::info!(
         "workman server 监听 http://{addr}  (会话根 {})",
-        sessions_root.display()
+        root.display()
+    );
+    tracing::info!(
+        "前端产物 {}（{}）",
+        assets::FRONTEND_DIR,
+        if assets::is_placeholder() { "占位页" } else { "已嵌入" }
     );
     if let Some(default) = state.catalog().default_entry() {
         tracing::info!("默认模型 {}/{}", default.provider, default.id);
@@ -111,66 +113,4 @@ async fn main() -> Result<()> {
             .map(|v| v.to_string())
             .unwrap_or_else(|| "-".into())
     );
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-/// 从最近的会话文件里读最后一个 `model_change`（= 上次用的模型）。
-fn last_used_model(sessions_root: &std::path::Path) -> Option<(String, String)> {
-    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
-    for dir in std::fs::read_dir(sessions_root).ok()?.flatten() {
-        let path = dir.path();
-        if !path.is_dir() {
-            continue;
-        }
-        for file in std::fs::read_dir(&path).ok()?.flatten() {
-            let p = file.path();
-            if p.extension().map_or(true, |e| e != "jsonl") {
-                continue;
-            }
-            let Ok(meta) = file.metadata() else { continue };
-            let Ok(modified) = meta.modified() else { continue };
-            if newest.as_ref().map(|(t, _)| modified > *t).unwrap_or(true) {
-                newest = Some((modified, p));
-            }
-        }
-    }
-    let (_, path) = newest?;
-    let text = std::fs::read_to_string(path).ok()?;
-    let mut found: Option<(String, String)> = None;
-    for line in text.lines().rev().take(400) {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        match value.get("type").and_then(|v| v.as_str()) {
-            Some("model_change") => {
-                let provider = value.get("provider").and_then(|v| v.as_str())?;
-                let model_id = value.get("modelId").and_then(|v| v.as_str())?;
-                found = Some((provider.to_string(), model_id.to_string()));
-                break;
-            }
-            Some("message") => {
-                // 更实时的线索：assistant 消息自带 provider/model
-                let message = value.get("message");
-                if message.and_then(|m| m.get("role")).and_then(|r| r.as_str()) == Some("assistant") {
-                    let provider = message.and_then(|m| m.get("provider")).and_then(|v| v.as_str());
-                    let model_id = message.and_then(|m| m.get("model")).and_then(|v| v.as_str());
-                    if let (Some(provider), Some(model_id)) = (provider, model_id) {
-                        found = Some((provider.to_string(), model_id.to_string()));
-                        break;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    found
-}
-
-/// 默认会话根：pi 自己的目录（这样 327 个历史会话立刻可见）。
-fn default_sessions_root() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").context("HOME 未设置")?;
-    Ok(PathBuf::from(home).join(".pi/agent/sessions"))
 }
