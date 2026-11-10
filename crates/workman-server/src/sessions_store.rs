@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use workman_session::V3Header;
@@ -15,6 +15,9 @@ use crate::session_view;
 
 /// 列表缓存 TTL（pi：30s）。
 const LIST_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// 项目探测缓存 TTL（pi 的 `24923.n` 也是 60s）。
+const HINT_CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// 一个会话文件的原始视图。
 pub struct RawSession {
@@ -201,6 +204,15 @@ impl SessionList {
             .map(|s| (normalize_path(&s.path.to_string_lossy()), s.header.id.clone()))
             .collect();
 
+        // 同一个 cwd 只做一次 git 探测
+        let hints: HashMap<String, ProjectHint> = sessions
+            .iter()
+            .map(|s| s.header.cwd.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(|cwd| (cwd.clone(), project_hint(&cwd)))
+            .collect();
+
         let mut items: Vec<Value> = sessions
             .iter()
             .map(|s| {
@@ -209,7 +221,11 @@ impl SessionList {
                     .get("parentSession")
                     .and_then(Value::as_str)
                     .and_then(|p| by_path.get(&normalize_path(p)).cloned());
-                let project_root = project_root(&s.header.cwd);
+                let hint = hints.get(&s.header.cwd).cloned().unwrap_or(ProjectHint {
+                    root: normalize_path(&s.header.cwd),
+                    worktree_branch: None,
+                });
+                let project_root = hint.root.clone();
                 let mut obj = serde_json::Map::new();
                 obj.insert(
                     "path".into(),
@@ -229,6 +245,9 @@ impl SessionList {
                 obj.insert("transient".into(), json!(false));
                 obj.insert("projectRoot".into(), json!(project_root));
                 obj.insert("projectKey".into(), json!(normalize_path(&project_root)));
+                if let Some(branch) = hint.worktree_branch.clone() {
+                    obj.insert("worktreeBranch".into(), json!(branch));
+                }
                 Value::Object(obj)
             })
             .collect();
@@ -277,12 +296,54 @@ impl SessionList {
     }
 }
 
-/// 项目根：阶段 2 直接取 cwd（git 探测属于阶段 3 的 `/api/git`）。
-pub fn project_root(cwd: &str) -> String {
+/// 会话所属项目：`projectRoot` + （worktree 才有）`worktreeBranch`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectHint {
+    pub root: String,
+    pub worktree_branch: Option<String>,
+}
+
+/// 项目探测缓存：cwd → 提示，60 秒（pi 的 `24923.n` 用同样的 TTL）。
+fn hint_cache() -> &'static Mutex<HashMap<String, (Instant, ProjectHint)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, (Instant, ProjectHint)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// git 探测项目根（`projectRoot` 不再等于 `cwd`）。
+///
+/// 不是 git 仓库时 `root = cwd`；是 worktree 时 `root = 主仓库根`，
+/// 并带上分支名（pi 的 `worktreeBranch`）。
+pub fn project_hint(cwd: &str) -> ProjectHint {
     if cwd.is_empty() {
-        return String::new();
+        return ProjectHint {
+            root: String::new(),
+            worktree_branch: None,
+        };
     }
-    normalize_path(cwd)
+    let key = normalize_path(cwd);
+    {
+        let cache = hint_cache().lock().expect("hint cache");
+        if let Some((at, hint)) = cache.get(&key) {
+            if at.elapsed() < HINT_CACHE_TTL {
+                return hint.clone();
+            }
+        }
+    }
+    let (root, branch) = crate::gitsvc::project_hint(&key);
+    let hint = ProjectHint {
+        root: normalize_path(&root),
+        worktree_branch: branch,
+    };
+    hint_cache()
+        .lock()
+        .expect("hint cache")
+        .insert(key, (Instant::now(), hint.clone()));
+    hint
+}
+
+/// 项目根（只要 `projectRoot` 的调用方用这个）。
+pub fn project_root(cwd: &str) -> String {
+    project_hint(cwd).root
 }
 
 #[cfg(test)]

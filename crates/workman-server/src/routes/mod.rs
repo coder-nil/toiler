@@ -3,10 +3,16 @@
 //! 路径语法用 axum 0.8 的 `{param}` / `{*wildcard}`。
 
 pub mod agent;
+pub mod agent_extra;
+pub mod auth;
 pub mod files;
+pub mod git;
 pub mod misc;
+pub mod models_config;
+pub mod projects;
 pub mod search;
 pub mod sessions;
+pub mod sessions_extra;
 
 use axum::routing::{get, post};
 use axum::Router;
@@ -15,11 +21,8 @@ use crate::state::AppState;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
-        // sessions
-        .route(
-            "/api/sessions",
-            get(crate::routes::sessions::list),
-        )
+        // ---- sessions ----
+        .route("/api/sessions", get(crate::routes::sessions::list))
         .route(
             "/api/sessions/{id}",
             get(crate::routes::sessions::detail)
@@ -31,8 +34,24 @@ pub fn router(state: AppState) -> Router {
             "/api/sessions/{id}/state",
             get(crate::routes::agent::state_of),
         )
+        .route(
+            "/api/sessions/{id}/context",
+            get(crate::routes::sessions_extra::context),
+        )
+        .route(
+            "/api/sessions/{id}/export",
+            get(crate::routes::sessions_extra::export),
+        )
+        .route(
+            "/api/sessions/{id}/entries/{entryId}/thinking",
+            get(crate::routes::sessions_extra::thinking),
+        )
+        .route(
+            "/api/sessions/{id}/auto-name",
+            post(crate::routes::sessions_extra::auto_name),
+        )
         .route("/api/sessions/search", get(crate::routes::search::search))
-        // agent
+        // ---- agent ----
         .route(
             "/api/agent/{id}",
             get(crate::routes::agent::state_of).post(crate::routes::agent::command),
@@ -41,36 +60,106 @@ pub fn router(state: AppState) -> Router {
             "/api/agent/{id}/events",
             get(crate::routes::agent::events),
         )
+        .route(
+            "/api/agent/{id}/bash-output",
+            get(crate::routes::agent_extra::bash_output),
+        )
         .route("/api/agent/new", post(crate::routes::agent::new_session))
         .route("/api/agent/running", get(crate::routes::agent::running))
-        // files
         .route(
-            "/api/files/{*path}",
-            get(crate::routes::files::read),
+            "/api/agent/running/events",
+            get(crate::routes::agent_extra::running_events),
         )
-        // models / mobile / misc
+        // ---- files ----
+        .route("/api/files/{*path}", get(crate::routes::files::read))
+        // ---- models ----
         .route("/api/models", get(crate::routes::misc::models))
+        .route(
+            "/api/models-config",
+            get(crate::routes::models_config::get)
+                .put(crate::routes::models_config::put)
+                .delete(crate::routes::models_config::delete),
+        )
+        .route(
+            "/api/models-config/enabled",
+            get(crate::routes::models_config::enabled).put(crate::routes::models_config::put_enabled),
+        )
+        .route(
+            "/api/models-config/discover",
+            post(crate::routes::models_config::discover),
+        )
+        .route(
+            "/api/models-config/test",
+            post(crate::routes::models_config::test),
+        )
+        .route(
+            "/api/models-config/catalog",
+            get(crate::routes::models_config::catalog),
+        )
+        // ---- auth ----
+        .route("/api/auth/providers", get(crate::routes::auth::providers))
+        .route(
+            "/api/auth/all-providers",
+            get(crate::routes::auth::all_providers),
+        )
+        .route(
+            "/api/auth/api-key/{provider}",
+            get(crate::routes::auth::api_key_status)
+                .post(crate::routes::auth::save_api_key)
+                .delete(crate::routes::auth::delete_api_key),
+        )
+        .route(
+            "/api/auth/logout/{provider}",
+            post(crate::routes::auth::logout),
+        )
+        .route(
+            "/api/auth/login/{provider}",
+            post(crate::routes::auth::login_unsupported),
+        )
+        // ---- git / worktrees ----
+        .route(
+            "/api/git",
+            get(crate::routes::git::status).post(crate::routes::git::command),
+        )
+        .route("/api/git/status", get(crate::routes::git::status_only))
+        .route("/api/git/diff", get(crate::routes::git::diff))
+        .route(
+            "/api/git/commit-message",
+            post(crate::routes::git::commit_message),
+        )
+        .route(
+            "/api/worktrees",
+            get(crate::routes::git::worktrees_list)
+                .post(crate::routes::git::worktrees_create)
+                .delete(crate::routes::git::worktrees_delete),
+        )
+        // ---- projects / trust / cwd ----
+        .route(
+            "/api/projects",
+            get(crate::routes::projects::list)
+                .put(crate::routes::projects::select)
+                .patch(crate::routes::projects::star)
+                .delete(crate::routes::projects::remove),
+        )
+        .route(
+            "/api/project-trust",
+            get(crate::routes::projects::trust_status)
+                .post(crate::routes::projects::trust_set),
+        )
+        .route("/api/cwd/browse", get(crate::routes::projects::browse))
+        .route(
+            "/api/cwd/validate",
+            post(crate::routes::projects::validate).get(crate::routes::projects::validate),
+        )
+        // ---- misc ----
         .route(
             "/api/mobile/state",
             get(crate::routes::misc::mobile_state),
         )
         .route("/api/home", get(crate::routes::misc::home))
         .route(
-            "/api/cwd/validate",
-            get(crate::routes::misc::cwd_validate),
-        )
-        .route(
             "/api/default-cwd",
             post(crate::routes::misc::default_cwd),
         )
         .with_state(state)
-        .layer(tower_http::trace::TraceLayer::new_for_http())
-        .fallback(not_found)
-}
-
-async fn not_found() -> impl axum::response::IntoResponse {
-    (
-        axum::http::StatusCode::NOT_FOUND,
-        axum::Json(serde_json::json!({ "error": "Not found" })),
-    )
 }

@@ -160,23 +160,48 @@ where
     response
 }
 
-/// `GET /api/agent/running`
+/// `GET /api/agent/running` —— `{runningSessionIds, pendingUiSessionIds}`。
 pub async fn running(State(state): State<AppState>, _trusted: Trusted) -> Response {
-    Json(json!({ "sessions": state.live().running() })).into_response()
+    let mut response = Json(state.live().running_snapshot()).into_response();
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
 }
 
-/// `POST /api/agent/new` —— 新建一个 v3 会话文件并返回 id。
+/// `POST /api/agent/new` —— 建会话、登记项目、顺带执行 body 里的命令。
+///
+/// 形状对齐 pi：`{success, sessionId, data, model:{provider, modelId}, thinkingLevel}`，
+/// body 里除了 `cwd` 之外的字段会原样交给 agent 当命令（`prompt` / `get_state` …）。
 pub async fn new_session(
     State(state): State<AppState>,
     _trusted: Trusted,
     body: Option<Json<Value>>,
 ) -> Response {
-    let cwd = body
-        .as_ref()
-        .and_then(|Json(v)| v.get("cwd"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_else(|| state.default_cwd().to_string_lossy().to_string());
+    let payload = body.map(|Json(value)| value).unwrap_or(Value::Null);
+    let command_type = payload.get("type").and_then(Value::as_str).unwrap_or("");
+    let is_prompt = command_type == "prompt";
+
+    let Some(cwd) = payload.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()) else {
+        let mut body = serde_json::Map::new();
+        body.insert("error".into(), json!("cwd is required"));
+        if is_prompt {
+            body.insert("code".into(), json!("prompt_rejected"));
+            body.insert("accepted".into(), json!(false));
+        }
+        return (StatusCode::BAD_REQUEST, Json(Value::Object(body))).into_response();
+    };
+    if !std::path::Path::new(cwd).exists() {
+        let mut body = serde_json::Map::new();
+        body.insert("error".into(), json!(format!("Directory does not exist: {cwd}")));
+        if is_prompt {
+            body.insert("code".into(), json!("prompt_rejected"));
+            body.insert("accepted".into(), json!(false));
+        }
+        return (StatusCode::BAD_REQUEST, Json(Value::Object(body))).into_response();
+    }
+    let cwd = cwd.to_string();
 
     let repo = workman_session::V3SessionRepo::new(state.sessions().root());
     let created_at = now_ms();
@@ -187,23 +212,94 @@ pub async fn new_session(
         .root()
         .join(workman_session::session_directory_name(&cwd));
     let file = dir.join(workman_session::session_file_name(header.created_at, &header.id));
-    let storage = match workman_session::V3SessionStorage::create_at(
-        &file,
-        &header,
-        repo.clock(),
-        repo.ids(),
-    ) {
-        Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
-    };
-    drop(storage);
+    match workman_session::V3SessionStorage::create_at(&file, &header, repo.clock(), repo.ids()) {
+        Ok(storage) => drop(storage),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+    }
     state.sessions().invalidate();
-    Json(json!({
-        "id": id,
-        "path": file.to_string_lossy(),
-        "cwd": cwd,
-    }))
-    .into_response()
+
+    // 与 pi 一样：新 cwd 立刻成为允许根，并写进项目库
+    state.roots().add(&cwd);
+    let hint = crate::sessions_store::project_hint(&cwd);
+    state.roots().add(&hint.root);
+    let _ = state
+        .projects()
+        .upsert(&crate::paths::project_key(&hint.root), &hint.root, &cwd);
+
+    let agent = match ensure_agent(&state, &id).await {
+        Ok(agent) => agent,
+        Err(AgentError::NotFound) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "Session not found" })),
+            )
+                .into_response()
+        }
+        Err(AgentError::Failed(message)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": message })),
+            )
+                .into_response()
+        }
+    };
+
+    let state_snapshot = agent.state_json().await.unwrap_or(Value::Null);
+    let model = state_snapshot
+        .get("model")
+        .filter(|m| !m.is_null())
+        .map(|m| {
+            json!({
+                "provider": m.get("provider").cloned().unwrap_or(Value::Null),
+                "modelId": m.get("id").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .unwrap_or(Value::Null);
+    let thinking_level = state_snapshot
+        .get("thinkingLevel")
+        .cloned()
+        .unwrap_or(Value::Null);
+
+    if command_type.is_empty() || command_type == "ensure_session" {
+        return Json(json!({
+            "success": true,
+            "sessionId": id,
+            "data": Value::Null,
+            "model": model,
+            "thinkingLevel": thinking_level,
+        }))
+        .into_response();
+    }
+
+    let mut command = payload.clone();
+    if let Some(object) = command.as_object_mut() {
+        object.remove("cwd");
+    }
+    match agent.send(&command).await {
+        Ok(data) => Json(json!({
+            "success": true,
+            "sessionId": id,
+            "data": data,
+            "model": model,
+            "thinkingLevel": thinking_level,
+        }))
+        .into_response(),
+        Err(e) => {
+            let mut body = serde_json::Map::new();
+            body.insert("error".into(), json!(e.to_string()));
+            if is_prompt {
+                body.insert("code".into(), json!("prompt_rejected"));
+                body.insert("accepted".into(), json!(false));
+            }
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(Value::Object(body))).into_response()
+        }
+    }
 }
 
 enum AgentError {

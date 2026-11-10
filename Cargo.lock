@@ -3136,6 +3136,7 @@ dependencies = [
  "rpi-ai",
  "rpi-harness",
  "rpi-tools",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",

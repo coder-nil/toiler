@@ -23,6 +23,8 @@ async-trait = "0.1"
 futures = "0.3"
 async-stream = "0.3"
 base64 = "0.22"
+# 项目列表 / 选中项目与 pi-desktop 共用一个 SQLite 库（`pi.sqlite`）
+rusqlite = { version = "0.31", features = ["bundled"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }

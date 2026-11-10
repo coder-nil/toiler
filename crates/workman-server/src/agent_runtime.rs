@@ -51,6 +51,8 @@ pub struct LiveAgent {
     events: broadcast::Sender<Value>,
     running: Arc<AtomicBool>,
     model: rpi_ai::Model,
+    /// 活会话表的变化通知（`insert` 之后才挂上）
+    changes: Mutex<Option<broadcast::Sender<()>>>,
 }
 
 impl LiveAgent {
@@ -111,11 +113,24 @@ impl LiveAgent {
             events,
             running: Arc::new(AtomicBool::new(false)),
             model,
+            changes: Mutex::new(None),
         }))
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Value> {
         self.events.subscribe()
+    }
+
+    /// 把「活会话集合变化」的通知通道接上（由 `LiveSessions::insert` 调用）。
+    fn attach_changes(&self, sender: broadcast::Sender<()>) {
+        *self.changes.lock().expect("changes") = Some(sender);
+    }
+
+    /// 运行状态变了 → 让 `/api/agent/running/events` 推一帧。
+    fn notify_running_changed(&self) {
+        if let Some(sender) = self.changes.lock().expect("changes").as_ref() {
+            let _ = sender.send(());
+        }
     }
 
     pub fn is_streaming(&self) -> bool {
@@ -150,6 +165,7 @@ impl LiveAgent {
                         )
                         .await;
                     this.running.store(false, Ordering::Relaxed);
+                    this.notify_running_changed();
                     if let Err(e) = result {
                         let _ = this.events.send(json!({
                             "type": "run_error",
@@ -173,6 +189,7 @@ impl LiveAgent {
             "abort" => {
                 self.running.store(false, Ordering::Relaxed);
                 let _ = self.lane.abort().await;
+                self.notify_running_changed();
                 Ok(json!({ "accepted": true }))
             }
             other => Err(anyhow::anyhow!("不支持的 agent 命令：{other}")),
@@ -465,11 +482,23 @@ fn error_reason_str(reason: rpi_ai::types::ErrorReason) -> &'static str {
 // 活会话表
 // ---------------------------------------------------------------------------
 
-#[derive(Default)]
+#[derive(Clone)]
 pub struct LiveSessions {
-    map: Mutex<HashMap<String, Arc<LiveAgent>>>,
+    map: Arc<Mutex<HashMap<String, Arc<LiveAgent>>>>,
     /// 正在建 agent 的会话（避免并发重复建）
-    starting: Mutex<std::collections::HashSet<String>>,
+    starting: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// 活会话集合 / 运行状态变化（`/api/agent/running/events` 用）
+    changed: broadcast::Sender<()>,
+}
+
+impl Default for LiveSessions {
+    fn default() -> Self {
+        Self {
+            map: Arc::new(Mutex::new(HashMap::new())),
+            starting: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            changed: broadcast::channel(64).0,
+        }
+    }
 }
 
 impl LiveSessions {
@@ -482,10 +511,12 @@ impl LiveSessions {
     }
 
     pub fn insert(&self, agent: Arc<LiveAgent>) {
+        agent.attach_changes(self.changed.clone());
         self.map
             .lock()
             .expect("live")
             .insert(agent.id.clone(), Arc::clone(&agent));
+        self.notify();
     }
 
     pub async fn remove(&self, id: &str) -> Option<Arc<LiveAgent>> {
@@ -493,7 +524,40 @@ impl LiveSessions {
         if let Some(agent) = &removed {
             agent.shutdown().await;
         }
+        self.notify();
         removed
+    }
+
+    /// 订阅「活会话变化」（对应 pi 的 `56429.V()`）。
+    pub fn subscribe_changes(&self) -> broadcast::Receiver<()> {
+        self.changed.subscribe()
+    }
+
+    /// 主动触发一次变化通知。
+    pub fn notify(&self) {
+        let _ = self.changed.send(());
+    }
+
+    /// 当前运行快照（pi 的 `56429.am()`）。
+    ///
+    /// `pendingUiSessionIds` 恒为空：workman 没有「等待用户输入的 UI 请求」
+    /// 这条链路（阶段 3 的说明里已记录）。
+    pub fn running_snapshot(&self) -> Value {
+        json!({
+            "runningSessionIds": self.running(),
+            "pendingUiSessionIds": Vec::<String>::new(),
+        })
+    }
+
+    /// 正在运行的会话所在目录（pi 的 `56429._I`）。
+    pub fn running_cwds(&self) -> Vec<String> {
+        self.map
+            .lock()
+            .expect("live")
+            .values()
+            .filter(|a| a.is_streaming())
+            .map(|a| a.cwd.clone())
+            .collect()
     }
 
     /// 正在运行的会话 id（pi 的 `HG()`），用于 mobile 状态判定。

@@ -205,13 +205,36 @@ POST /api/agent/{id} {type:"prompt"}
 | 工具调用 | `ls` 真的执行，toolResult 入档 |
 | 多轮续聊 | 第二轮正确引用第一轮上下文 |
 | 写出的 v3 文件 | pi 的 `loadEntriesFromFile` + `buildSessionContext` 均正常 |
-| 测试 | 43 个（安全 6 + 视图 12 + 列表 2 + 搜索 5 + HTTP 契约 10 + 会话层 1 + …） |
+| 测试 | 阶段 2 结束时 72 个（安全 6 + 视图 12 + 列表 2 + 搜索 5 + HTTP 契约 10 + 会话层 …） |
 
-### 未完成（阶段 3 起）
+## 阶段 3：剩余 route（auth / models-config / git / projects）
 
-`bash-output`、`running/events`、`sessions/[id]/context|export`、`auto-name`、
-`files?type=diff`、模型价格目录、手机端消息二次裁剪、git 探测的 `projectRoot`。
-前端联调要等阶段 4（Tauri 单进程）或「前端 dev server + 反向代理」。
+`docs/contracts/README.md` 的「实现进度」表已全量更新。要点：
+
+- **配置与 pi 共用**：`models.json` / `auth.json` / `settings.json` / `trust.json` /
+  `pi.sqlite` 都落在同一个 agent 目录（解析顺序见 `paths.rs`），所以已有的
+  API Key、项目列表、模型可见范围在 workman 里立刻可用。
+- **`pi.sqlite` 直连**：项目列表、星标、选中项用 `rusqlite` 读写 pi 自己的库
+  （`added_projects` / `app_preferences`），两边不会各存一份。
+- **git 走 CLI**：20 个动作、worktree、diff 全部包在 `gitsvc.rs`，每个仓库一把锁；
+  凭据走临时 `GIT_ASKPASS`（不落明文到命令行）。
+- **真模型的三处调用**：`auto-name`（起标题）、`git/commit-message`（写提交信息）、
+  `models-config/test`（连通性自检）都复用 `oneshot.rs` 的一次性补全。
+- **`projectRoot` 修好了**：改成真 `git rev-parse` 探测，worktree 会话会带
+  `worktreeBranch`（阶段 2 的已知差异 1 已消）。
+
+```bash
+cargo test                      # 101 个测试
+cargo run -p workman-server -- --port 8787
+curl -s "localhost:8787/api/git?cwd=$PWD" | jq .
+curl -s "localhost:8787/api/auth/providers" | jq .
+```
+
+### 仍未做
+
+`files?type=diff` 与图片缩略、手机端消息二次裁剪、模型价格目录（models.dev 已按
+计划砍掉）、OAuth 登录（返回 501）。前端联调要等阶段 4（Tauri 单进程）或
+「前端 dev server + 反向代理」。
 
 ## 后续阶段
 

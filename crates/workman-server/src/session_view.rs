@@ -656,3 +656,244 @@ mod tests {
         assert_eq!(total_active_ms(&entries), 3000);
     }
 }
+
+// ---------------------------------------------------------------------------
+// context 投影（复刻 pi 的 `40402.Uv` / `buildContextEntries`）
+// ---------------------------------------------------------------------------
+
+/// `/api/sessions/{id}` 与 `/api/sessions/{id}/context` 的 `context` 字段。
+#[derive(Debug, Clone, Default)]
+pub struct ContextView {
+    pub messages: Vec<Value>,
+    pub entry_ids: Vec<String>,
+    /// `thinking_level_change` 条目的最后一个值
+    pub thinking_level: Value,
+    /// `model_change` 条目的最后一个值（`{provider, modelId}`）
+    pub model: Value,
+}
+
+/// 取从根到 `leaf_id` 的那条分支（默认最后一条）。
+///
+/// 没有 `parentId` 的条目是根；找不到叶子时退化成「全部条目按原顺序」。
+pub fn branch_entries<'a>(entries: &'a [Value], leaf_id: Option<&str>) -> Vec<&'a Value> {
+    let by_id: std::collections::HashMap<&str, &Value> = entries
+        .iter()
+        .filter_map(|e| e.get("id").and_then(Value::as_str).map(|id| (id, e)))
+        .collect();
+
+    let leaf = match leaf_id.filter(|id| by_id.contains_key(id)) {
+        Some(id) => Some(id),
+        None => entries
+            .iter()
+            .filter_map(|e| e.get("id").and_then(Value::as_str))
+            .next_back(),
+    };
+    let Some(leaf) = leaf else {
+        return Vec::new();
+    };
+
+    let mut chain: Vec<&Value> = Vec::new();
+    let mut cursor = Some(leaf);
+    let mut guard = 0usize;
+    while let Some(id) = cursor {
+        guard += 1;
+        if guard > entries.len() + 1 {
+            break;
+        }
+        let Some(entry) = by_id.get(id).copied() else {
+            break;
+        };
+        chain.push(entry);
+        cursor = entry.get("parentId").and_then(Value::as_str);
+    }
+    chain.reverse();
+    chain
+}
+
+fn entry_timestamp(entry: &Value) -> Value {
+    entry
+        .get("timestamp")
+        .and_then(|t| t.as_str())
+        .and_then(|t| workman_session::iso_to_ms(t))
+        .map(Value::from)
+        .unwrap_or(Value::Null)
+}
+
+/// 一条条目 → context 里的一条消息（pi 的 `Uv` 内层映射）。
+///
+/// - `message`：系统消息丢掉，其余原样
+/// - `compaction` → `role:"custom"` + `customType:"compaction"`
+/// - `branch_summary` → 一段 user 提示
+/// - `custom`（`custom_message`）→ `role:"custom"` + 原 `customType`
+pub fn context_entry_message(entry: &Value) -> Option<Value> {
+    match entry.get("type").and_then(Value::as_str) {
+        Some("message") => {
+            let message = entry.get("message")?;
+            if message.get("role").and_then(Value::as_str) == Some("system") {
+                return None;
+            }
+            Some(message.clone())
+        }
+        Some("compaction") => {
+            let summary = entry.get("summary").cloned().unwrap_or(Value::Null);
+            let mut details = Map::new();
+            if let Some(tokens) = entry.get("tokensBefore") {
+                details.insert("tokensBefore".into(), tokens.clone());
+            }
+            if let Some(first) = entry.get("firstKeptEntryId") {
+                details.insert("firstKeptEntryId".into(), first.clone());
+            }
+            Some(json!({
+                "role": "custom",
+                "customType": "compaction",
+                "content": summary,
+                "display": true,
+                "details": Value::Object(details),
+                "timestamp": entry_timestamp(entry),
+            }))
+        }
+        Some("branch_summary") => {
+            let summary = entry.get("summary").and_then(Value::as_str)?;
+            if summary.is_empty() {
+                return None;
+            }
+            Some(json!({
+                "role": "user",
+                "content": format!(
+                    "*The conversation briefly explored another branch and returned with this summary:*\n\n{summary}"
+                ),
+                "timestamp": entry_timestamp(entry),
+            }))
+        }
+        Some("custom_message") | Some("custom") => {
+            let custom_type = entry
+                .get("customType")
+                .and_then(Value::as_str)
+                .unwrap_or("custom");
+            Some(json!({
+                "role": "custom",
+                "customType": custom_type,
+                "content": entry.get("content").cloned().unwrap_or(Value::Null),
+                "display": entry.get("display").cloned().unwrap_or(Value::Bool(false)),
+                "details": entry.get("details").cloned().unwrap_or(Value::Null),
+                "timestamp": entry_timestamp(entry),
+            }))
+        }
+        _ => None,
+    }
+}
+
+/// 构建 context（消息 + entryIds + 当前模型 / 思考等级）。
+pub fn context_view(entries: &[Value], leaf_id: Option<&str>) -> ContextView {
+    let branch = branch_entries(entries, leaf_id);
+    let mut view = ContextView::default();
+    for entry in &branch {
+        match entry.get("type").and_then(Value::as_str) {
+            Some("model_change") => {
+                let provider = entry.get("provider").cloned().unwrap_or(Value::Null);
+                let model_id = entry.get("modelId").cloned().unwrap_or(Value::Null);
+                view.model = json!({ "provider": provider, "modelId": model_id });
+            }
+            Some("thinking_level_change") => {
+                if let Some(level) = entry.get("thinkingLevel") {
+                    view.thinking_level = level.clone();
+                }
+            }
+            _ => {}
+        }
+        if let Some(message) = context_entry_message(entry) {
+            if let Some(id) = entry.get("id").and_then(Value::as_str) {
+                view.entry_ids.push(id.to_string());
+            }
+            view.messages.push(message);
+        }
+    }
+    view
+}
+
+/// 会话当前的叶子 id（最后一条带 id 的条目）。
+pub fn leaf_id(entries: &[Value]) -> Option<String> {
+    entries
+        .iter()
+        .filter_map(|e| e.get("id").and_then(Value::as_str))
+        .next_back()
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+
+    fn entry(id: &str, parent: Option<&str>, ty: &str) -> Value {
+        let mut value = json!({
+            "type": ty,
+            "id": id,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+        });
+        if let Some(parent) = parent {
+            value["parentId"] = json!(parent);
+        }
+        value
+    }
+
+    #[test]
+    fn branch_walks_parent_chain() {
+        let entries = vec![
+            entry("a", None, "message"),
+            entry("b", Some("a"), "message"),
+            entry("c", Some("a"), "message"),
+            entry("d", Some("c"), "message"),
+        ];
+        let ids: Vec<&str> = branch_entries(&entries, None)
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["a", "c", "d"]);
+        let ids: Vec<&str> = branch_entries(&entries, Some("b"))
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn context_maps_compaction_and_summary() {
+        let mut compaction = entry("c", None, "compaction");
+        compaction["summary"] = json!("摘要");
+        compaction["tokensBefore"] = json!(1234);
+        let message = context_entry_message(&compaction).unwrap();
+        assert_eq!(message["role"], "custom");
+        assert_eq!(message["customType"], "compaction");
+        assert_eq!(message["details"]["tokensBefore"], 1234);
+
+        let mut summary = entry("s", None, "branch_summary");
+        summary["summary"] = json!("另一条分支");
+        let message = context_entry_message(&summary).unwrap();
+        assert_eq!(message["role"], "user");
+        assert!(message["content"].as_str().unwrap().contains("另一条分支"));
+    }
+
+    #[test]
+    fn context_view_collects_model_and_thinking() {
+        let mut model_change = entry("m", None, "model_change");
+        model_change["provider"] = json!("qoder");
+        model_change["modelId"] = json!("GLM-5.3");
+        let mut thinking = entry("t", Some("m"), "thinking_level_change");
+        thinking["thinkingLevel"] = json!("high");
+        let mut message = entry("u", Some("t"), "message");
+        message["message"] = json!({"role": "user", "content": [{"type": "text", "text": "hi"}]});
+
+        let view = context_view(&[model_change, thinking, message], None);
+        assert_eq!(view.messages.len(), 1);
+        assert_eq!(view.entry_ids, vec!["u"]);
+        assert_eq!(view.model["provider"], "qoder");
+        assert_eq!(view.thinking_level, "high");
+    }
+
+    #[test]
+    fn system_messages_are_dropped() {
+        let mut system = entry("s", None, "message");
+        system["message"] = json!({"role": "system", "content": "x"});
+        assert!(context_entry_message(&system).is_none());
+    }
+}

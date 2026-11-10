@@ -59,13 +59,45 @@ tree/paging/totalActiveMs 形状与 pi 一致；新会话里 `prompt` 触发的
 `agent_start → message_start → message_update×N → tool_execution_* → agent_end`
 事件序列与文件写入均正确。
 
-## 阶段 3 — 剩余 route（1.5 周）
+## 阶段 3 — 剩余 route ✅ 已完成
 
-- [ ] auth（API Key 存取，不返回明文）
-- [ ] models-config（读写 `models.json`，保留 `$schema`）
-- [ ] git / worktrees
-- [ ] projects / cwd / default-cwd / home
-- [ ] 明确砍掉：mcp、plugins、skills 市场、models.dev 目录
+交付物：`crates/workman-server` 新增 8 个模块 + 6 个 route 文件（约 6,600 行）
+
+- [x] auth（API Key 存取，不返回明文）
+  - `providers` / `all-providers` / `api-key`(GET·POST·DELETE) / `logout` / `login`(501)
+  - `auth.json` 0600 + 原子替换；`$ENV` 插值与 `!command` 凭据都能解析
+- [x] models-config（读写 `models.json`，保留 `$schema`）
+  - GET / PUT（清洗无 id 的模型 + cost 缺项补 0）/ DELETE（provider 或 model）
+  - `enabled`（GET/PUT，`provider/*` 折叠与 pi 的 `13888.uz` 同语义）
+  - `discover`（上游 `/models` + pi 的字段兼容表）/ `test`（真跑一次补全）
+  - `catalog` 已按计划砍掉（返回空表）
+- [x] git / worktrees
+  - `GET /api/git`、`POST /api/git`（20 个动作）、`git/status`、`git/diff`、`git/commit-message`（NDJSON）
+  - `GET/POST/DELETE /api/worktrees`（新建目录在 `<projectRoot>-worktrees/<branch>`）
+  - 每个仓库一把锁串行写操作；`GIT_TERMINAL_PROMPT=0` + 临时 askpass 传凭据
+- [x] projects / cwd / default-cwd / home
+  - `projects` 四个方法（与 pi 共用 `pi.sqlite`）、`project-trust`（`trust.json`）
+  - `cwd/browse`、`cwd/validate`（POST，登记项目 + 允许根）、`default-cwd`、`home`
+- [x] 阶段 2 的欠账一并补完
+  - `agent/{id}/bash-output`、`agent/running/events`
+  - `sessions/{id}/context`、`sessions/{id}/export`、`entries/{id}/thinking`、`auto-name`
+- [x] `projectRoot` / `worktreeBranch` 改为真 git 探测（修掉阶段 2 的差异 1）
+- [x] 明确砍掉：mcp、plugins、skills 市场、models.dev 目录
+
+**验收结果（真实数据 + 真实模型）**：
+
+| 项 | 结果 |
+|---|---|
+| 单元/集成测试 | 101 个全绿（新增 29 个），`cargo build` 0 warning |
+| 558 个真实 pi 会话 | 列表 / detail / context / export / thinking 全部可读 |
+| `pi.sqlite` 共用 | 读出 15 个真实项目（含星标、选中项），增删改都写回同一个库 |
+| git 面板 | 真实仓库：分支/上游/change 列表/增删行数/未跟踪；`diff` 命中真实补丁 |
+| `models-config/test` | qoder/DeepSeek-Flash 真跑通：`{ok:true,latencyMs:732,responseText:"OK"}` |
+| `models-config/discover` | 上游返回 12 个模型，被正确解析排序 |
+| `auto-name` | 2.0s 生成「阶段3：实现后端路由与服务接入」并写回 `session_info` |
+| `git/commit-message` | 真实暂存区 → `feat(main): 在启动时打印问候语`（NDJSON） |
+| `bash-output` | 真实 `pi-bash-*.log`：读 787KB / 下载 200；越权会话 403；非白名单 400 |
+| `agent/new` + `prompt` | 新会话建好、项目登记、一轮对话落盘（5 条 v3 记录） |
 
 ## 阶段 4 — Tauri 单进程（1 周）
 

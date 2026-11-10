@@ -43,6 +43,8 @@ pub struct DetailParams {
     defer_thinking: Option<String>,
     #[serde(rename = "deferMedia")]
     defer_media: Option<String>,
+    #[serde(rename = "leafId")]
+    leaf_id: Option<String>,
     limit: Option<String>,
 }
 
@@ -63,33 +65,24 @@ pub async fn detail(
     let labels = session.labels();
     let tree = session_view::tree_projection(&session_view::build_tree(&session.entries, &labels));
 
-    // context：pi 的 buildSessionContext 投影。
-    // `deferMedia` / `deferThinking` 在 pi 里是「省掉大字段」的开关；这里条目
-    // 已经解析成 JSON，省字段需要额外遍历，阶段 2 先原样返回（形状一致）。
-    let entries = &session.entries;
-    let messages: Vec<Value> = entries.iter().filter_map(context_message).collect();
-    let entry_ids: Vec<String> = entries
-        .iter()
-        .filter(|e| context_message(e).is_some())
-        .filter_map(|e| e.get("id").and_then(Value::as_str).map(str::to_string))
-        .collect();
-
-    let page = session_view::page_tail(&messages, params.limit.as_deref());
-    let paged_messages: Vec<Value> = messages[page.start..page.end].to_vec();
-    let paged_ids: Vec<String> = entry_ids[page.start.min(entry_ids.len())..page.end.min(entry_ids.len())]
-        .to_vec();
+    // context：pi 的 `buildContextEntries` 投影（沿分支到叶子）。
+    let view = session_view::context_view(&session.entries, params.leaf_id.as_deref());
+    let leaf_id = params
+        .leaf_id
+        .clone()
+        .or_else(|| session_view::leaf_id(&session.entries))
+        .unwrap_or_default();
+    let page = session_view::page_tail(&view.messages, params.limit.as_deref());
+    let paged_messages: Vec<Value> = view.messages[page.start..page.end].to_vec();
+    let paged_ids: Vec<String> =
+        view.entry_ids[page.start.min(view.entry_ids.len())..page.end.min(view.entry_ids.len())]
+            .to_vec();
 
     let info = state
         .sessions()
         .list(false)
         .into_iter()
         .find(|item| item.get("id").and_then(Value::as_str) == Some(id.as_str()));
-
-    let leaf_id = session
-        .entries
-        .last()
-        .and_then(|e| e.get("id").and_then(Value::as_str))
-        .unwrap_or_default();
 
     let _ = (params.defer_thinking, params.defer_media);
 
@@ -102,8 +95,8 @@ pub async fn detail(
         "context": {
             "messages": paged_messages,
             "entryIds": paged_ids,
-            "thinkingLevel": Value::Null,
-            "model": Value::Null,
+            "thinkingLevel": view.thinking_level,
+            "model": view.model,
         },
         "paging": {
             "hasEarlier": page.has_earlier(),
@@ -114,14 +107,6 @@ pub async fn detail(
         "totalActiveMs": session_view::total_active_ms(&session.entries),
     }))
     .into_response()
-}
-
-/// 条目 → context 里的一条消息（pi 只把 message 条目放进上下文）。
-fn context_message(entry: &Value) -> Option<Value> {
-    if entry.get("type").and_then(Value::as_str) != Some("message") {
-        return None;
-    }
-    entry.get("message").cloned()
 }
 
 #[derive(Debug, Deserialize)]

@@ -4,7 +4,6 @@
 //! - `GET  /api/mobile/state`：手机端会话状态
 //! - `GET  /api/home`：`{home}`
 //! - `POST /api/default-cwd`：建目录并返回 `{cwd}`
-//! - `GET  /api/cwd/validate?cwd=`：目录是否可用
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -15,7 +14,6 @@ use serde_json::{json, Value};
 
 use crate::security::Trusted;
 use crate::session_view;
-use crate::sessions_store;
 use crate::state::AppState;
 
 /// `GET /api/models`
@@ -147,35 +145,10 @@ pub async fn home(_trusted: Trusted) -> Response {
     Json(json!({ "home": home })).into_response()
 }
 
-#[derive(Debug, Deserialize, Default)]
-pub struct CwdParams {
-    cwd: Option<String>,
-    path: Option<String>,
-}
-
-/// `GET /api/cwd/validate?cwd=/x` —— 目录是否存在且可进。
-pub async fn cwd_validate(_trusted: Trusted, Query(params): Query<CwdParams>) -> Response {
-    let Some(cwd) = params.cwd.or(params.path) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "cwd is required" })),
-        )
-            .into_response();
-    };
-    let path = std::path::PathBuf::from(&cwd);
-    let exists = path.is_dir();
-    Json(json!({
-        "cwd": sessions_store::normalize_path(&cwd),
-        "exists": exists,
-        "valid": exists,
-    }))
-    .into_response()
-}
-
-/// `POST /api/default-cwd` —— 建（如需要）并返回默认 cwd。
+/// `POST /api/default-cwd` —— 建（如需要）、登记允许根、返回 `{cwd}`。
 pub async fn default_cwd(State(state): State<AppState>, _trusted: Trusted) -> Response {
     let cwd = state.default_cwd().to_path_buf();
-    if let Err(e) = std::fs::create_dir_all(&cwd) {
+    if let Err(e) = crate::routes::projects::ensure_default_dir(&state, &cwd) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
