@@ -1,0 +1,21 @@
+[package]
+name = "workman-session"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "workman 的会话层：直接读写 pi 的 v3 会话文件（SessionStorage 实现）"
+
+[dependencies]
+rpi-harness = { workspace = true }
+rpi-agent = { workspace = true }
+rpi-ai = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = "0.1"
+# 只在 bin 里用到（用 noop waker 驱动同步存储的 future，不必引 tokio 的 reactor）
+# 因此把 tokio 放进 dev-dependencies 之外，仍用 workspace 那份。
+
+[dev-dependencies]
+tokio = { workspace = true }

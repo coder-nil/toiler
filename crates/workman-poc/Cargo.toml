@@ -1,0 +1,22 @@
+[package]
+name = "workman-poc"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# PoC 阶段只开 rpi-ai：它没有 rusqlite，编译最快。
+# providers feature 打开才链接 reqwest + SSE，也就是真实网络路径。
+rpi-ai = { workspace = true, features = ["providers"] }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+# rpi-ai 的 with_models* 需要调用方传入 reqwest::Client，
+# 所以必须用同一个 reqwest 主版本（0.12）对齐类型。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# 会话层：验证 v3 兼容性（这一步会带进 rusqlite bundled，首次编译较慢）
+rpi-harness = { workspace = true }
+# 只为了拿到 AgentMessage 类型（v3 message 反序列化验证）
+rpi-agent = { workspace = true }

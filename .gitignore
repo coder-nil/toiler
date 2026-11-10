@@ -1,0 +1,4 @@
+target/
+.workman-local/
+# pi-desktop 契约逆向的中间产物（可由 tools/pi-contract/extract.py 重新生成）
+tools/pi-contract/raw/

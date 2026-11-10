@@ -1,0 +1,36 @@
+[package]
+name = "workman-server"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "workman 的 HTTP/SSE 服务：复刻 pi-desktop 的 /api 契约"
+
+[dependencies]
+workman-session = { path = "../workman-session" }
+rpi-harness = { workspace = true }
+rpi-agent = { workspace = true }
+rpi-ai = { workspace = true, features = ["providers"] }
+rpi-tools = { workspace = true }
+
+axum = { version = "0.8", features = ["json", "query"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net", "signal"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = "0.1"
+futures = "0.3"
+async-stream = "0.3"
+base64 = "0.22"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+bytes = "1"
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
