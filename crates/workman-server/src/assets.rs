@@ -260,8 +260,14 @@ mod tests {
     #[test]
     fn content_types_cover_next_outputs() {
         assert_eq!(content_type("index.html"), "text/html; charset=utf-8");
-        assert_eq!(content_type("_next/static/chunks/a.js"), "text/javascript; charset=utf-8");
-        assert_eq!(content_type("manifest.webmanifest"), "application/manifest+json");
+        assert_eq!(
+            content_type("_next/static/chunks/a.js"),
+            "text/javascript; charset=utf-8"
+        );
+        assert_eq!(
+            content_type("manifest.webmanifest"),
+            "application/manifest+json"
+        );
         assert_eq!(content_type("_next/static/media/a.woff2"), "font/woff2");
     }
 
@@ -273,7 +279,10 @@ mod tests {
 
     #[test]
     fn rsc_candidates_are_next_shaped() {
-        assert_eq!(rsc_candidates("settings"), ["settings.txt", "settings/index.txt"]);
+        assert_eq!(
+            rsc_candidates("settings"),
+            ["settings.txt", "settings/index.txt"]
+        );
         assert_eq!(rsc_candidates("a/b"), ["a/b.txt", "a/b/index.txt"]);
     }
 

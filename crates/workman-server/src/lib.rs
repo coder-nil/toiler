@@ -3,19 +3,23 @@ pub mod assets;
 pub mod auth;
 pub mod boot;
 pub mod catalog;
+pub mod docx;
+pub mod filemeta;
 pub mod gitsvc;
+pub mod mobile_access;
+pub mod mobile_view;
 pub mod models_json;
 pub mod oneshot;
 pub mod paths;
 pub mod projects;
 pub mod routes;
-pub mod settings;
-pub mod trust;
 pub mod security;
 pub mod session_view;
 pub mod sessions_store;
+pub mod settings;
 pub mod state;
 pub mod tools;
+pub mod trust;
 
 /// 当前时间的 ISO-8601（毫秒精度，`Z` 结尾）——与 pi 写进文件的时间戳同格式。
 pub fn workman_now_iso() -> String {

@@ -33,8 +33,7 @@ impl V3Header {
 
     /// 解析第一行。
     pub fn parse(line: &str) -> Result<Self, V3Error> {
-        let v: Value =
-            serde_json::from_str(line).map_err(|e| V3Error::syntax(1, e.to_string()))?;
+        let v: Value = serde_json::from_str(line).map_err(|e| V3Error::syntax(1, e.to_string()))?;
         let obj = v
             .as_object()
             .ok_or_else(|| V3Error::schema(1, "header 不是 JSON 对象"))?;
@@ -64,12 +63,10 @@ impl V3Header {
             .ok_or_else(|| V3Error::schema(1, "header 缺少 cwd"))?
             .to_string();
         let created_at = match obj.get("timestamp") {
-            Some(Value::String(iso)) => {
-                iso_to_ms(iso).ok_or_else(|| V3Error::Timestamp {
-                    line: 1,
-                    value: iso.clone(),
-                })?
-            }
+            Some(Value::String(iso)) => iso_to_ms(iso).ok_or_else(|| V3Error::Timestamp {
+                line: 1,
+                value: iso.clone(),
+            })?,
             Some(Value::Number(n)) => n
                 .as_i64()
                 .ok_or_else(|| V3Error::schema(1, "header.timestamp 不是整数"))?,

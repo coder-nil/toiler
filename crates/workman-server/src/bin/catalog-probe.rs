@@ -4,7 +4,11 @@ use workman_server::catalog::ModelCatalog;
 fn main() -> anyhow::Result<()> {
     let catalog = ModelCatalog::load()?;
     println!("来源: {:?}", catalog.source);
-    println!("模型: {} 个，provider: {} 个", catalog.entries.len(), catalog.providers.len());
+    println!(
+        "模型: {} 个，provider: {} 个",
+        catalog.entries.len(),
+        catalog.providers.len()
+    );
     for e in catalog.entries.iter().take(12) {
         println!(
             "  {:14} {:28} api={:18} ctx={:>7} reasoning={}",

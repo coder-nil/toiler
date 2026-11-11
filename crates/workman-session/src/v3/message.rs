@@ -55,8 +55,12 @@ pub fn decode_message(value: &Value, fallback_ts: i64) -> Result<AgentMessage, V
         normalize_stop_reason(&mut msg);
     }
 
-    serde_json::from_value(Value::Object(msg))
-        .map_err(|e| V3Error::schema(0, format!("message 无法映射到 rpi：{}", one_line(&e.to_string()))))
+    serde_json::from_value(Value::Object(msg)).map_err(|e| {
+        V3Error::schema(
+            0,
+            format!("message 无法映射到 rpi：{}", one_line(&e.to_string())),
+        )
+    })
 }
 
 /// `stopReason` 归一：pi 的 camelCase → rpi 的小写枚举名。
@@ -71,7 +75,11 @@ fn normalize_stop_reason(msg: &mut Map<String, Value>) {
 }
 
 /// 把 pi 的非标准 role 摊成一个 `CustomMessage`：`data` 存原载荷，`content` 存可渲染文本。
-fn build_custom(role: &str, obj: &Map<String, Value>, fallback_ts: i64) -> rpi_agent::message::CustomMessage {
+fn build_custom(
+    role: &str,
+    obj: &Map<String, Value>,
+    fallback_ts: i64,
+) -> rpi_agent::message::CustomMessage {
     let mut data = obj.clone();
     data.remove("role");
     data.remove("content");
@@ -99,12 +107,7 @@ fn build_custom(role: &str, obj: &Map<String, Value>, fallback_ts: i64) -> rpi_a
         .and_then(Value::as_i64)
         .unwrap_or(fallback_ts);
 
-    rpi_agent::message::CustomMessage::new(
-        role,
-        content,
-        Value::Object(data),
-        timestamp,
-    )
+    rpi_agent::message::CustomMessage::new(role, content, Value::Object(data), timestamp)
 }
 
 fn text_block(text: &str) -> Content {
@@ -117,7 +120,11 @@ pub fn encode_message(message: &AgentMessage) -> Value {
     let Some(obj) = value.as_object_mut() else {
         return value;
     };
-    let kind = obj.get("kind").and_then(Value::as_str).unwrap_or("user").to_string();
+    let kind = obj
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("user")
+        .to_string();
     obj.remove("kind");
 
     if kind == "custom" {
@@ -127,10 +134,7 @@ pub fn encode_message(message: &AgentMessage) -> Value {
     // 单段纯文本时会退化成裸字符串，这里补回数组形态。
     if kind == "user" {
         if let Some(Value::String(text)) = obj.get("content").cloned() {
-            obj.insert(
-                "content".into(),
-                json!([{ "type": "text", "text": text }]),
-            );
+            obj.insert("content".into(), json!([{ "type": "text", "text": text }]));
         }
     }
     if kind == "assistant" {
@@ -201,7 +205,9 @@ fn encode_custom(obj: &mut Map<String, Value>) -> Value {
 }
 
 fn one_line(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
         .chars()
         .take(200)
         .collect()

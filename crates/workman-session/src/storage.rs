@@ -32,18 +32,18 @@ use std::sync::{Arc, Mutex};
 
 use rpi_harness::error::SessionResult;
 use rpi_harness::session::memory::Clock;
+use rpi_harness::session::state::SessionState;
 use rpi_harness::session::types::IdGenerator;
-use rpi_harness::session::{DefaultIdGenerator, SystemClock};
 use rpi_harness::session::types::{
     AssistantFrameRecord, BranchBounds, BranchEntryPage, BranchEntryPageQuery, BranchOverview,
     Entry, EntryAncestry, EntryQuery, LanePointer, LaneRecord, LogItem, LogOptions,
     MessageSummaryPage, MessageSummaryQuery, MessageWindowPage, MessageWindowQuery,
     ProvisionedEntry, RecordPage, RecordPageQuery, RecordQuery, SessionCreateOptions,
-    SessionLaneBranch, SessionMetadata, SessionMutation, SessionStorage,
-    SessionStats, TranscriptPage, TranscriptPageQuery,
+    SessionLaneBranch, SessionMetadata, SessionMutation, SessionStats, SessionStorage,
+    TranscriptPage, TranscriptPageQuery,
 };
-use rpi_harness::session::state::SessionState;
 use rpi_harness::session::InMemorySessionStorage;
+use rpi_harness::session::{DefaultIdGenerator, SystemClock};
 use serde_json::Value;
 
 use crate::home::session_file_name;
@@ -90,7 +90,11 @@ impl V3Appender {
     fn append_line(&self, line: &str) {
         let mut guard = self.file.lock().expect("appender not poisoned");
         if guard.is_none() {
-            match OpenOptions::new().create(true).append(true).open(&self.path) {
+            match OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+            {
                 Ok(f) => *guard = Some(f),
                 Err(e) => {
                     self.warnings
@@ -123,9 +127,10 @@ impl V3Appender {
             }
             Err(V3Error::Unrepresentable { entry_type }) => {
                 *self.unrepresentable.lock().expect("count") += 1;
-                self.warnings.lock().expect("warnings").push(format!(
-                    "条目类型 {entry_type} 无法用 v3 表达，只留在内存"
-                ));
+                self.warnings
+                    .lock()
+                    .expect("warnings")
+                    .push(format!("条目类型 {entry_type} 无法用 v3 表达，只留在内存"));
             }
             Err(e) => {
                 self.warnings
@@ -376,9 +381,7 @@ fn replay_text(text: &str) -> SessionResult<(V3Header, SessionState, LoadReport)
         };
         match state.apply_mutation(mutation) {
             Ok(_) => report.loaded_entries += 1,
-            Err(e) => report
-                .skipped
-                .push(format!("第 {line_no} 行：{e}")),
+            Err(e) => report.skipped.push(format!("第 {line_no} 行：{e}")),
         }
     }
 
@@ -436,7 +439,11 @@ pub fn file_name_for(header: &V3Header) -> String {
 }
 
 /// 方便 repo 构造一个待写的 provisioned entry（自定义条目）。
-pub fn custom_entry(id: impl Into<String>, custom_type: &str, data: Option<Value>) -> ProvisionedEntry {
+pub fn custom_entry(
+    id: impl Into<String>,
+    custom_type: &str,
+    data: Option<Value>,
+) -> ProvisionedEntry {
     ProvisionedEntry {
         id: id.into(),
         kind: rpi_harness::session::types::ProvisionedKind::Custom {
@@ -617,7 +624,9 @@ impl SessionStorage for V3SessionStorage {
         bounds: &BranchBounds,
         start: &str,
     ) -> SessionResult<Vec<Entry>> {
-        self.inner.find_entries_on_branch(query, bounds, start).await
+        self.inner
+            .find_entries_on_branch(query, bounds, start)
+            .await
     }
 
     async fn branch_ancestry(
@@ -702,7 +711,10 @@ fn uuidish(salt: i64) -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
-    format!("{:08x}", (now ^ (salt as u64)).wrapping_mul(0x9E37_79B9_7F4A_7C15) as u32)
+    format!(
+        "{:08x}",
+        (now ^ (salt as u64)).wrapping_mul(0x9E37_79B9_7F4A_7C15) as u32
+    )
 }
 
 /// 供 repo 复用：`SessionCreateOptions` → (id, cwd)

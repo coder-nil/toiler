@@ -63,9 +63,9 @@ pub async fn context(
         None => session_view::page_tail(&view.messages, params.limit.as_deref()),
     };
     let messages: Vec<Value> = view.messages[page.start..page.end].to_vec();
-    let entry_ids: Vec<String> =
-        view.entry_ids[page.start.min(view.entry_ids.len())..page.end.min(view.entry_ids.len())]
-            .to_vec();
+    let entry_ids: Vec<String> = view.entry_ids
+        [page.start.min(view.entry_ids.len())..page.end.min(view.entry_ids.len())]
+        .to_vec();
 
     Json(json!({
         "context": {
@@ -130,13 +130,18 @@ pub async fn thinking(
     }) else {
         return error(StatusCode::NOT_FOUND, "Assistant message not found");
     };
-    let Some(block) = message.get("content").and_then(Value::as_array).and_then(|blocks| blocks.get(index)) else {
+    let Some(block) = message
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|blocks| blocks.get(index))
+    else {
         return error(StatusCode::NOT_FOUND, "Thinking block not found");
     };
     if block.get("type").and_then(Value::as_str) != Some("thinking") {
         return error(StatusCode::NOT_FOUND, "Thinking block not found");
     }
-    Json(json!({ "thinking": block.get("thinking").cloned().unwrap_or(Value::Null) })).into_response()
+    Json(json!({ "thinking": block.get("thinking").cloned().unwrap_or(Value::Null) }))
+        .into_response()
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -327,7 +332,10 @@ fn render_export_html(session: &RawSession, id: &str) -> String {
     let view = session_view::context_view(&session.entries, None);
     let mut body = String::new();
     for message in &view.messages {
-        let role = message.get("role").and_then(Value::as_str).unwrap_or("unknown");
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
         let (label, class) = match role {
             "user" => ("User", "user"),
             "assistant" => ("Assistant", "assistant"),
@@ -373,7 +381,8 @@ p:last-child{margin-bottom:0}"
 // ---------------------------------------------------------------------------
 
 /// 标题生成用的提示词（逐字取自 pi 的 `79495.i`）。
-const TITLE_PROMPT: &str = "Create a concise title for this session based on the conversation above.
+const TITLE_PROMPT: &str =
+    "Create a concise title for this session based on the conversation above.
 
 Requirements:
 - Match the primary language used by the user.
@@ -398,13 +407,19 @@ pub async fn auto_name(
     let view = session_view::context_view(&session.entries, None);
     let transcript = render_transcript(&view.messages);
     if transcript.trim().is_empty() {
-        return error(StatusCode::INTERNAL_SERVER_ERROR, "The session has no user messages to name");
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "The session has no user messages to name",
+        );
     }
 
     // 模型：会话里最后一个 `model_change`，否则目录默认
     let (provider, model_id) = session_model(&state, &view.model);
     let Some((runtime, model)) = lookup_model(&state, &provider, &model_id) else {
-        return error(StatusCode::INTERNAL_SERVER_ERROR, "No available model configured for title generation");
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "No available model configured for title generation",
+        );
     };
     let api_key = resolve_key(&state, &provider);
     let prompt = format!("{transcript}\n\n{TITLE_PROMPT}");
@@ -585,11 +600,18 @@ pub fn clean_title(raw: &str) -> Result<String, String> {
     ] {
         let chars: Vec<char> = text.chars().collect();
         if chars.len() > 2 && chars[0] == open && chars[chars.len() - 1] == close {
-            text = chars[1..chars.len() - 1].iter().collect::<String>().trim().to_string();
+            text = chars[1..chars.len() - 1]
+                .iter()
+                .collect::<String>()
+                .trim()
+                .to_string();
         }
     }
     text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    text = text.trim_end_matches(['。', '.', '!', '！']).trim().to_string();
+    text = text
+        .trim_end_matches(['。', '.', '!', '！'])
+        .trim()
+        .to_string();
     if !text.chars().any(|c| c.is_alphanumeric()) {
         return Err("The model did not return a usable session title".to_string());
     }
@@ -615,7 +637,10 @@ fn strip_code_fence(text: &str) -> Option<String> {
 pub fn branch_ids(entries: &[Value]) -> Vec<String> {
     let view = session_view::context_view(entries, None);
     let mut seen: HashMap<String, ()> = HashMap::new();
-    view.entry_ids.into_iter().filter(|id| seen.insert(id.clone(), ()).is_none()).collect()
+    view.entry_ids
+        .into_iter()
+        .filter(|id| seen.insert(id.clone(), ()).is_none())
+        .collect()
 }
 
 #[cfg(test)]
@@ -627,8 +652,14 @@ mod tests {
         assert_eq!(clean_title("修复登录 bug").unwrap(), "修复登录 bug");
         assert_eq!(clean_title("\"Fix login bug\"").unwrap(), "Fix login bug");
         assert_eq!(clean_title("标题：缓存方案设计。").unwrap(), "缓存方案设计");
-        assert_eq!(clean_title("```json\n{\"title\":\"Refactor auth\"}\n```").unwrap(), "Refactor auth");
-        assert_eq!(clean_title("Title: Add SSE route").unwrap(), "Add SSE route");
+        assert_eq!(
+            clean_title("```json\n{\"title\":\"Refactor auth\"}\n```").unwrap(),
+            "Refactor auth"
+        );
+        assert_eq!(
+            clean_title("Title: Add SSE route").unwrap(),
+            "Add SSE route"
+        );
         assert!(clean_title("   ").is_err());
         assert!(clean_title("!!!").is_err());
     }
@@ -641,7 +672,10 @@ mod tests {
 
     #[test]
     fn sanitizes_download_names() {
-        assert_eq!(sanitize_ascii_filename("pi-session-x.html"), "pi-session-x.html");
+        assert_eq!(
+            sanitize_ascii_filename("pi-session-x.html"),
+            "pi-session-x.html"
+        );
         assert_eq!(sanitize_ascii_filename("名字.html"), "__.html");
         assert_eq!(percent_encode("a b.html"), "a%20b.html");
     }

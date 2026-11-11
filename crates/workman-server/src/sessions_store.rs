@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use workman_session::V3Header;
 use serde_json::{json, Value};
+use workman_session::V3Header;
 
 use crate::session_view;
 
@@ -262,7 +262,12 @@ impl SessionList {
         // parentSessionId：header.parentSession（路径）→ 该路径对应会话的 id
         let by_path: HashMap<String, String> = sessions
             .iter()
-            .map(|s| (normalize_path(&s.path.to_string_lossy()), s.header.id.clone()))
+            .map(|s| {
+                (
+                    normalize_path(&s.path.to_string_lossy()),
+                    s.header.id.clone(),
+                )
+            })
             .collect();
 
         // 同一个 cwd 只做一次 git 探测
@@ -288,15 +293,18 @@ impl SessionList {
                 });
                 let project_root = hint.root.clone();
                 let mut obj = serde_json::Map::new();
-                obj.insert(
-                    "path".into(),
-                    json!(s.path.to_string_lossy().to_string()),
-                );
+                obj.insert("path".into(), json!(s.path.to_string_lossy().to_string()));
                 obj.insert("id".into(), json!(s.header.id));
                 obj.insert("cwd".into(), json!(s.header.cwd));
                 obj.insert("name".into(), json!(s.name()));
-                obj.insert("created".into(), json!(workman_session::ms_to_iso(s.header.created_at)));
-                obj.insert("modified".into(), json!(workman_session::ms_to_iso(s.mtime_ms)));
+                obj.insert(
+                    "created".into(),
+                    json!(workman_session::ms_to_iso(s.header.created_at)),
+                );
+                obj.insert(
+                    "modified".into(),
+                    json!(workman_session::ms_to_iso(s.mtime_ms)),
+                );
                 obj.insert("messageCount".into(), json!(s.message_count()));
                 obj.insert(
                     "firstMessage".into(),

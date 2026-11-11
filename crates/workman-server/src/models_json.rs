@@ -30,14 +30,14 @@ impl Default for ModelsFile {
     }
 }
 
-/// 默认路径：`$WORKMAN_MODELS` > `agent_dir()/models.json`。
+/// 默认路径：`$WORKMAN_MODELS` > `<workmanHome>/configs/models.json`。
 pub fn default_path() -> PathBuf {
     if let Ok(p) = std::env::var("WORKMAN_MODELS") {
         if !p.trim().is_empty() {
             return PathBuf::from(p);
         }
     }
-    paths::agent_file("models.json")
+    paths::config_file("models.json")
 }
 
 impl ModelsFile {
@@ -95,7 +95,10 @@ impl ModelsFile {
                 None => true,
             });
         }
-        if let Some(overrides) = entry.get_mut("modelOverrides").and_then(Value::as_object_mut) {
+        if let Some(overrides) = entry
+            .get_mut("modelOverrides")
+            .and_then(Value::as_object_mut)
+        {
             overrides.remove(model_id);
             if overrides.is_empty() {
                 entry.remove("modelOverrides");
@@ -174,8 +177,7 @@ fn normalize_cost(cost: &Value) -> Option<Value> {
         out.insert(k.clone(), v.clone());
     }
     for key in COST_KEYS {
-        out.entry(key.to_string())
-            .or_insert_with(|| Value::from(0));
+        out.entry(key.to_string()).or_insert_with(|| Value::from(0));
     }
     Some(Value::Object(out))
 }
@@ -294,7 +296,10 @@ mod tests {
         .unwrap();
 
         let after = file.delete_model("p", "a").unwrap();
-        assert_eq!(after["providers"]["p"]["models"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            after["providers"]["p"]["models"].as_array().unwrap().len(),
+            1
+        );
         assert!(after["providers"]["p"]["modelOverrides"].get("a").is_none());
 
         let after = file.delete_provider("q").unwrap();

@@ -56,7 +56,13 @@ async fn fetch(router: axum::Router, uri: &str, headers: &[(&str, &str)]) -> Rep
         .unwrap();
     let status = response.status();
     let headers = response.headers().clone();
-    let body = response.into_body().collect().await.unwrap().to_bytes().to_vec();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
     Reply {
         status,
         headers,
@@ -105,7 +111,11 @@ async fn unknown_api_path_is_404_json_not_index_html() {
     for accept in ["*/*", "text/html", "application/json"] {
         let reply = fetch(app(&root), "/api/does-not-exist", &[("accept", accept)]).await;
         assert_eq!(reply.status, StatusCode::NOT_FOUND, "accept={accept}");
-        assert!(reply.text().contains("\"error\""), "accept={accept}: {}", reply.text());
+        assert!(
+            reply.text().contains("\"error\""),
+            "accept={accept}: {}",
+            reply.text()
+        );
     }
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -114,7 +124,11 @@ async fn unknown_api_path_is_404_json_not_index_html() {
 async fn client_route_falls_back_to_index_for_html_navigations() {
     let root = fixture_root("spa");
     let reply = fetch(app(&root), "/sessions/abc", &[("accept", "text/html")]).await;
-    assert_eq!(reply.status, StatusCode::OK, "客户端路由应交由 index.html 接管");
+    assert_eq!(
+        reply.status,
+        StatusCode::OK,
+        "客户端路由应交由 index.html 接管"
+    );
     assert_eq!(
         reply.headers.get("content-type").unwrap(),
         "text/html; charset=utf-8"
@@ -144,7 +158,11 @@ async fn traversal_attempts_are_rejected() {
         "/a/../../../../etc/passwd",
     ] {
         let reply = fetch(app(&root), uri, &[("accept", "text/html")]).await;
-        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{uri} 不应命中任何文件");
+        assert_eq!(
+            reply.status,
+            StatusCode::NOT_FOUND,
+            "{uri} 不应命中任何文件"
+        );
     }
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -161,7 +179,10 @@ async fn rsc_requests_never_get_an_api_payload() {
     )
     .await;
     assert_ne!(
-        reply.headers.get("content-type").map(|v| v.to_str().unwrap()),
+        reply
+            .headers
+            .get("content-type")
+            .map(|v| v.to_str().unwrap()),
         Some("application/json")
     );
     let _ = std::fs::remove_dir_all(&root);
@@ -173,7 +194,12 @@ async fn empty_files_path_lists_the_default_cwd_instead_of_404() {
     // 而不是被静态兜底吃掉（否则面板直接显示 "Not found"）。
     let root = fixture_root("filesroot");
     std::fs::write(root.join("hello.txt"), "hi").unwrap();
-    let reply = fetch(app_with_cwd(&root, &root), "/api/files", &[("accept", "*/*")]).await;
+    let reply = fetch(
+        app_with_cwd(&root, &root),
+        "/api/files",
+        &[("accept", "*/*")],
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::OK);
     let body: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
     assert_eq!(body["isDirectory"], true, "{}", reply.text());
@@ -200,7 +226,12 @@ async fn files_endpoint_accepts_slashless_absolute_paths() {
     uri.push_str(project.to_string_lossy().trim_start_matches('/'));
     uri.push_str("?type=list");
 
-    let reply = fetch(app_with_cwd(&root, &root), &uri, &[("accept", "application/json")]).await;
+    let reply = fetch(
+        app_with_cwd(&root, &root),
+        &uri,
+        &[("accept", "application/json")],
+    )
+    .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
     let body: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
     let entries = body["entries"].as_array().unwrap();

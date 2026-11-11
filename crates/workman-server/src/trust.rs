@@ -36,7 +36,7 @@ pub struct TrustStore {
 
 impl Default for TrustStore {
     fn default() -> Self {
-        Self::at(paths::agent_file("trust.json"))
+        Self::at(paths::config_file("trust.json"))
     }
 }
 
@@ -81,7 +81,10 @@ impl TrustStore {
     pub fn set(&self, cwd: &str, decision: Option<bool>) -> std::io::Result<()> {
         let key = normalize(cwd).to_string_lossy().to_string();
         let mut map = self.read();
-        map.insert(key.clone(), decision.map(Value::from).unwrap_or(Value::Null));
+        map.insert(
+            key.clone(),
+            decision.map(Value::from).unwrap_or(Value::Null),
+        );
         // 清掉「同一路径但写法不同」的旧键（大小写、符号链接）
         let canonical = std::fs::canonicalize(cwd).ok();
         if let Some(canonical) = canonical {
@@ -104,7 +107,8 @@ impl TrustStore {
         for key in keys {
             sorted.insert(key.clone(), map[key].clone());
         }
-        let body = serde_json::to_string_pretty(&Value::Object(sorted)).unwrap_or_else(|_| "{}".into());
+        let body =
+            serde_json::to_string_pretty(&Value::Object(sorted)).unwrap_or_else(|_| "{}".into());
         std::fs::write(&self.path, format!("{body}\n"))
     }
 }
@@ -193,12 +197,16 @@ mod tests {
         let project = dir.join("proj/sub");
         std::fs::create_dir_all(&project).unwrap();
 
-        store.set(dir.join("proj").to_string_lossy().as_ref(), Some(true)).unwrap();
+        store
+            .set(dir.join("proj").to_string_lossy().as_ref(), Some(true))
+            .unwrap();
         // 子目录继承父目录的决定
         assert_eq!(store.get(project.to_string_lossy().as_ref()), Some(true));
         assert_eq!(store.get(dir.to_string_lossy().as_ref()), None);
 
-        store.set(dir.join("proj").to_string_lossy().as_ref(), Some(false)).unwrap();
+        store
+            .set(dir.join("proj").to_string_lossy().as_ref(), Some(false))
+            .unwrap();
         assert_eq!(store.get(project.to_string_lossy().as_ref()), Some(false));
         let _ = std::fs::remove_dir_all(&dir);
     }

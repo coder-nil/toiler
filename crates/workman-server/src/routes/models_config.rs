@@ -93,7 +93,11 @@ pub async fn delete(
 
     // 清掉指向已删项的 enabledModels 条目
     let provider_gone = kind == "provider" || provider_model_ids(&root, &provider).is_empty();
-    prune_enabled_models(&state, &provider, if provider_gone { None } else { Some(&model_id) });
+    prune_enabled_models(
+        &state,
+        &provider,
+        if provider_gone { None } else { Some(&model_id) },
+    );
     state.sessions().invalidate();
     Json(json!({ "success": true })).into_response()
 }
@@ -125,9 +129,11 @@ fn prune_enabled_models(state: &AppState, provider: &str, model_id: Option<&str>
         .cloned()
         .collect();
     if filtered.len() != current.len() {
-        let _ = state
-            .settings()
-            .set_enabled_models(if filtered.is_empty() { None } else { Some(filtered) });
+        let _ = state.settings().set_enabled_models(if filtered.is_empty() {
+            None
+        } else {
+            Some(filtered)
+        });
     }
 }
 
@@ -172,8 +178,12 @@ pub async fn enabled(
     rows.sort_by(|a, b| {
         let an = a["name"].as_str().unwrap_or("");
         let bn = b["name"].as_str().unwrap_or("");
-        an.cmp(bn)
-            .then_with(|| a["id"].as_str().unwrap_or("").cmp(b["id"].as_str().unwrap_or("")))
+        an.cmp(bn).then_with(|| {
+            a["id"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["id"].as_str().unwrap_or(""))
+        })
     });
 
     Json(json!({
@@ -212,8 +222,7 @@ pub async fn put_enabled(
     if available.is_empty() {
         return bad_request(&format!("No available models for \"{provider}\""));
     }
-    let known: std::collections::BTreeSet<&str> =
-        available.iter().map(|m| m.id.as_str()).collect();
+    let known: std::collections::BTreeSet<&str> = available.iter().map(|m| m.id.as_str()).collect();
     let unknown: Vec<&String> = model_ids
         .iter()
         .filter(|id| !known.contains(id.as_str()))
@@ -302,7 +311,10 @@ pub async fn discover(
         Ok(response) => response,
         Err(e) => {
             let status = if e.is_timeout() { 504 } else { 500 };
-            return (StatusCode::from_u16(status).unwrap(), Json(json!({ "error": e.to_string() })))
+            return (
+                StatusCode::from_u16(status).unwrap(),
+                Json(json!({ "error": e.to_string() })),
+            )
                 .into_response();
         }
     };
@@ -380,13 +392,11 @@ pub async fn test(
         obj.insert("models".into(), json!([single]));
     }
     providers.insert(provider_name.clone(), provider_config);
-    let catalog = match crate::catalog::ModelCatalog::from_config(
-        json!({ "providers": providers }),
-        None,
-    ) {
-        Ok(catalog) => catalog,
-        Err(e) => return test_error(&e.to_string()),
-    };
+    let catalog =
+        match crate::catalog::ModelCatalog::from_config(json!({ "providers": providers }), None) {
+            Ok(catalog) => catalog,
+            Err(e) => return test_error(&e.to_string()),
+        };
     let Some(model_ref) = catalog.model_for(&provider_name, &model_id) else {
         return test_error(&format!("Model not found: {provider_name}/{model_id}"));
     };
@@ -502,7 +512,14 @@ fn model_name(root: &Value, provider: &str, id: &str) -> String {
 }
 
 /// 模式一条都匹配不上时给警告（pi 的 `no-match` / `ambiguous`）。
-fn pattern_warnings(patterns: Option<&[String]>, models: &[ModelRef]) -> Vec<Value> {
+///
+/// 元素必须是**纯字符串**：pi 在 `/api/models-config/enabled` 里取的是
+/// `resolveModelScopeWithDiagnostics` 的 `diagnostics.map(d => d.message)`，
+/// 前端再把 `warnings` 逐条渲染成文本。返回对象会让 React 抛
+/// “Objects are not valid as a React child (found: object with keys
+/// {type, code, message, pattern})”，整个页面直接落到 `global-error`
+/// 的 “This page couldn't load” 兜底页（workman 就曾因此整页崩掉）。
+fn pattern_warnings(patterns: Option<&[String]>, models: &[ModelRef]) -> Vec<String> {
     let Some(patterns) = patterns else {
         return Vec::new();
     };
@@ -516,27 +533,17 @@ fn pattern_warnings(patterns: Option<&[String]>, models: &[ModelRef]) -> Vec<Val
             .filter(|m| settings::pattern_matches(&pattern, m))
             .collect();
         if hits.is_empty() {
-            out.push(json!({
-                "type": "warning",
-                "code": "no-match",
-                "message": format!("No models match pattern \"{raw}\""),
-                "pattern": raw,
-            }));
+            out.push(format!("No models match pattern \"{raw}\""));
             continue;
         }
         if pattern.provider.is_none() {
             let providers: std::collections::BTreeSet<&str> =
                 hits.iter().map(|m| m.provider.as_str()).collect();
             if providers.len() > 1 {
-                out.push(json!({
-                    "type": "warning",
-                    "code": "ambiguous",
-                    "message": format!(
-                        "Pattern \"{raw}\" matches several providers: {}. Use provider/id to choose one.",
-                        providers.into_iter().collect::<Vec<_>>().join(", ")
-                    ),
-                    "pattern": raw,
-                }));
+                out.push(format!(
+                    "Pattern \"{raw}\" matches several providers: {}. Use provider/id to choose one.",
+                    providers.into_iter().collect::<Vec<_>>().join(", ")
+                ));
             }
         }
     }
@@ -593,8 +600,12 @@ pub fn parse_upstream_models(value: &Value) -> Vec<Value> {
         out.push(parsed);
     }
     out.sort_by(|a, b| {
-        let an = a["name"].as_str().unwrap_or_else(|| a["id"].as_str().unwrap_or(""));
-        let bn = b["name"].as_str().unwrap_or_else(|| b["id"].as_str().unwrap_or(""));
+        let an = a["name"]
+            .as_str()
+            .unwrap_or_else(|| a["id"].as_str().unwrap_or(""));
+        let bn = b["name"]
+            .as_str()
+            .unwrap_or_else(|| b["id"].as_str().unwrap_or(""));
         an.to_lowercase().cmp(&bn.to_lowercase())
     });
     out
@@ -626,9 +637,7 @@ fn non_empty(value: Option<&Value>) -> Option<String> {
 }
 
 fn positive_int(value: Option<&Value>) -> Option<u64> {
-    value
-        .and_then(Value::as_u64)
-        .filter(|v| *v > 0)
+    value.and_then(Value::as_u64).filter(|v| *v > 0)
 }
 
 fn parse_upstream_model(item: &Value) -> Option<Value> {
@@ -643,7 +652,10 @@ fn parse_upstream_model(item: &Value) -> Option<Value> {
     let id_raw = non_empty(obj.get("id"))
         .or_else(|| non_empty(obj.get("model")))
         .or_else(|| non_empty(obj.get("name")))?;
-    let id = id_raw.strip_prefix("models/").unwrap_or(&id_raw).to_string();
+    let id = id_raw
+        .strip_prefix("models/")
+        .unwrap_or(&id_raw)
+        .to_string();
     if id.is_empty() {
         return None;
     }
@@ -747,7 +759,8 @@ mod tests {
             discovery_endpoint("https://api.example.com/v1", "openai-completions").unwrap(),
             "https://api.example.com/v1/models"
         );
-        let anthropic = discovery_endpoint("https://api.anthropic.com", "anthropic-messages").unwrap();
+        let anthropic =
+            discovery_endpoint("https://api.anthropic.com", "anthropic-messages").unwrap();
         assert!(anthropic.contains("/v1/models"));
         assert!(anthropic.contains("limit=1000"));
         let gemini = discovery_endpoint("https://x/y", "google-generative-ai").unwrap();

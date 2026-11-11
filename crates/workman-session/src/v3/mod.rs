@@ -29,7 +29,11 @@ use serde_json::Value;
 /// 从一行文本解析会话条目（header 除外）。
 ///
 /// `line_no` 只用于报错；`seq` 由调用方给（v3 没有该字段，按成功落地顺序递增）。
-pub fn parse_entry_line(line: &str, seq: u64, line_no: usize) -> Result<entry::ParsedEntry, V3Error> {
+pub fn parse_entry_line(
+    line: &str,
+    seq: u64,
+    line_no: usize,
+) -> Result<entry::ParsedEntry, V3Error> {
     let value: Value =
         serde_json::from_str(line).map_err(|e| V3Error::syntax(line_no, e.to_string()))?;
     let ty = value

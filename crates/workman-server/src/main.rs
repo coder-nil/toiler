@@ -1,7 +1,7 @@
 //! workman 服务入口（CLI 宿主）。
 //!
 //! ```bash
-//! workman-server                      # 127.0.0.1:8787，会话根 = ~/.pi/agent/sessions
+//! workman-server                      # 127.0.0.1:8787，会话根 = ~/.agents/workman/sessions
 //! workman-server --port 3000 --host 0.0.0.0
 //! workman-server --port 0             # 让内核分配端口（先打印再服务）
 //! ```
@@ -9,9 +9,10 @@
 //! 启动流程全在 [`workman_server::boot`] 里：桌面壳（`workman-desktop`）复用同一套
 //! 逻辑，只是把 `serve` 交给 Tauri 的 tokio runtime，不再 spawn 子进程。
 //!
-//! 环境变量：
-//! - `WORKMAN_SESSIONS_ROOT`：会话根（默认 `~/.pi/agent/sessions`，与 pi 共用）
-//! - `WORKMAN_MODELS`：`models.json` 路径（默认 `~/.workman/agent/models.json` → `~/.pi/agent/models.json`）
+//! 环境变量（完整列表见 `paths.rs` 与 `docs/contracts/README.md`）：
+//! - `WORKMAN_HOME`：workman 专属目录（默认 `~/.agents/workman`）
+//! - `AGENTS_HOME`：通用根（默认 `~/.agents`）
+//! - `WORKMAN_SESSIONS_ROOT` / `WORKMAN_MODELS`：单独覆盖会话根 / 模型目录
 //! - `PI_WEB_HOSTNAME` / `PI_WEB_ALLOWED_HOSTS` / `PI_WEB_DESKTOP_API_ORIGIN`：可信 host / origin
 
 use std::path::PathBuf;
@@ -78,10 +79,15 @@ async fn main() -> Result<()> {
         let _ = shutdown_tx.send(());
     });
 
+    let state = state.with_binding(&host, addr.port());
     boot::serve(listener, routes::router(state), shutdown_rx).await
 }
 
-fn log_startup(state: &workman_server::state::AppState, addr: std::net::SocketAddr, root: &std::path::Path) {
+fn log_startup(
+    state: &workman_server::state::AppState,
+    addr: std::net::SocketAddr,
+    root: &std::path::Path,
+) {
     tracing::info!(
         "workman server 监听 http://{addr}  (会话根 {})",
         root.display()
@@ -89,7 +95,11 @@ fn log_startup(state: &workman_server::state::AppState, addr: std::net::SocketAd
     tracing::info!(
         "前端产物 {}（{}）",
         assets::FRONTEND_DIR,
-        if assets::is_placeholder() { "占位页" } else { "已嵌入" }
+        if assets::is_placeholder() {
+            "占位页"
+        } else {
+            "已嵌入"
+        }
     );
     if let Some(default) = state.catalog().default_entry() {
         tracing::info!("默认模型 {}/{}", default.provider, default.id);

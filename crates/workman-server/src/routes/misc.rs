@@ -12,21 +12,139 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::mobile_view;
 use crate::security::Trusted;
 use crate::session_view;
+use crate::settings::{self, ModelPattern, ModelRef};
 use crate::state::AppState;
+use rpi_ai::ThinkingLevel;
 
 /// `GET /api/models`
+///
+/// 返回形状以 pi 的 `Mx()`（`tools/pi-contract/raw/models.js`）为准，字段名逐字对齐：
+///
+/// ```jsonc
+/// {
+///   "models": { "provider:id": "显示名" },      // 字典，不是数组！
+///   "modelList": [{ provider, id, name }],
+///   "defaultModel": { provider, modelId } | null,
+///   "thinkingLevels": { "provider:id": ["off", …] },
+///   "thinkingLevelMaps": { "provider:id": {…}},
+///   "thinkingLevelPins": { "provider/id": "level" },
+///   "source": "/path/to/models.json" | null
+/// }
+///
+/// # 为什么不能把 `models` 发成数组
+///
+/// pi 前端把它当 `Record<string, string>` 用（`useAgentSession.ts` 的
+/// `ModelsResponse`）。若发数组，`Object.entries()` 会得到 `["0", {…}]`，
+/// `modelId` 变成 `"0"`、`name` 变成整个对象；随后 `ChatInput` 里
+/// `Intl.Collator.compare(a.name || a.modelId, …)` 拿到对象而不是字符串，
+/// 选模型时抛 TypeError，整个 React 树被卸载，页面变成 Next 的
+/// 「This page couldn't load」兜底页。这正是选模型就白屏的根因。
+///
+/// # 两种分隔符不能混
+///
+/// `models` 与 `thinkingLevels*` 的键是 `provider:id`（**冒号**），
+/// 而 `thinkingLevelPins` 的键是 `provider/id`（**斜杠**）—— pi 产品里就是
+/// 这么分开的，统一成一种会让前端查不到，下拉框整片空白。
 pub async fn models(State(state): State<AppState>, _trusted: Trusted) -> Response {
     let catalog = state.catalog();
-    let entries: Vec<Value> = catalog.entries.iter().map(|e| e.to_json()).collect();
+
+    // 可见范围：`settings.json` 的 `enabledModels` 白名单（`None` = 全部可见）。
+    // 不过滤的话，前端会显示所有 provider 的模型，而后端根本连不上其中一部分。
+    let patterns = state.settings().enabled_models();
+    let all: Vec<ModelRef> = catalog
+        .entries
+        .iter()
+        .map(|e| ModelRef {
+            provider: e.provider.clone(),
+            id: e.id.clone(),
+        })
+        .collect();
+    let visible = settings::visible_models(patterns.as_deref(), &all);
+
+    let mut models = serde_json::Map::new();
+    let mut model_list: Vec<Value> = Vec::new();
+    let mut thinking_levels = serde_json::Map::new();
+    let mut thinking_level_maps = serde_json::Map::new();
+
+    for entry in &catalog.entries {
+        if !visible
+            .iter()
+            .any(|m| m.provider == entry.provider && m.id == entry.id)
+        {
+            continue;
+        }
+        let key = entry.catalog_key();
+        models.insert(key.clone(), Value::String(entry.name.clone()));
+        model_list.push(entry.to_list_json());
+        if let Some(model) = catalog.model_for(&entry.provider, &entry.id) {
+            thinking_levels.insert(
+                key.clone(),
+                json!(crate::catalog::supported_thinking_levels(model)),
+            );
+            if let Some(map) = &model.thinking_level_map {
+                // 原样回传模型自己的映射表：前端用它把等级换成厂商值
+                // （如 `max -> "maximum"`）并标注「(xhigh)」这种差异。
+                let mut out = serde_json::Map::new();
+                for (level, mapped) in map {
+                    let name = match level {
+                        ThinkingLevel::Off => "off",
+                        ThinkingLevel::Minimal => "minimal",
+                        ThinkingLevel::Low => "low",
+                        ThinkingLevel::Medium => "medium",
+                        ThinkingLevel::High => "high",
+                        ThinkingLevel::Xhigh => "xhigh",
+                        ThinkingLevel::Max => "max",
+                    };
+                    out.insert(
+                        name.to_string(),
+                        mapped.clone().map(Value::String).unwrap_or(Value::Null),
+                    );
+                }
+                thinking_level_maps.insert(key, Value::Object(out));
+            }
+        }
+    }
+
+    // `enabledModels` 里写成 `provider/id:level` 的模式会把新会话的思考等级
+    // 直接钉死（见 pi 的 `resolveModelScope`）。只收非 auto 的等级。
+    let mut thinking_level_pins = serde_json::Map::new();
+    for raw in patterns.as_deref().unwrap_or_default() {
+        let Some(pattern) = ModelPattern::parse(raw) else {
+            continue;
+        };
+        let Some(level) = pattern.thinking.as_deref() else {
+            continue;
+        };
+        if level == "auto" {
+            continue;
+        }
+        for model in &visible {
+            if settings::pattern_matches(&pattern, model) {
+                thinking_level_pins.insert(
+                    format!("{}/{}", model.provider, model.id),
+                    Value::String(level.to_string()),
+                );
+            }
+        }
+    }
+
+    let default_model = catalog.default_entry().map(|m| {
+        json!({
+            "provider": m.provider,
+            "modelId": m.id,
+        })
+    });
+
     Json(json!({
-        "models": entries,
-        "default": catalog.default_model().map(|m| json!({
-            "provider": m.provider.as_str(),
-            "id": m.id,
-            "name": m.name,
-        })),
+        "models": Value::Object(models),
+        "modelList": model_list,
+        "defaultModel": default_model,
+        "thinkingLevels": Value::Object(thinking_levels),
+        "thinkingLevelMaps": Value::Object(thinking_level_maps),
+        "thinkingLevelPins": Value::Object(thinking_level_pins),
         "source": catalog.source.as_ref().map(|p| p.to_string_lossy().to_string()),
     }))
     .into_response()
@@ -103,29 +221,38 @@ pub async fn mobile_state(
     let (status, queue) = match state.live().get(&id) {
         Some(agent) => {
             let state_json = agent.state_json().await.unwrap_or(Value::Null);
-            let status = if agent.is_streaming() { "running" } else { "idle" };
+            let status = if agent.is_streaming() {
+                "running"
+            } else {
+                "idle"
+            };
             (status, state_json.get("queuedMessages").cloned())
         }
         None => ("idle", None),
     };
 
-    // 消息：复用 detail 的裁剪逻辑（取最新一页）
-    let (messages, earlier_count) = match state.sessions().session(&id) {
+    // 消息：走手机投影（pi 的 `buildMobileWindow`）。
+    //
+    // 这里**不能**直接下发原始 `AgentMessage`：toolResult 里的 base64 图片一张就
+    // 几百 KB，阶段 5 走查实测 120 条窗口能到 474KB，手机弱网直接打不开。投影后
+    // 图片变成「[N images]」占位，思考/工具入参也都截断，并且只送最新一窗。
+    let limit = params
+        .limit
+        .as_deref()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(mobile_view::DEFAULT_LIMIT);
+    let window = match state.sessions().session(&id) {
         Some(session) => {
-            let messages: Vec<Value> = session
-                .entries
-                .iter()
-                .filter(|e| e.get("type").and_then(Value::as_str) == Some("message"))
-                .filter_map(|e| e.get("message").cloned())
-                .collect();
-            let page = session_view::page_tail(&messages, params.limit.as_deref());
-            let earlier = page.total - page.len();
-            (messages[page.start..page.end].to_vec(), earlier)
+            let view = session_view::context_view(&session.entries, None);
+            mobile_view::build_window(&view.messages, &view.entry_ids, limit, true)
         }
-        None => (Vec::new(), 0),
+        None => mobile_view::MobileWindow {
+            messages: Vec::new(),
+            earlier_count: 0,
+        },
     };
 
-    Json(json!({
+    let mut body = json!({
         "sessionId": id,
         "name": chosen.get("name").cloned().unwrap_or(Value::Null),
         "cwd": chosen.get("cwd").cloned().unwrap_or(Value::Null),
@@ -133,10 +260,25 @@ pub async fn mobile_state(
         "updatedAt": chosen.get("modified").cloned().unwrap_or(Value::Null),
         "queue": queue.unwrap_or_else(|| json!({ "steering": 0, "followUp": 0 })),
         "pendingUiRequest": Value::Null,
-        "messages": messages,
-        "earlierCount": earlier_count,
-    }))
-    .into_response()
+        "messages": window.messages,
+        "earlierCount": window.earlier_count,
+    });
+    // pi 只在有值时才带这两个字段（前端靠「有没有」区分「没记录」与「已关闭」）。
+    if let Some(session) = state.sessions().session(&id) {
+        let view = session_view::context_view(&session.entries, None);
+        if !view.thinking_level.is_null() {
+            body["thinkingLevel"] = view.thinking_level;
+        }
+        if let Some(model) = view
+            .model
+            .get("modelId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            body["model"] = json!(model);
+        }
+    }
+    Json(body).into_response()
 }
 
 /// `GET /api/home`

@@ -95,7 +95,10 @@ fn normalize_entry(v: &Value, seq: u64) -> Result<Value, String> {
 
     match ty {
         "message" => {
-            let msg = obj.get("message").cloned().ok_or("message entry has no message")?;
+            let msg = obj
+                .get("message")
+                .cloned()
+                .ok_or("message entry has no message")?;
             let ts = out.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
             let agent = v3_message_to_agent(&msg, ts)?;
             out.insert("message".into(), agent);
@@ -211,10 +214,7 @@ fn v3_message_to_agent(m: &Value, ts: i64) -> Result<Value, String> {
                 Some(Value::Array(a)) => Value::Array(a.clone()),
                 _ => json!([]),
             };
-            let inner_ts = obj
-                .get("timestamp")
-                .and_then(Value::as_i64)
-                .unwrap_or(ts);
+            let inner_ts = obj.get("timestamp").and_then(Value::as_i64).unwrap_or(ts);
             let custom = json!({
                 "kind": "custom",
                 "role": other,
@@ -301,7 +301,9 @@ fn load_file(path: &Path, report: &mut Report) -> Result<()> {
                     let key = format!("{entry_type}: diff");
                     *report.roundtrip_diff.entry(key.clone()).or_default() += 1;
                     if !report.diff_samples.iter().any(|(k, _)| *k == entry_type) {
-                        report.diff_samples.push((entry_type.clone(), structural_diff(&a, &b, "")));
+                        report
+                            .diff_samples
+                            .push((entry_type.clone(), structural_diff(&a, &b, "")));
                     }
                 }
             }

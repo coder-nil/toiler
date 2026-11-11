@@ -71,6 +71,11 @@ pub fn start_with_state(
         tauri::async_runtime::block_on(boot::bind(HOST, 0))
             .map_err(|error| format!("绑定回环端口失败：{error:#}"))?;
 
+    // 配对地址要用真实监听端口（而不是命令行默认的 8787）。这一步必须在任何
+    // `state.clone()` 之前做 —— `with_binding` 靠 `Arc::get_mut`，一旦被克隆过
+    // 就只能拒绝（早先放在预热之后，真实启动直接 panic）。
+    let state = state.with_binding(HOST, addr.port());
+
     log_startup(&state, addr, options);
 
     // 预热会话列表：窗口一加载前端就会拉 `/api/sessions`，别让用户等第一次全量扫描。
@@ -113,7 +118,11 @@ fn log_startup(
     tracing::info!(
         "前端产物 {}（{}）",
         assets::FRONTEND_DIR,
-        if assets::is_placeholder() { "占位页" } else { "已嵌入" }
+        if assets::is_placeholder() {
+            "占位页"
+        } else {
+            "已嵌入"
+        }
     );
     if let Some(default) = state.catalog().default_entry() {
         tracing::info!("默认模型 {}/{}", default.provider, default.id);

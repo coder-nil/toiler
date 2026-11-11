@@ -86,7 +86,10 @@ mod tests {
     fn epoch_and_leap_boundaries() {
         assert_eq!(iso_to_ms("1970-01-01T00:00:00.000Z"), Some(0));
         assert_eq!(ms_to_iso(0), "1970-01-01T00:00:00.000Z");
-        assert_eq!(iso_to_ms("2026-03-01T00:00:00Z"), iso_to_ms("2026-03-01T00:00:00.000Z"));
+        assert_eq!(
+            iso_to_ms("2026-03-01T00:00:00Z"),
+            iso_to_ms("2026-03-01T00:00:00.000Z")
+        );
     }
 
     #[test]

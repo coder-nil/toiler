@@ -8,11 +8,13 @@ pub mod auth;
 pub mod files;
 pub mod git;
 pub mod misc;
+pub mod mobile;
 pub mod models_config;
 pub mod projects;
 pub mod search;
 pub mod sessions;
 pub mod sessions_extra;
+pub mod skills;
 
 use axum::routing::{get, post};
 use axum::Router;
@@ -56,10 +58,7 @@ pub fn router(state: AppState) -> Router {
             "/api/agent/{id}",
             get(crate::routes::agent::state_of).post(crate::routes::agent::command),
         )
-        .route(
-            "/api/agent/{id}/events",
-            get(crate::routes::agent::events),
-        )
+        .route("/api/agent/{id}/events", get(crate::routes::agent::events))
         .route(
             "/api/agent/{id}/bash-output",
             get(crate::routes::agent_extra::bash_output),
@@ -72,10 +71,35 @@ pub fn router(state: AppState) -> Router {
         )
         // ---- files ----
         // 路径为空时落到默认 cwd（前端文件面板首屏会请求根路径）
-        .route("/api/files", get(crate::routes::files::read_root))
-        .route("/api/files/", get(crate::routes::files::read_root))
-        .route("/api/files/{*path}", get(crate::routes::files::read))
+        .route(
+            "/api/files",
+            get(crate::routes::files::read_root).post(crate::routes::files::upload),
+        )
+        .route(
+            "/api/files/",
+            get(crate::routes::files::read_root).post(crate::routes::files::upload),
+        )
+        .route(
+            "/api/files/{*path}",
+            get(crate::routes::files::read)
+                .put(crate::routes::files::write)
+                .patch(crate::routes::files::rename)
+                .post(crate::routes::files::upload),
+        )
         // ---- models ----
+        .route(
+            "/api/skills",
+            get(crate::routes::skills::list).patch(crate::routes::skills::toggle_not_implemented),
+        )
+        // 技能市场：pi 有搜索/安装，workman 返回 501 + 中文说明（见 routes/skills.rs）
+        .route(
+            "/api/skills/search",
+            post(crate::routes::skills::market_not_implemented),
+        )
+        .route(
+            "/api/skills/install",
+            post(crate::routes::skills::market_not_implemented),
+        )
         .route("/api/models", get(crate::routes::misc::models))
         .route(
             "/api/models-config",
@@ -85,7 +109,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/models-config/enabled",
-            get(crate::routes::models_config::enabled).put(crate::routes::models_config::put_enabled),
+            get(crate::routes::models_config::enabled)
+                .put(crate::routes::models_config::put_enabled),
         )
         .route(
             "/api/models-config/discover",
@@ -146,8 +171,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/project-trust",
-            get(crate::routes::projects::trust_status)
-                .post(crate::routes::projects::trust_set),
+            get(crate::routes::projects::trust_status).post(crate::routes::projects::trust_set),
         )
         .route("/api/cwd/browse", get(crate::routes::projects::browse))
         .route(
@@ -155,15 +179,14 @@ pub fn router(state: AppState) -> Router {
             post(crate::routes::projects::validate).get(crate::routes::projects::validate),
         )
         // ---- misc ----
+        .route("/api/mobile/state", get(crate::routes::misc::mobile_state))
         .route(
-            "/api/mobile/state",
-            get(crate::routes::misc::mobile_state),
+            "/api/mobile/access",
+            get(crate::routes::mobile::access_get).put(crate::routes::mobile::access_put),
         )
+        .route("/api/mobile/pair", get(crate::routes::mobile::pair))
         .route("/api/home", get(crate::routes::misc::home))
-        .route(
-            "/api/default-cwd",
-            post(crate::routes::misc::default_cwd),
-        )
+        .route("/api/default-cwd", post(crate::routes::misc::default_cwd))
         .with_state(state)
         // 其余路径一律交给内嵌的前端产物：`/api/*` 会先命中上面的具体路由，
         // 所以这里只需处理静态文件、客户端路由与 404。

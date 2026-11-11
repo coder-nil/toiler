@@ -25,6 +25,14 @@ mod tunnel;
 use mobile::MobileAccess;
 use server::DesktopServer;
 
+/// Tauri 的 WebView 在 macOS/Linux 上把页面 origin 报成 `tauri://localhost`，
+/// Windows 上则是 `http://tauri.localhost`。服务侧的 origin 校验必须认这个值，
+/// 否则壳里的 `/api` 请求全被判成跨站（pi 用同一对常量）。
+#[cfg(windows)]
+const DESKTOP_API_ORIGIN: &str = "http://tauri.localhost";
+#[cfg(not(windows))]
+const DESKTOP_API_ORIGIN: &str = "tauri://localhost";
+
 /// 内嵌服务的句柄（退出时优雅关闭）。
 struct ServerState(Mutex<Option<DesktopServer>>);
 
@@ -192,6 +200,17 @@ pub fn run() {
             terminal_close,
         ])
         .setup(|app| {
+            // 把自己标记成「桌面壳」，并把 pid 交给服务层。两个变量都在 pi 里由
+            // spawn node 时的 env 注入；workman 同进程，直接写进进程环境即可：
+            //
+            // * `PI_WEB_DESKTOP_API_ORIGIN` —— `security` 的 origin 校验用它，
+            //   `/api/mobile/*` 靠它区分「桌面壳」与「命令行直启」；
+            // * `PI_WEB_SHELL_PID` —— `read_lan_port` 用它校验
+            //   `desktop-access.runtime.json` 里的 `ownerPid`，不设的话配对地址
+            //   永远停在 `starting`（阶段 5 手机回归实测）。
+            std::env::set_var("PI_WEB_DESKTOP_API_ORIGIN", DESKTOP_API_ORIGIN);
+            std::env::set_var("PI_WEB_SHELL_PID", std::process::id().to_string());
+
             let handle = app.handle().clone();
             let server = match server::start() {
                 Ok(server) => server,
@@ -238,11 +257,15 @@ fn show_fatal(app: &tauri::AppHandle, message: &str) {
     let Ok(escaped) = serde_json::to_string(message) else {
         return;
     };
-    let _ = WebviewWindowBuilder::new(app, "startup-error", WebviewUrl::App("startup-error.html".into()))
-        .title("workman 启动失败")
-        .inner_size(620.0, 380.0)
-        .initialization_script(format!("window.__WORKMAN_STARTUP_ERROR__ = {escaped};"))
-        .build();
+    let _ = WebviewWindowBuilder::new(
+        app,
+        "startup-error",
+        WebviewUrl::App("startup-error.html".into()),
+    )
+    .title("workman 启动失败")
+    .inner_size(620.0, 380.0)
+    .initialization_script(format!("window.__WORKMAN_STARTUP_ERROR__ = {escaped};"))
+    .build();
 }
 
 // ---------------------------------------------------------------------------
@@ -340,7 +363,7 @@ mod tests {
     fn agent_dir_is_absolute() {
         // mobile::start 用的是 workman-server 的 agent 目录解析，
         // 这里只确认它是个绝对路径（不会写到进程当前目录下）。
-        let dir = workman_server::paths::agent_dir();
+        let dir = workman_server::paths::configs_dir();
         assert!(dir.is_absolute(), "{} 应当是绝对路径", dir.display());
     }
 }

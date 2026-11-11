@@ -62,7 +62,11 @@ pub async fn command(
                 payload.insert("code".into(), json!("prompt_rejected"));
                 payload.insert("accepted".into(), json!(false));
             }
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(Value::Object(payload))).into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Value::Object(payload)),
+            )
+                .into_response()
         }
     }
 }
@@ -138,11 +142,7 @@ where
     S: Stream<Item = Result<Event, Infallible>> + Send + 'static,
 {
     let mut response = Sse::new(stream)
-        .keep_alive(
-            KeepAlive::new()
-                .interval(Duration::from_secs(30))
-                .text(""),
-        )
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(30)).text(""))
         .into_response();
     let headers = response.headers_mut();
     headers.insert(
@@ -183,7 +183,11 @@ pub async fn new_session(
     let command_type = payload.get("type").and_then(Value::as_str).unwrap_or("");
     let is_prompt = command_type == "prompt";
 
-    let Some(cwd) = payload.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()) else {
+    let Some(cwd) = payload
+        .get("cwd")
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty())
+    else {
         let mut body = serde_json::Map::new();
         body.insert("error".into(), json!("cwd is required"));
         if is_prompt {
@@ -194,7 +198,10 @@ pub async fn new_session(
     };
     if !std::path::Path::new(cwd).exists() {
         let mut body = serde_json::Map::new();
-        body.insert("error".into(), json!(format!("Directory does not exist: {cwd}")));
+        body.insert(
+            "error".into(),
+            json!(format!("Directory does not exist: {cwd}")),
+        );
         if is_prompt {
             body.insert("code".into(), json!("prompt_rejected"));
             body.insert("accepted".into(), json!(false));
@@ -211,7 +218,10 @@ pub async fn new_session(
         .sessions()
         .root()
         .join(workman_session::session_directory_name(&cwd));
-    let file = dir.join(workman_session::session_file_name(header.created_at, &header.id));
+    let file = dir.join(workman_session::session_file_name(
+        header.created_at,
+        &header.id,
+    ));
     match workman_session::V3SessionStorage::create_at(&file, &header, repo.clock(), repo.ids()) {
         Ok(storage) => drop(storage),
         Err(e) => {
@@ -329,7 +339,8 @@ async fn ensure_agent(state: &AppState, id: &str) -> Result<Arc<LiveAgent>, Agen
         }
     }
 
-    let started = LiveAgent::start(id, &path, &cwd, state.catalog()).await;
+    let preferred = state.default_model_ref();
+    let started = LiveAgent::start(id, &path, &cwd, state.catalog(), preferred).await;
     state.live().clear_starting(id);
     match started {
         Ok(agent) => {

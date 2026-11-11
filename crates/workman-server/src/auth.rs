@@ -57,7 +57,7 @@ impl AuthStatus {
 
 impl Default for AuthStore {
     fn default() -> Self {
-        Self::new(paths::agent_file("auth.json"))
+        Self::new(paths::config_file("auth.json"))
     }
 }
 
@@ -137,7 +137,9 @@ impl AuthStore {
         let body = serde_json::to_string_pretty(&Value::Object(map.clone()))
             .unwrap_or_else(|_| "{}".into());
         // 先写临时文件再 rename，避免半截文件；临时文件本身就用 0600 建出来。
-        let tmp = self.path.with_extension(format!("tmp-{}", std::process::id()));
+        let tmp = self
+            .path
+            .with_extension(format!("tmp-{}", std::process::id()));
         {
             let mut file = std::fs::OpenOptions::new()
                 .write(true)
@@ -264,7 +266,11 @@ pub fn resolve_key_config(config: &Value) -> ResolvedKey {
 
 /// `getProviderAuthStatus`：auth.json 优先（`stored`），其次 models.json 的
 /// `apiKey` 配置。
-pub fn provider_status(auth: &AuthStore, provider_id: &str, provider_config: Option<&Value>) -> AuthStatus {
+pub fn provider_status(
+    auth: &AuthStore,
+    provider_id: &str,
+    provider_config: Option<&Value>,
+) -> AuthStatus {
     if let Some(kind) = auth.credential_type(provider_id) {
         if auth.api_key(provider_id).is_some() {
             return AuthStatus {
@@ -347,7 +353,8 @@ fn env_names_of(raw: &str) -> Option<String> {
             _ => {
                 let start = i + 1;
                 let mut end = start;
-                while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
+                while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_')
+                {
                     end += 1;
                 }
                 if end > start {
@@ -371,7 +378,10 @@ mod tests {
     #[test]
     fn masks_like_pi() {
         assert_eq!(mask_key("short").unwrap(), "•••••");
-        assert_eq!(mask_key("sk-1234567890abcdef").unwrap(), "•••••••••••••••cdef");
+        assert_eq!(
+            mask_key("sk-1234567890abcdef").unwrap(),
+            "•••••••••••••••cdef"
+        );
         assert!(mask_key("   ").is_none());
     }
 
@@ -382,7 +392,10 @@ mod tests {
         let store = AuthStore::new(dir.join("auth.json"));
 
         store
-            .set("demo", serde_json::json!({"type": "api_key", "key": "sk-1"}))
+            .set(
+                "demo",
+                serde_json::json!({"type": "api_key", "key": "sk-1"}),
+            )
             .unwrap();
         assert_eq!(store.api_key("demo").as_deref(), Some("sk-1"));
         assert_eq!(store.credential_type("demo").as_deref(), Some("api_key"));
@@ -391,8 +404,14 @@ mod tests {
             store.remove("demo", "oauth").unwrap(),
             RemoveResult::TypeMismatch("api_key".into())
         );
-        assert_eq!(store.remove("demo", "api_key").unwrap(), RemoveResult::Removed);
-        assert_eq!(store.remove("demo", "api_key").unwrap(), RemoveResult::NotFound);
+        assert_eq!(
+            store.remove("demo", "api_key").unwrap(),
+            RemoveResult::Removed
+        );
+        assert_eq!(
+            store.remove("demo", "api_key").unwrap(),
+            RemoveResult::NotFound
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -406,7 +425,11 @@ mod tests {
         store
             .set("demo", serde_json::json!({"type": "api_key", "key": "x"}))
             .unwrap();
-        let mode = std::fs::metadata(store.path()).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(store.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -446,7 +469,10 @@ mod tests {
         assert_eq!(provider_status(&store, "p", None), AuthStatus::no());
 
         store
-            .set("p", serde_json::json!({"type": "api_key", "key": "sk-stored"}))
+            .set(
+                "p",
+                serde_json::json!({"type": "api_key", "key": "sk-stored"}),
+            )
             .unwrap();
         assert_eq!(
             provider_status(&store, "p", Some(&models_provider)).source,

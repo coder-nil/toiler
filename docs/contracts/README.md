@@ -88,8 +88,12 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 
 ## POST /api/agent/[id]
 
-请求体是 pi 的 agent command：`{"type":"prompt", …}`、`{"type":"get_state"}`、
-`{"type":"abort"}` …（形状见 `rpi-agent` 的 command 层）。
+请求体是 pi 的 agent command：`{"type":"prompt", …}`、`{"type":"set_model","provider":…,"modelId":…}`、
+`{"type":"get_state"}`、`{"type":"abort"}` …（形状见 `rpi-agent` 的 command 层）。
+
+`set_model` 与 pi 一致：按 `provider/modelId` 查模型目录，追加一条 `model_change`
+到 v3 会话文件（前端切完的 `loadSession` 靠它回显模型），返回 `{id, provider}`；
+查不到时 `500 {"error":"Model not found: <provider>/<modelId>"}`。
 
 响应：`200 {"success":true,"data":<command 返回值>}`
 - 会话不存在：`404 {"error":"Session not found", "code":"prompt_rejected", "accepted":false}`（仅 prompt）
@@ -120,10 +124,122 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 
 会话不存在：`404 Session not found`；请求已中断：`204`。
 
+## GET /api/skills
+
+来源：pi 的 `app/api/skills/route.ts` + `lib/skills-service.ts`（pi-desktop 源码）。
+**此前这份契约漏了这一组**：它由编译产物提取，而技能列表是设置页里按需拉取的，
+抽取时没被触发。在前端 `page-*.js` 里搜 `api/skills` 能看到三处调用。
+
+```jsonc
+// GET /api/skills?cwd=<绝对路径>
+//   缺 cwd   → 400 { "error": "cwd required" }
+//   cwd 越权 → 403 { "error": "Access denied" }
+{
+  "skills": [
+    {
+      "name": "demo-skill",
+      "description": "…",
+      "filePath": "/Users/me/.agents/skills/demo-skill/SKILL.md",
+      "baseDir": "/Users/me/.agents/skills/demo-skill",
+      "disableModelInvocation": false,
+      "sourceInfo": { "source": "user", "scope": "user" }   // 项目技能为 project/project
+    }
+  ],
+  "diagnostics": [
+    { "type": "warning", "message": "…", "path": "…", "source": "user" }
+  ],
+  "projectResourcesLoaded": true,   // false → 前端禁用「Project」作用域按钮
+  "cacheHit": false                 // 仅 ?cache=1 且命中缓存时 pi 才置 true
+}
+```
+
+- 顺序由前端自己排（`disableModelInvocation` 升序 → 名字），后端不必保证。
+- 同名技能：**项目与用户之间合并**（同名也各留一条，项目在前）；**用户目录之间按名字去重**
+  （`~/.agents/skills` 与 `~/.pi/agent/skills` 常有同一份副本）。pi 是全局按 name 去重，
+  项目版本会把用户版本顶掉 —— 这里刻意不同。
+- `sourceInfo` 决定前端的组：`user` → Global，`project` → Project；两者都没有时落到 Other。
+- `SKILL.md` **缺 `description`** 会被直接丢弃且**不产生诊断**（pi 与 workman 一致），
+  “技能写好了却不显示”先查 frontmatter（如新建的 `k8s-deploy` 曾因此消失）。
+
+### 技能目录（决定「不同项目不同技能」）
+
+| 来源 | 扫描范围 | `scope` |
+|---|---|---|
+| 项目 | **`$project/.agents/skills` 一层**。`$project` = 从 `cwd` 向上最近的 git 仓库根；不在 git 里就是 `cwd` 本身（跳过 `~/.agents/skills`） | `project` |
+| 用户 | `~/.agents/skills`（跨工具） | `user` |
+| 用户 | `~/.pi/agent/skills`（pi 的 agent 目录，迁移用户默认就在这） | `user` |
+| 用户 | `~/.agents/workman/skills`（workman 自己的 agent 目录） | `user` |
+
+两条前提，对应 pi 的 `collectAncestorAgentsSkillDirs` + `projectTrusted`：
+
+1. **只认项目根**：约定位置就是 `$project/.agents/skills`。子目录里开会话
+   （`$project/frontend`）仍读项目根那一份；子目录自己的 `.agents/skills` 不算。
+   与 pi 的差异：pi 在找不到 git 根时会一路扫到文件系统根（`~/Development/.agents/skills`
+   也会被当成项目技能），workman 只认项目根，行为更好预测。
+2. **项目必须已信任**：未信任时项目技能**完全不加载**，同时 `projectResourcesLoaded=false`
+   （前端据此禁用「Project」作用域按钮）。否则一个刚 clone 的仓库可以靠 `.agents/skills` 里的
+   提示词影响 agent。
+
+目录不存在不产生诊断（pi 会为它报 `list_failed`，workman 直接跳过——「没装过项目技能」是常态）。
+
+pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文说明…"}`：
+
+| 方法 | pi 行为 |
+|---|---|
+| `POST /api/skills/search` | 技能市场搜索：`{query}` → `{results}` |
+| `POST /api/skills/install` | 安装技能包：`{package, scope, cwd}` |
+| `PATCH /api/skills` | 改写 `SKILL.md` 的 `disable-model-invocation`：`{filePath, disableModelInvocation}` → `{success:true}` |
+
 ## GET /api/models
 
-（见 `tools/pi-contract/raw/models.js`；阶段 2 只取前端首屏要用的字段子集，
-在实现处标注。）
+（见 `tools/pi-contract/raw/models.js`；字段名与 pi 的 `Mx()` 逐字对齐。）
+
+```jsonc
+{
+  "models": { "<provider>:<id>": "显示名" },        // 字典，不是数组
+  "modelList": [{ "provider": "p", "id": "m", "name": "M" }],
+  "defaultModel": { "provider": "p", "modelId": "m" } | null,
+  "thinkingLevels": { "<provider>:<id>": ["off", "low", "high"] },
+  "thinkingLevelMaps": { "<provider>:<id>": { "max": "max", "minimal": null } },
+  "thinkingLevelPins": { "<provider>/<id>": "level" },
+  "source": "/home/u/.pi/agent/models.json" | null
+}
+```
+
+### 两种分隔符不能统一
+
+| 字段 | 键格式 | 谁在用 |
+|---|---|---|
+| `models` / `thinkingLevels` / `thinkingLevelMaps` | `provider:id`（**冒号**） | 模型下拉框、推理强度下拉框 |
+| `thinkingLevelPins` | `provider/id`（**斜杠**） | 新会话的默认思考等级 |
+
+### `thinkingLevels` 的取值规则
+
+复刻 pi 的 `getSupportedThinkingLevels`（`pi-ai/dist/models.js:693`）：
+
+1. `reasoning == false` → 只有 `["off"]`。
+2. 否则从 `["off","minimal","low","medium","high"]` 起；`thinkingLevelMap`
+   里值为 `null` 的等级被剔除。
+3. `xhigh` / `max` 只有 `thinkingLevelMap` 里**存在且非 null** 时才追加。
+
+> 不能用 rpi 的 `Model::supported_thinking_levels()` 代替：它对非推理模型仍返回
+> `off…high`，前端会在不支持推理的模型上显示出推理强度菜单。
+
+### 可见范围
+
+按 `settings.json` 的 `enabledModels` 白名单过滤（§`settings::visible_models`）。
+`enabledModels` 里写成 `provider/id:level` 的条目会额外进 `thinkingLevelPins`。
+
+### 历史故障：`models` 曾经是数组
+
+阶段 2 实现返回的是 `{models: [{…}], default: {…}, source}`，缺少
+`modelList` / `defaultModel` / `thinkingLevels*`。前端把 `models` 当
+`Record<string,string>` 用，拿到数组后 `modelId` 退化成数组下标 `"0"`、
+`name` 变成整个对象，`Intl.Collator.compare()` 收到对象抛 TypeError，React
+树被卸载 → 点「选择模型」时整页变成 Next 的 *This page couldn't load*。
+
+回归用例：`tests/regression.rs::models_dict_and_list_share_the_same_keys`、
+`tests/regression.rs::thinking_levels_match_pi_semantics`。
 
 ## GET /api/mobile/state
 
@@ -158,14 +274,24 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 | `DELETE /api/sessions/{id}` | ✅ | 关活 agent + 删文件 |
 | `GET /api/sessions/{id}/state` | ✅ | 与 `GET /api/agent/{id}` 同实现 |
 | `GET /api/sessions/search` | ✅ | 元数据 + 文本块 + compaction.summary，58 字符 snippet |
-| `POST /api/agent/{id}` | ✅ | `prompt`/`steer`/`follow_up`/`abort`/`get_state` |
+| `POST /api/agent/{id}` | ✅ | `prompt`/`steer`/`follow_up`/`abort`/`get_state`/`set_model` |
 | `GET /api/agent/{id}` | ✅ | `{running}` / `{running, state}` |
 | `GET /api/agent/{id}/events` | ✅ | SSE，裁剪规则与 pi 逐条对齐 |
 | `POST /api/agent/new` | ✅ | 建 v3 会话 + 登记项目 + 执行 body 里的命令；`{success,sessionId,data,model,thinkingLevel}` |
 | `GET /api/agent/running` | ✅ | `{runningSessionIds, pendingUiSessionIds}`（pi 的 `56429.am()`） |
-| `GET /api/files/{*path}` | ⚠️ 部分 | 读文件 / 列目录 / `?type=watch` SSE 已通；`?type=diff`、git 忽略规则、图片缩略未做 |
-| `GET /api/models` | ⚠️ 部分 | `{models, default, source}`；pi 的完整 catalog 元数据（价格/能力标记）未全量复刻 |
-| `GET /api/mobile/state` | ⚠️ 部分 | 主体字段全对齐；手机端消息二次裁剪（`detailWindow`）未复刻 |
+| `GET /api/files/{*path}` | ✅ | 六种 `type` 全实现（`list`/`read`/`download`/`meta`/`preview`/`watch`），`Range` 206/416，SSE 命名事件 `connected`/`change` |
+| `PUT /api/files/{*path}` | ✅ | `{content, allowEmpty}`；空覆盖 409 `empty_overwrite_blocked`；256KB 上限 |
+| `PATCH /api/files/{*path}` | ✅ | 重命名；纯文件名校验；撞名 409 `already_exists` |
+| `POST /api/files/{*path}` | ✅ | `?type=upload-check` / `?type=upload&conflict=error\|overwrite\|skip`；25MB 单文件 / 100MB 总量；部分成功 207 |
+| `GET /api/models` | ✅ | `{models, modelList, defaultModel, thinkingLevels, thinkingLevelMaps, thinkingLevelPins, source}` 全对齐；`models` 是 `provider:id` 字典 |
+| `GET /api/skills` | ⚠️ | 项目技能：`$project/.agents/skills`（项目根 = 最近 git 根，需已信任）；用户技能：`~/.agents/skills` + `~/.pi/agent/skills` + `~/.agents/workman/skills`，三者按名字去重；两组合并返回（同名不互相顶掉）。pi 的 `skillPaths`/package 技能没有（无 package 系统），`usageCount` 与缓存也不提供（`cacheHit` 恒 false） |
+| `POST /api/skills/search` | ❌ | 501：技能市场（PLAN 已砍） |
+| `POST /api/skills/install` | ❌ | 501：技能市场（PLAN 已砍） |
+| `PATCH /api/skills` | ❌ | 501：会改写用户目录的 `SKILL.md`，写侧暂不开放 |
+| `GET /api/mobile/state` | ✅ | 手机投影（`mobile_view`）：图片转 `[N images]` 占位、思考/工具入参截断、默认 30 条窗口 + 40 条内保留细节；实测 474KB → 54KB |
+| `GET /api/mobile/access` | ✅ | 读 `desktop-access.json` + 代理运行态 + 隧道运行态；`publicHostnameDisplay` 转 Unicode |
+| `PUT /api/mobile/access` | ✅ | 密码 ≥8 位、named 模式校域名、公网入口要求先有密码；0600 原子写、字段级合并 |
+| `GET /api/mobile/pair` | ✅ | 五种 `reason`；`lanPort` 带 `ownerPid` 校验；`publicUrl` 用 Unicode 域名；**不含凭据** |
 | `GET /api/home` | ✅ | `{home}` |
 | `POST /api/cwd/validate` | ✅ | 支持 `~`/相对路径；成功后登记允许根 + 写项目库 → `{success,cwd,projectRoot,projectKey}` |
 | `GET /api/cwd/browse` | ✅ | `{path,parentPath,directories[]}`（realpath 后列目录，符号链接指向目录也认） |
@@ -186,7 +312,7 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 | `GET /api/models-config` | ✅ | 原样返回 `models.json` |
 | `PUT /api/models-config` | ✅ | 保留 `$schema`、清洗无 id 的模型、`cost` 缺项补 0 |
 | `DELETE /api/models-config` | ✅ | `{kind:"provider"\|"model", provider, modelId?}`，顺手清 `enabledModels` |
-| `GET /api/models-config/enabled?provider=` | ✅ | `{provider,models[],enabledModels,unscoped,warnings,refreshing}` |
+| `GET /api/models-config/enabled?provider=` | ✅ | `{provider,models[],enabledModels,unscoped,warnings:string[],refreshing}`；`warnings` 是**字符串数组**（pi 取 `resolveModelScopeWithDiagnostics` 的 `diagnostics.map(d => d.message)`），前端逐条当文本渲染，给对象会整页崩 |
 | `PUT /api/models-config/enabled` | ✅ | `{provider,modelIds}` → 折叠成 `provider/*` 或逐条写 `settings.json` |
 | `POST /api/models-config/discover` | ✅ | 打上游 `/models` 并按 pi 的字段兼容表解析 → `{models,endpoint}` |
 | `POST /api/models-config/test` | ✅ | 真跑一次补全 → `{ok,latencyMs,status,responseText}` |
@@ -197,15 +323,35 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 | `GET /api/git/diff?cwd=&path=` | ✅ | `{supported,status?,patch?}`；未跟踪文件会合成补丁 |
 | `POST /api/git/commit-message` | ✅ | NDJSON：`update` → `done`（失败 `error`）；用 `settings.json` 的默认模型 |
 | `GET/POST/DELETE /api/worktrees` | ✅ | 列出 / 新建（`action:"checkout"` 走切分支）/ 删除（脏工作区 409 + `dirty:true`） |
-| `GET/PUT/PATCH/DELETE /api/projects` | ✅ | 与 pi 共用 `<agentDir>/pi.sqlite`；星标、选中项、移除都对齐 |
+| `GET/PUT/PATCH/DELETE /api/projects` | ✅ | 用 workman 自己的 `<appDir>/work.sqlite`（`~/.agents/workman/work.sqlite`）；接口形状与 pi 一致，但**不再共库** |
 | `GET/POST /api/project-trust` | ✅ | `{requiresTrust,trusted}`；`trust.json` 与 pi 同格式 |
 
-### 与 pi 的已知差异（都要在阶段 5 回归时确认）
+### `/api/files` 的实现细节（阶段 5）
+
+- **路径形状**：三种都认 —— `/api/files//Users/me/a.ts`、`/api/files/Users/me/a.ts`、
+  `/api/files`（空 → 默认 cwd）。解析**只有一种解释**：去前导斜杠后从根拼回去，
+  不再猜「相对 cwd」，否则不存在的路径会被解析到别处、把 404 变成 403。
+- **授权**：两层 —— 词法包含（`within_roots`）+ realpath 包含（`within_roots_real`）。
+  另外接受第二条通道：`?sessionId=` 对应的会话正文里提到过这个绝对路径（pi 的
+  `isFilePathReferencedBySession`，边界判定含 `a.rs:12:5` 这类行列号）。
+- **DOCX 预览**：自己解 OOXML（zip 中央目录 + `word/document.xml`），支持标题 / 粗体 /
+  斜体 / 下划线 / 列表 / 表格 / 实体；**不做**图片内联（输出 `[图片]` 占位）、样式表、
+  页眉页脚、脚注、公式、修订痕迹 —— 目标是「打开就能读」，不是像素级还原。
+- **`type=watch`** 的变更签名是 `mtime + ctime + inode + size`（与 pi 同组字段），
+  只看 mtime 会被一次读取（刷新 atime）触发自激刷新。
+
+### 与 pi 的已知差异
+
+> 标 ⚠️ 的行是**有意保留的差异**（多为 PLAN「明确不做的」里的取舍），不是欠账；
+> 阶段 5 回归时逐条确认过一遍，能补的都补了（`files` 六种 type、`deferThinking`、
+> 手机投影等），补不了的写在这里并说明原因。
 
 1. ~~**`projectRoot` 不做 git 探测**~~ —— 阶段 3 已修：`projectRoot` 走
    `git rev-parse`，worktree 时取主仓库根并带 `worktreeBranch`（60s 缓存）。
 2. **`models` 元数据不全**：只给前端首屏需要的字段，没有价格/能力目录。
-3. **`deferThinking` / `deferMedia`**：pi 用它们省掉大字段；这里原样返回（形状一致，体积更大）。
+3. **`deferThinking`** ✅ 阶段 5 已实现：思考正文清空 + 标 `deferred:true`（前端据此显示
+   「展开思考」，点开走 `/api/sessions/{id}/entries/{entryId}/thinking`）。
+   **`deferMedia`** 仍未做：pi 会把 toolResult 里的 base64 图片换成一段占位文字，这里原样返回。
 4. **tree 的 `compressedEntryIds`** 只在深度超过 200 时出现（与 pi 的代码路径一致，但 pi 的 `visible` 集合还有别的分支，未 100% 验证）。
 5. **自定义 role 的消息**：写 v3 时降级为 `role:"custom"` + `customType`（pi 认的集合有限）。
 6. **auth provider 列表只来自 `models.json`**：pi 的列表来自 models.dev 注册表（几百个），
@@ -229,20 +375,55 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 13. **`/api/models-config/catalog`** 恒为空表（models.dev 目录已砍，见 PLAN「明确不做的」）。
 14. **`/api/agent/running/events` 的 `pendingUiSessionIds`** 恒为空：workman 没有
     「等待用户输入的 UI 请求」这条链路。
+15. **`/api/mobile/access` 的 `publicHostnameDetected`** 恒为 `null`：pi 用 `cert.pem`
+    里的 Cloudflare API token 去查 DNS 反推域名，workman 刻意不做（不把用户的 token
+    发到公网）。设置页里手填一次域名即可；`publicHostnameDisplay` 仍会正确转成 Unicode。
+16. **`/api/mobile/pair` 的 `publicUrl` 来源**：pi 会抓 quick 模式的 `trycloudflare`
+    日志；workman 的隧道管理器把地址写进 `desktop-access.tunnel.json`，这里直接读。
+17. **`/api/sessions/{id}` 的 context 会归一化 `toolCall` 块**：v3 文件里是
+    `{id,name,arguments}`，接口输出 `{toolCallId,toolName,input}` —— **必须**这么做，
+    否则前端 `isFileWritingToolName(undefined)` 直接 TypeError，打开任何带工具调用的
+    历史会话都整页白屏（阶段 5 走查实测）。
+18. **`role: "system"` 的转录消息不进 context**（与 pi 的 `entryToUiMessage` 一致）：
+    pi ≥0.86 把 prompt / 工具清单写成 system 消息，它们是 provider 输入而不是对话。
 
-### agent 目录与共享文件
+### 目录与文件
 
-| 文件 | 用途 | 与 pi 的关系 |
-|---|---|---|
-| `models.json` | provider / 模型定义 | 共用（`$WORKMAN_AGENT_DIR` 可改） |
-| `auth.json` | API Key / OAuth 凭据（0600） | 共用 |
-| `settings.json` | `enabledModels`、`defaultProvider/Model` | 共用（只读写这几个键） |
-| `trust.json` | 项目信任决定 | 共用 |
-| `pi.sqlite` | 项目列表 + 选中项（`added_projects` / `app_preferences`） | 共用 |
-| `sessions/` | v3 会话文件 | 默认 `~/.pi/agent/sessions` |
+两层，互不混：
 
-解析顺序（`crates/workman-server/src/paths.rs`）：`$WORKMAN_AGENT_DIR` >
-`~/.workman/agent`（有配置文件时） > `~/.pi/agent`（有配置文件时） > `~/.workman/agent`。
+```text
+~/.agents/                       ← 通用根（多个 agent 工具都认）
+├── skills/                      各工具共用
+├── mcp/
+├── commands/
+├── tools/
+└── workman/                    ← workman 专属
+    ├── configs/                 auth.json / models.json / settings.json /
+    │                            trust.json / desktop-access*.json
+    ├── sessions/                v3 会话（`--<cwd>--/<ISO>_<id>.jsonl`）
+    ├── plugins/                 （预留）
+    └── work.sqlite              项目列表 + 选中项
+```
+
+| 环境变量 | 作用 |
+|---|---|
+| `AGENTS_HOME` | 改通用根（默认 `~/.agents`） |
+| `WORKMAN_HOME` | 改 workman 专属目录（默认 `<agentsHome>/workman`） |
+| `WORKMAN_AGENT_DIR` | 旧名兼容，等价于 `WORKMAN_HOME` |
+| `WORKMAN_SESSIONS_ROOT` / `WORKMAN_MODELS` | 单独覆盖会话根 / 模型目录 |
+| `PI_CODING_AGENT_DIR` | 只影响**播种源**（`legacy_pi_agent_dir`） |
+
+**为什么不继续用 `~/.pi/agent`**：那是 pi 的目录，pi 会按自己的节奏迁移 schema、
+清理缓存、重写文件。workman 的配置放进去会跟着被改，而且两边谁改了哪个键说不清。
+
+**首次启动的种子数据**：`configs/` 为空时，从 `~/.pi/agent` **复制**
+`auth.json` / `models.json` / `settings.json` / `trust.json` / `desktop-access*.json`
+（0600 落盘）与会话文件；**旧文件保留不删**（用户可能还在用 pi）。
+一旦播过就不再动 —— 否则用户后来删掉的凭据会「复活」。
+会话单独判定：配置播过之后新增的会话仍会补搬，已存在的不覆盖。
+
+**项目库**：`work.sqlite` 首次创建时，从旧的 `<piAgentDir>/pi.sqlite` **只读**
+导入 `added_projects` + `last_selected_project`；库已存在就不再导入。
 
 ### rpi 侧发现的已知问题（不属本仓库职责）
 

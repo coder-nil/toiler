@@ -94,7 +94,9 @@ fn run_git_inner(
     for (key, value) in extra_env {
         command.env(key, value);
     }
-    let mut child = command.spawn().map_err(|e| err(format!("git 启动失败: {e}")))?;
+    let mut child = command
+        .spawn()
+        .map_err(|e| err(format!("git 启动失败: {e}")))?;
 
     // 两个线程把 stdout/stderr 抽干，避免大输出塞满管道导致死锁。
     let mut stdout = child.stdout.take().expect("piped stdout");
@@ -137,7 +139,11 @@ fn run_git_inner(
             message.to_string()
         }));
     }
-    Ok(if trim { stdout.trim().to_string() } else { stdout })
+    Ok(if trim {
+        stdout.trim().to_string()
+    } else {
+        stdout
+    })
 }
 
 /// `git rev-parse --show-toplevel`；不是仓库就 `None`。
@@ -370,7 +376,14 @@ pub fn untracked_paths(root: &Path) -> Vec<String> {
 
 /// 从仓库根跑 `git diff` 拿某个文件的补丁（`33012.x`）。
 fn diff_patch(root: &Path, path: &str, original: Option<&str>) -> Option<String> {
-    let mut args = vec!["diff", "--no-color", "--no-ext-diff", "--unified=3", "HEAD", "--"];
+    let mut args = vec![
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--unified=3",
+        "HEAD",
+        "--",
+    ];
     if let Some(original) = original {
         if !original.is_empty() && original != path {
             args.push(original);
@@ -535,7 +548,12 @@ pub fn full_status(cwd: &Path) -> Value {
         .filter(|s| !s.is_empty());
     let upstream = run_git(
         &root,
-        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
         STATUS_TIMEOUT,
     )
     .ok()
@@ -657,10 +675,7 @@ pub fn worktrees(root: &Path) -> Vec<Worktree> {
             current = Some((rest.trim().to_string(), None, false));
         } else if let Some(rest) = line.strip_prefix("branch ") {
             if let Some((path, _, prunable)) = current.take() {
-                let branch = rest
-                    .trim()
-                    .trim_start_matches("refs/heads/")
-                    .to_string();
+                let branch = rest.trim().trim_start_matches("refs/heads/").to_string();
                 current = Some((path, Some(branch), prunable));
             }
         } else if line.starts_with("prunable") {
@@ -741,8 +756,8 @@ pub fn repo_info(cwd: &str) -> RepoInfo {
     let (common_dir, git_dir, toplevel, branch) = (lines[0], lines[1], lines[2], lines[3]);
     let toplevel = PathBuf::from(toplevel);
     let is_top_level = real_or_self(&toplevel) == real_or_self(&cwd_path);
-    let is_worktree = real_or_self(Path::new(git_dir)) != real_or_self(Path::new(common_dir))
-        && is_top_level;
+    let is_worktree =
+        real_or_self(Path::new(git_dir)) != real_or_self(Path::new(common_dir)) && is_top_level;
     let root_path = if is_worktree {
         Path::new(common_dir)
             .parent()
@@ -776,7 +791,8 @@ fn sanitize_branch(branch: &str) -> Result<String, GitError> {
     let cleaned: String = trimmed
         .chars()
         .map(|c| {
-            if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_whitespace()
+            if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+                || c.is_whitespace()
             {
                 '-'
             } else {
@@ -796,7 +812,10 @@ pub fn create_worktree(cwd: &Path, branch: &str) -> Result<(String, String), Git
     let name = sanitize_branch(branch)?.to_string();
     let trimmed = branch.trim().to_string();
     let root = repository_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    let container = PathBuf::from(format!("{}-worktrees", real_or_self(&root).to_string_lossy()));
+    let container = PathBuf::from(format!(
+        "{}-worktrees",
+        real_or_self(&root).to_string_lossy()
+    ));
     let target = container.join(&name);
     if target.exists() {
         return Err(err(format!(
@@ -924,8 +943,12 @@ fn validate_branch(root: &Path, raw: &str) -> Result<String, GitError> {
     if trimmed.is_empty() {
         return Err(err("Branch is required"));
     }
-    run_git(root, &["check-ref-format", "--branch", trimmed], STATUS_TIMEOUT)
-        .map_err(|_| err(format!("Invalid branch name: {trimmed}")))?;
+    run_git(
+        root,
+        &["check-ref-format", "--branch", trimmed],
+        STATUS_TIMEOUT,
+    )
+    .map_err(|_| err(format!("Invalid branch name: {trimmed}")))?;
     Ok(trimmed.to_string())
 }
 
@@ -1033,7 +1056,9 @@ fn repo_relative(root: &Path, raw: &str) -> Result<String, GitError> {
 }
 
 /// 凭据：`{kind, username?, secret}`。
-fn credential_from_body(body: &Value) -> Result<Option<(String, Option<String>, String)>, GitError> {
+fn credential_from_body(
+    body: &Value,
+) -> Result<Option<(String, Option<String>, String)>, GitError> {
     let Some(value) = body.get("credential") else {
         return Ok(None);
     };
@@ -1104,7 +1129,10 @@ impl Askpass {
             ("GIT_ASKPASS", script.clone()),
             ("SSH_ASKPASS", script),
             ("SSH_ASKPASS_REQUIRE", "force".to_string()),
-            ("DISPLAY", std::env::var("DISPLAY").unwrap_or_else(|_| "workman".into())),
+            (
+                "DISPLAY",
+                std::env::var("DISPLAY").unwrap_or_else(|_| "workman".into()),
+            ),
             (
                 "WORKMAN_GIT_SECRET_FILE",
                 self.dir.join("secret").to_string_lossy().to_string(),
@@ -1186,12 +1214,7 @@ pub fn action(cwd: &Path, body: &Value) -> Result<Value, GitError> {
                     let tracked = run_git(&root, &tracked_args, ACTION_TIMEOUT).unwrap_or_default();
                     let tracked: Vec<&str> = tracked.lines().filter(|l| !l.is_empty()).collect();
                     if !tracked.is_empty() {
-                        let mut restore = vec![
-                            "restore",
-                            "--worktree",
-                            "--source=HEAD",
-                            "--",
-                        ];
+                        let mut restore = vec!["restore", "--worktree", "--source=HEAD", "--"];
                         restore.extend(tracked);
                         run_git(&root, &restore, ACTION_TIMEOUT)?;
                     }
@@ -1202,7 +1225,12 @@ pub fn action(cwd: &Path, body: &Value) -> Result<Value, GitError> {
             }
         }
         "discard_all" => {
-            let has_head = run_git(&root, &["rev-parse", "--verify", "--quiet", "HEAD"], STATUS_TIMEOUT).is_ok();
+            let has_head = run_git(
+                &root,
+                &["rev-parse", "--verify", "--quiet", "HEAD"],
+                STATUS_TIMEOUT,
+            )
+            .is_ok();
             if has_head {
                 run_git(&root, &["reset", "--quiet"], ACTION_TIMEOUT)?;
                 run_git(&root, &["checkout", "--", "."], ACTION_TIMEOUT)?;
@@ -1240,7 +1268,11 @@ pub fn action(cwd: &Path, body: &Value) -> Result<Value, GitError> {
         }
         "set_remote_url" => {
             let url = require_str(body, "remoteUrl")?;
-            run_git(&root, &["remote", "set-url", "origin", "--", url], ACTION_TIMEOUT)?;
+            run_git(
+                &root,
+                &["remote", "set-url", "origin", "--", url],
+                ACTION_TIMEOUT,
+            )?;
         }
         "merge" => {
             let branch = require_str(body, "branch")?;
@@ -1260,11 +1292,14 @@ pub fn action(cwd: &Path, body: &Value) -> Result<Value, GitError> {
                     )
                     .is_ok();
                     if exists_remote {
-                        run_git(&root, &["branch", "--", &branch, &reference], ACTION_TIMEOUT)?;
+                        run_git(
+                            &root,
+                            &["branch", "--", &branch, &reference],
+                            ACTION_TIMEOUT,
+                        )?;
                     } else {
                         run_git(&root, &["branch", "--", &branch, start], ACTION_TIMEOUT)?;
                     }
-                    ();
                 }
                 _ => {
                     run_git(&root, &["branch", "--", &branch], ACTION_TIMEOUT)?;
@@ -1308,7 +1343,11 @@ pub fn action(cwd: &Path, body: &Value) -> Result<Value, GitError> {
         }
         "delete_remote_branch" => {
             let (remote, branch, _) = resolve_remote_branch(&root, require_str(body, "branch")?)?;
-            run_git(&root, &["push", &remote, "--delete", &branch], ACTION_TIMEOUT)?;
+            run_git(
+                &root,
+                &["push", &remote, "--delete", &branch],
+                ACTION_TIMEOUT,
+            )?;
             run_git(&root, &["fetch", "--prune", &remote], ACTION_TIMEOUT)?;
         }
         "pull_branch" => {
@@ -1583,7 +1622,10 @@ mod tests {
         let info = repo_info(dir.to_string_lossy().as_ref());
         assert!(info.is_top_level);
         assert!(!info.is_worktree);
-        assert_eq!(std::fs::canonicalize(&info.project_root).unwrap(), std::fs::canonicalize(&dir).unwrap());
+        assert_eq!(
+            std::fs::canonicalize(&info.project_root).unwrap(),
+            std::fs::canonicalize(&dir).unwrap()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

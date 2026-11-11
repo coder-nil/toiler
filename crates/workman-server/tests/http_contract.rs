@@ -5,11 +5,11 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
+use serde_json::Value;
+use tower::ServiceExt;
 use workman_server::catalog::ModelCatalog;
 use workman_server::routes;
 use workman_server::state::AppState;
-use serde_json::Value;
-use tower::ServiceExt;
 
 const HEADER: &str = r#"{"type":"session","version":3,"id":"sess-a","timestamp":"2026-11-10T06:41:44.431Z","cwd":"/tmp/demo"}"#;
 
@@ -29,8 +29,12 @@ fn fixture_root(tag: &str) -> std::path::PathBuf {
 }
 
 fn app(root: &std::path::Path) -> axum::Router {
+    app_with_cwd(root, std::path::Path::new("/tmp/demo"))
+}
+
+fn app_with_cwd(root: &std::path::Path, cwd: &std::path::Path) -> axum::Router {
     let catalog = ModelCatalog::from_config(serde_json::json!({"providers": {}}), None).unwrap();
-    let state = AppState::with_cwd(root, catalog, "/tmp/demo");
+    let state = AppState::with_cwd(root, catalog, cwd);
     routes::router(state)
 }
 
@@ -150,11 +154,16 @@ async fn untrusted_host_is_403() {
 
 #[tokio::test]
 async fn models_endpoint_reports_empty_catalog_cleanly() {
+    // 空目录也要给出 pi 的完整形状（前端对 `undefined` 和 `{}` 的容错不同），
+    // 所以这里断言的是「键都在且为空」而不是「字段都没有」。
     let root = fixture_root("models");
     let (status, body) = get(app(&root), "/api/models").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body["models"].as_array().unwrap().is_empty());
-    assert!(body["default"].is_null());
+    assert_eq!(body["models"].as_object().unwrap().len(), 0, "{body}");
+    assert!(body["modelList"].as_array().unwrap().is_empty(), "{body}");
+    assert!(body["defaultModel"].is_null(), "{body}");
+    assert!(body["thinkingLevels"].as_object().unwrap().is_empty());
+    assert!(body["thinkingLevelPins"].as_object().unwrap().is_empty());
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -172,10 +181,27 @@ async fn mobile_state_reports_session_and_queue() {
 }
 
 #[tokio::test]
-async fn files_endpoint_reads_and_lists() {
+async fn files_endpoint_refuses_paths_outside_allowed_roots() {
+    // `/tmp/demo` 不在任何会话 cwd 里，也不是默认 cwd 的子路径 ——
+    // pi 的 `getAllowedFileRoots` 在这一层直接 403（不信存在性）。
     let root = fixture_root("files");
     let (status, body) = get(app(&root), "/api/files/tmp/demo/none.txt").await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "Access denied");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn files_endpoint_reports_404_inside_allowed_roots() {
+    // 允许根内但文件不存在：这才是 404（区分「越权」与「没有」）。
+    let root = fixture_root("files404");
+    let missing = root.join("nope.txt");
+    let uri = format!(
+        "/api/files/{}",
+        missing.to_string_lossy().trim_start_matches('/')
+    );
+    let (status, body) = get(app_with_cwd(&root, &root), &uri).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["error"], "Not found");
     std::fs::remove_dir_all(&root).ok();
 }

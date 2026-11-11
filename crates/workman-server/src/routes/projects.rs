@@ -32,9 +32,10 @@ fn error(status: StatusCode, message: &str) -> Response {
 }
 
 fn no_store(mut response: Response) -> Response {
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
     response
 }
 
@@ -64,7 +65,11 @@ pub struct SelectedBody {
 }
 
 /// `PUT /api/projects` —— 记住选中的项目。
-pub async fn select(State(state): State<AppState>, _trusted: Trusted, Json(body): Json<SelectedBody>) -> Response {
+pub async fn select(
+    State(state): State<AppState>,
+    _trusted: Trusted,
+    Json(body): Json<SelectedBody>,
+) -> Response {
     let Some(selected) = body.selected_project else {
         return error(StatusCode::BAD_REQUEST, "selectedProject is invalid");
     };
@@ -97,13 +102,23 @@ pub struct StarBody {
 }
 
 /// `PATCH /api/projects` —— 改星标。
-pub async fn star(State(state): State<AppState>, _trusted: Trusted, Json(body): Json<StarBody>) -> Response {
+pub async fn star(
+    State(state): State<AppState>,
+    _trusted: Trusted,
+    Json(body): Json<StarBody>,
+) -> Response {
     let key = body.project_key.as_deref().unwrap_or("").trim().to_string();
     let Some(starred) = body.starred else {
-        return error(StatusCode::BAD_REQUEST, "projectKey and starred are required");
+        return error(
+            StatusCode::BAD_REQUEST,
+            "projectKey and starred are required",
+        );
     };
     if key.is_empty() {
-        return error(StatusCode::BAD_REQUEST, "projectKey and starred are required");
+        return error(
+            StatusCode::BAD_REQUEST,
+            "projectKey and starred are required",
+        );
     }
     match state.projects().set_starred(&key, starred) {
         Ok(true) => Json(json!({ "success": true, "starred": starred })).into_response(),
@@ -119,7 +134,11 @@ pub struct RemoveBody {
 }
 
 /// `DELETE /api/projects`
-pub async fn remove(State(state): State<AppState>, _trusted: Trusted, Json(body): Json<RemoveBody>) -> Response {
+pub async fn remove(
+    State(state): State<AppState>,
+    _trusted: Trusted,
+    Json(body): Json<RemoveBody>,
+) -> Response {
     let key = body.project_key.as_deref().unwrap_or("").trim().to_string();
     if key.is_empty() {
         return error(StatusCode::BAD_REQUEST, "projectKey is required");
@@ -222,7 +241,11 @@ pub struct BrowseQuery {
 
 /// `GET /api/cwd/browse?path=` —— 目录浏览器。
 pub async fn browse(_trusted: Trusted, Query(query): Query<BrowseQuery>) -> Response {
-    let raw = query.path.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let raw = query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let target = match raw {
         None => paths::home_dir(),
         Some(text) => paths::expand_tilde(text),
@@ -281,7 +304,11 @@ pub async fn browse(_trusted: Trusted, Query(query): Query<BrowseQuery>) -> Resp
 ///
 /// pi 的语义（`cwd_validate.js`）：支持 `~` 与相对路径；不存在回 400；
 /// 成功后返回 `{success, cwd, projectRoot, projectKey}`。
-pub async fn validate(State(state): State<AppState>, _trusted: Trusted, body: Option<Json<Value>>) -> Response {
+pub async fn validate(
+    State(state): State<AppState>,
+    _trusted: Trusted,
+    body: Option<Json<Value>>,
+) -> Response {
     let raw = body
         .as_ref()
         .and_then(|Json(value)| value.get("cwd"))
@@ -361,13 +388,18 @@ mod tests {
             AuthStore::new(dir.join("auth.json")),
             ModelsFile::at(dir.join("models.json")),
             SettingsFile::at(dir.join("settings.json")),
-            ProjectStore::at(dir.join("pi.sqlite")),
+            ProjectStore::at(dir.join("work.sqlite")),
             TrustStore::at(dir.join("trust.json")),
         );
         crate::routes::router(state)
     }
 
-    async fn call(router: axum::Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+    async fn call(
+        router: axum::Router,
+        method: &str,
+        uri: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
         let builder = Request::builder()
             .method(method)
             .uri(uri)
@@ -382,12 +414,16 @@ mod tests {
         let response = router.oneshot(request).await.unwrap();
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
     #[tokio::test]
     async fn validate_registers_project_and_roundtrips() {
-        let dir = std::env::temp_dir().join(format!("workman-route-projects-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("workman-route-projects-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("proj")).unwrap();
         let router = app(&dir);
@@ -407,7 +443,10 @@ mod tests {
         let (_, body) = call(router.clone(), "GET", "/api/projects", None).await;
         let projects = body["projects"].as_array().unwrap();
         assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0]["projectRoot"], project.to_string_lossy().as_ref());
+        assert_eq!(
+            projects[0]["projectRoot"],
+            project.to_string_lossy().as_ref()
+        );
 
         let key = projects[0]["projectKey"].as_str().unwrap().to_string();
         let (status, _) = call(

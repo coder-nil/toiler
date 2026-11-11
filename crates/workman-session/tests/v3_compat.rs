@@ -8,10 +8,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use workman_session::{V3SessionStorage, V3SessionRepo};
 use rpi_agent::message::AgentMessage;
 use rpi_harness::session::types::{EntryQuery, SessionRepo, SessionStorage};
 use rpi_harness::session::Session;
+use workman_session::{V3SessionRepo, V3SessionStorage};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -118,10 +118,7 @@ fn append_preserves_existing_bytes_and_reloads() {
     // 追加的行是合法 v3：能重新加载，且条数 +1
     let reloaded = V3SessionStorage::load(&path).unwrap();
     assert_eq!(reloaded.load_report().skipped, Vec::<String>::new());
-    assert_eq!(
-        reloaded.load_report().loaded_entries,
-        loaded_entries + 1
-    );
+    assert_eq!(reloaded.load_report().loaded_entries, loaded_entries + 1);
 
     let text = std::fs::read_to_string(&path).unwrap();
     let last = text.lines().last().unwrap();
@@ -294,5 +291,9 @@ fn loads_real_pi_sessions_if_present() {
             Err(e) => failures.push(format!("{}: {e}", info.path.display())),
         }
     }
-    assert!(failures.is_empty(), "真实会话加载失败：\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "真实会话加载失败：\n{}",
+        failures.join("\n")
+    );
 }

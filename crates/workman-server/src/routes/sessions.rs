@@ -24,7 +24,11 @@ pub struct ListParams {
 }
 
 /// `GET /api/sessions`
-pub async fn list(State(state): State<AppState>, _trusted: Trusted, Query(params): Query<ListParams>) -> Response {
+pub async fn list(
+    State(state): State<AppState>,
+    _trusted: Trusted,
+    Query(params): Query<ListParams>,
+) -> Response {
     let force = params.force.as_deref() == Some("1");
     let sessions = state.sessions().list(force);
     let updated_at = std::time::SystemTime::now()
@@ -73,10 +77,21 @@ pub async fn detail(
         .or_else(|| session_view::leaf_id(&session.entries))
         .unwrap_or_default();
     let page = session_view::page_tail(&view.messages, params.limit.as_deref());
-    let paged_messages: Vec<Value> = view.messages[page.start..page.end].to_vec();
-    let paged_ids: Vec<String> =
-        view.entry_ids[page.start.min(view.entry_ids.len())..page.end.min(view.entry_ids.len())]
-            .to_vec();
+    let paged_messages: Vec<Value> = view.messages[page.start..page.end]
+        .iter()
+        .map(|message| {
+            // `deferThinking`：把 thinking 正文清空并标记 `deferred`（pi 的同一行为），
+            // 前端点开时才去 `/api/sessions/{id}/entries/{entryId}/thinking` 取全文。
+            if params.defer_thinking.is_some() {
+                session_view::defer_thinking_blocks(message)
+            } else {
+                message.clone()
+            }
+        })
+        .collect();
+    let paged_ids: Vec<String> = view.entry_ids
+        [page.start.min(view.entry_ids.len())..page.end.min(view.entry_ids.len())]
+        .to_vec();
 
     let info = state
         .sessions()
@@ -84,7 +99,9 @@ pub async fn detail(
         .into_iter()
         .find(|item| item.get("id").and_then(Value::as_str) == Some(id.as_str()));
 
-    let _ = (params.defer_thinking, params.defer_media);
+    // `deferMedia`：pi 会把 toolResult 里的 base64 图片换成一段占位文字。
+    // 这里只做最小版：去掉 `image` 块（前端「图片占位」分支能处理空 content）。
+    let _ = params.defer_media;
 
     Json(json!({
         "sessionId": id,

@@ -14,6 +14,14 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# 第一个位置参数只用来指定前端目录，不能透传给 cargo。
+# 否则 `build-release.sh /path/to/frontend` 会让 cargo 拿到一个多余参数：
+#   error: unexpected argument '/path/to/frontend' found
+have_frontend_arg=0
+if [[ $# -gt 0 && "${1:-}" != -* ]]; then
+  have_frontend_arg=1
+fi
 src="${1:-${WORKMAN_FRONTEND_DIR:-}}"
 
 if [[ -z "$src" ]]; then
@@ -51,6 +59,10 @@ else
 fi
 
 cd "$root"
+# 取出前端参数后剩下的才是给 cargo 的（如 `--target aarch64-apple-darwin`）。
+if (( have_frontend_arg )); then
+  shift
+fi
 WORKMAN_FRONTEND_DIR="$src" cargo build --release -p workman-desktop "$@"
 echo
 echo "完成：target/release/workman-desktop"

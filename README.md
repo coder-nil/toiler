@@ -6,9 +6,9 @@
 当前锁定 **rpi 0.21.2**（2026-11-09 发布）。从 0.6.2 升级到 0.21.2 零代码改动，
 四项验证在 0.21.2 下重新跑通。
 
-当前状态：**阶段 0（PoC）+ 阶段 1（v3 会话层）+ 阶段 2/3（HTTP 服务与全部 route）
-+ 阶段 4（Tauri 单进程）完成**，只剩阶段 5 回归。
-四项关键验证全部通过；559 个真实 pi 会话全量可读，且能原地追加。
+当前状态：**阶段 0–5 全部完成**（PoC → v3 会话层 → HTTP 服务 → 全部 route →
+Tauri 单进程 → 回归）。四项关键验证全部通过；560 个真实 pi 会话全量可读、
+可原地续聊，且 pi 自己能复读 workman 追加过的文件。
 
 ## 四项验证结论
 
@@ -36,10 +36,59 @@ cargo build                   # 若 API 变了，编译器直接告诉你
 
 ## 运行
 
+两种形态，用同一个 axum 服务与同一份配置。
+
+### 桌面应用（正式形态）
+
 ```bash
-cargo run -p workman-poc --bin workman-poc -- info              # 只做配置映射，不发请求
-cargo run -p workman-poc --bin workman-poc -- stream gpt-5.4    # 真实流式请求
-cargo run -p workman-poc --bin v3probe                          # 扫描 v3 会话兼容性
+# 构建（会把 pi 的静态导出前端嵌进二进制）
+tools/frontend/build-release.sh
+
+# 启动：原生窗口，单进程，端口由内核分配
+./target/release/workman-desktop
+```
+
+从 Finder 双击也行（`bundle` 见 `crates/workman-desktop/tauri.conf.json`）。
+启动后只监听 `127.0.0.1:<随机端口>`，手机访问要另外在设置页开关。
+
+### 纯服务（开发 / 远程访问）
+
+```bash
+cargo build --release -p workman-server
+./target/release/workman-server --port 8787 --cwd /path/to/project
+```
+
+打开 `http://127.0.0.1:8787/`。
+
+> `cargo build -p workman-server`（debug）内嵌的是 `crates/workman-server/frontend/`
+> 的占位页 —— API 全可用，但没有界面。要界面必须走
+> `tools/frontend/build-release.sh`（它设 `WORKMAN_FRONTEND_DIR` 后再编译）。
+
+参数：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--host` | `127.0.0.1` | 监听地址；改 `0.0.0.0` 会对局域网开放（需自行设密码） |
+| `--port` | `8787` | 端口；`0` = 内核分配 |
+| `--sessions-root` | `~/.agents/workman/sessions` | 会话根 |
+| `--cwd` | 进程当前目录 | 默认项目目录 |
+
+数据位置（详见 `docs/contracts/README.md`）：
+
+```
+~/.agents/workman/
+├── configs/      auth.json / models.json / settings.json / trust.json / desktop-access*
+├── sessions/     会话
+└── work.sqlite   项目列表
+```
+
+首次启动会自动从 `~/.pi/agent` 复制一份配置与会话（旧文件保留）。
+
+### 诊断工具
+
+```bash
+cargo run -p workman-poc --bin workman-poc -- info     # 只做 models.json → rpi 的映射
+cargo run -p workman-poc --bin v3probe                # 扫描 pi 会话的 v3 兼容性
 ```
 
 ## 关键发现
@@ -212,11 +261,14 @@ POST /api/agent/{id} {type:"prompt"}
 
 `docs/contracts/README.md` 的「实现进度」表已全量更新。要点：
 
-- **配置与 pi 共用**：`models.json` / `auth.json` / `settings.json` / `trust.json` /
-  `pi.sqlite` 都落在同一个 agent 目录（解析顺序见 `paths.rs`），所以已有的
-  API Key、项目列表、模型可见范围在 workman 里立刻可用。
-- **`pi.sqlite` 直连**：项目列表、星标、选中项用 `rusqlite` 读写 pi 自己的库
-  （`added_projects` / `app_preferences`），两边不会各存一份。
+- **配置自己的目录**：`~/.agents/` 放跨工具通用的东西（`skills/`/`mcp/`/
+  `commands/`/`tools/`），`~/.agents/workman/` 放 workman 专属的
+  `configs/`（auth/models/settings/trust/desktop-access）、`sessions/`、
+  `plugins/` 与 `work.sqlite`。首次启动从 `~/.pi/agent` **复制**一份过来
+  （旧文件保留不删），之后各管各的。
+- **项目库独立**：`~/.agents/workman/work.sqlite`（`added_projects` /
+  `app_preferences`）；首次创建时从旧的 `~/.pi/agent/pi.sqlite` **只读**
+  导入一次，之后两边各自独立演进。
 - **git 走 CLI**：20 个动作、worktree、diff 全部包在 `gitsvc.rs`，每个仓库一把锁；
   凭据走临时 `GIT_ASKPASS`（不落明文到命令行）。
 - **真模型的三处调用**：`auto-name`（起标题）、`git/commit-message`（写提交信息）、
@@ -275,6 +327,40 @@ tools/frontend/build-release.sh /path/to/pi-desktop/src-tauri/frontend
 | `/api/sessions` | 559 个会话；首次扫描 7.8s → **1.68s**（并行），预热后 13ms |
 | 手机访问 | LAN 代理 200（Basic Auth）/ 无凭据 401；隧道起停正常，退出不留孤儿 |
 | 测试 | 151 个全绿 |
+
+## 阶段 5：回归（258 个测试全绿）
+
+一个阶段的价值不在「写了多少」，而在「走查时抓到多少测试抓不到的问题」。
+阶段 5 用真实前端产物 + 真实模型 + 真实手机链路走了一遍，修掉 6 个致命缺陷
+（详见 [PLAN.md](./PLAN.md) 阶段 5）：
+
+| 缺陷 | 症状 |
+|---|---|
+| `context` 不做 `toolCall` 归一化 | **打开任何带工具调用的历史会话整页白屏** |
+| `with_binding` 在 clone 后 panic | **应用一启动就 Abort trap** |
+| `copy_stream` 把 `EAGAIN` 当致命错误 | **手机端 1.29MB 的 JS chunk 只收到 290KB，白屏** |
+| 壳没注入 `PI_WEB_*` 环境变量 | 配对地址永远停在 `starting` |
+| `LiveAgent` 忽略 `settings.json` 默认模型 | 续聊用错模型 |
+| `/api/mobile/state` 直接下发原始消息 | 一屏 474KB（图片 base64 占 682KB）→ 54KB |
+
+主要补齐：
+
+- **`/api/files` 全量重写**：六种 `type`（`list`/`read`/`download`/`meta`/`preview`/`watch`）
+  + 三种写方法（`PUT`/`PATCH`/`POST` multipart），`Range` 206/416、SSE 命名事件、
+  两层授权（词法 + realpath）+ `sessionId` 引用通道
+- **DOCX 预览**：自己解 OOXML（无 Node 依赖），标题/粗斜体/列表/表格
+- **手机访问接口**：`/api/mobile/access`（读写配置）+ `/api/mobile/pair`（地址推导，不含凭据）
+- **手机消息投影**（`mobile_view`）：图片转占位、思考/工具入参截断、30 条窗口 + 40 条内保留细节
+
+验收（真实数据）：
+
+| 项 | 结果 |
+|---|---|
+| 测试 | 258 个全绿，0 warning |
+| 历史会话 | 560/560 可读（104,986 条目 / 103,318 消息，0 失败） |
+| 真实续聊 | 老字节一字不改；pi 自己的 `SessionManager` 复读得 388 条目 / 385 context 消息 |
+| 桌面界面 | 会话/文件/图片/语法高亮/Markdown 预览/手机设置页全部实测 |
+| 手机 | Basic Auth 401/401/200；390×844 视口完整渲染；named 隧道 4 条连接注册 |
 
 ## 后续阶段
 

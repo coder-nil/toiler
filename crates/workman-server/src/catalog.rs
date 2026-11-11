@@ -18,7 +18,7 @@ use rpi_ai::{
         anthropic::AnthropicProvider, openai_completions::OpenAiCompletionsProvider,
         openai_responses::OpenAiResponsesProvider,
     },
-    Api, InputModality, Model, Provider,
+    Api, InputModality, Model, Provider, ThinkingLevel, ThinkingLevelMap,
 };
 use serde_json::Value;
 
@@ -48,8 +48,91 @@ impl ModelEntry {
             "input": self.input,
         })
     }
+
+    /// `/api/models` 里 `models` 字典的键：`provider:id`（**冒号**）。
+    ///
+    /// 注意与 `thinkingLevelPins` 的键 `provider/id`（**斜杠**）不同 —— pi 前端
+    /// 两个地方各用各的分隔符，抄错一个下拉框就整片空白。
+    pub fn catalog_key(&self) -> String {
+        format!("{}:{}", self.provider, self.id)
+    }
+
+    /// `/api/models` 里 `modelList` 的一项（pi 只取 `id`/`name`/`provider`）。
+    pub fn to_list_json(&self) -> Value {
+        serde_json::json!({
+            "provider": self.provider,
+            "id": self.id,
+            "name": self.name,
+        })
+    }
 }
 
+/// 支持 - 或不支持 - 一种 `enabledModels` 模式钉住的思考等级。
+///
+/// 等级值取自 `~/.pi/agent/models.json` 的 `thinkingLevelMap`，与 pi 一致：
+///
+/// | 场景 | `thinkingLevels` | `thinkingLevelPins` |
+/// |---|---|---|
+/// | 模型不支持推理 | `["off"]` | `None` |
+/// | 缺 `thinkingLevelMap` | `["off","minimal","low","medium","high"]` | `None` |
+/// | 有 `thinkingLevelMap` | `["off","minimal","low","medium","high"]` | `None` |
+/// | 同上且 `xhigh`/`max` 是**非 null** 字符串 | 追加 `"xhigh"`/`"max"` | `None` |
+/// | 该等级在 `thinkingLevelMap` 里为 `null` | 从结果里剔除 | `None` |
+/// | 模型被 `enabledModels` 的 `provider/id:level` 钉住 | 不变 | `Some("level")` |
+///
+/// Thinking levels, mirroring pi's `ThinkingLevel | "off"` literally: pi 的
+/// `EXTENDED_THINKING_LEVELS` 顺序就是下面这个，前端按它排下拉框。
+const EXTENDED_THINKING_LEVELS: [ThinkingLevel; 7] = [
+    ThinkingLevel::Off,
+    ThinkingLevel::Minimal,
+    ThinkingLevel::Low,
+    ThinkingLevel::Medium,
+    ThinkingLevel::High,
+    ThinkingLevel::Xhigh,
+    ThinkingLevel::Max,
+];
+
+/// 复刻 pi 的 `getSupportedThinkingLevels`（`pi-ai/dist/models.js:693`）。
+///
+/// 语义必须逐条对齐，否则前端下拉框会和真正能发出去的参数不一致：
+///
+/// 1. `reasoning == false` → 只有 `["off"]`（其它等级对这个模型没意义）。
+/// 2. 遍历**全部** 7 个等级，遇到 `thinkingLevelMap[level] === null` 就剔除。
+/// 3. `xhigh` / `max` 额外要求该条目**存在且非 null**（缺省不算支持）。
+///
+/// rpi 的 `Model::supported_thinking_levels()` 语义不同，**不能直接复用**：
+/// 它对非推理模型仍返回 `["off",…,"high"]`，而 pi 只给 `["off"]`；前端拿到
+/// 多余的等级时会在「不支持推理的模型」上显示出推理强度菜单。
+pub fn supported_thinking_levels(model: &Model) -> Vec<&'static str> {
+    if !model.reasoning {
+        return vec!["off"];
+    }
+    let map = model.thinking_level_map.as_ref();
+    EXTENDED_THINKING_LEVELS
+        .iter()
+        .filter(|level| {
+            let mapped = map.and_then(|m| m.get(level));
+            if matches!(mapped, Some(None)) {
+                return false;
+            }
+            if matches!(level, ThinkingLevel::Xhigh | ThinkingLevel::Max) {
+                return matches!(mapped, Some(Some(_)));
+            }
+            true
+        })
+        .map(|level| match level {
+            ThinkingLevel::Off => "off",
+            ThinkingLevel::Minimal => "minimal",
+            ThinkingLevel::Low => "low",
+            ThinkingLevel::Medium => "medium",
+            ThinkingLevel::High => "high",
+            ThinkingLevel::Xhigh => "xhigh",
+            ThinkingLevel::Max => "max",
+        })
+        .collect()
+}
+
+#[derive(Clone)]
 pub struct ModelCatalog {
     pub entries: Vec<ModelEntry>,
     /// rpi 的模型对象（harness 要它）
@@ -65,18 +148,18 @@ pub struct ModelCatalog {
 
 impl ModelCatalog {
     /// 默认路径：`$WORKMAN_MODELS` > `~/.workman/agent/models.json` > `~/.pi/agent/models.json`
+    /// 模型目录：`$WORKMAN_MODELS` > `<workmanHome>/configs/models.json`。
+    ///
+    /// 早先这里自己拼 `~/.workman/agent` → `~/.pi/agent` 两条路径，与
+    /// `paths::config_file` 各写一份，很容易漂移（阶段 6 换布局时就漏了这里，
+    /// 表现为「会话根换了、模型目录还在读 pi」）。统一走 `paths`。
     pub fn default_path() -> Option<std::path::PathBuf> {
         if let Ok(p) = std::env::var("WORKMAN_MODELS") {
             if !p.trim().is_empty() {
                 return Some(std::path::PathBuf::from(p));
             }
         }
-        let home = std::env::var_os("HOME")?;
-        let work = std::path::PathBuf::from(&home).join(".workman/agent/models.json");
-        if work.exists() {
-            return Some(work);
-        }
-        Some(std::path::PathBuf::from(home).join(".pi/agent/models.json"))
+        Some(crate::paths::config_file("models.json"))
     }
 
     pub fn load() -> Result<Self> {
@@ -87,8 +170,8 @@ impl ModelCatalog {
         if !path.exists() {
             return Ok(Self::empty());
         }
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("读不到 {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(&path).with_context(|| format!("读不到 {}", path.display()))?;
         let raw: Value = serde_json::from_str(&text)
             .with_context(|| format!("{} 不是合法 JSON", path.display()))?;
         Self::from_config(raw, Some(path))
@@ -162,6 +245,9 @@ impl ModelCatalog {
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
                 model.max_tokens = def.get("maxTokens").and_then(Value::as_u64).unwrap_or(0);
+                // `thinkingLevelMap` 必须解析进来：`supported_thinking_levels()`
+                // 靠它决定剔除哪些等级；丢掉它就会把 `null`（不支持）当成支持。
+                model.thinking_level_map = parse_thinking_level_map(def.get("thinkingLevelMap"));
 
                 let mut input_labels = Vec::new();
                 if let Some(input) = def.get("input").and_then(Value::as_array) {
@@ -294,6 +380,43 @@ impl ModelCatalog {
         self.models
             .iter()
             .find(|m| m.provider.as_str() == provider && m.id == id)
+    }
+}
+
+/// 把 `models.json` 的 `thinkingLevelMap` 解析成 rpi 的 `ThinkingLevelMap`。
+///
+/// pi 的形状是 `{ low: "low", medium: null }`（值可以是字符串或 `null`）：
+///
+/// | JSON 值 | 含义 | 映射到 rpi |
+/// |---|---|---|
+/// | `"low"` 等字符串 | 显式映射到这个值 | `Some(Some("low"))` |
+/// | `null` | 该等级**不支持** | `Some(None)` |
+/// | 键不存在 | 用 provider 默认（= 支持） | 不放入 map |
+/// | 无法识别的键（如 `highest`） | pi 也会忽略 | 跳过 |
+fn parse_thinking_level_map(raw: Option<&Value>) -> Option<ThinkingLevelMap> {
+    let obj = raw?.as_object()?;
+    let mut map = ThinkingLevelMap::new();
+    for (key, value) in obj {
+        let level = match key.as_str() {
+            "off" => ThinkingLevel::Off,
+            "minimal" => ThinkingLevel::Minimal,
+            "low" => ThinkingLevel::Low,
+            "medium" => ThinkingLevel::Medium,
+            "high" => ThinkingLevel::High,
+            "xhigh" => ThinkingLevel::Xhigh,
+            "max" => ThinkingLevel::Max,
+            _ => continue,
+        };
+        match value {
+            Value::Null => map.insert(level, None),
+            Value::String(text) => map.insert(level, Some(text.clone())),
+            _ => continue,
+        };
+    }
+    if map.is_empty() {
+        None
+    } else {
+        Some(map)
     }
 }
 

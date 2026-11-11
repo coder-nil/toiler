@@ -15,7 +15,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use rpi_ai::types::{AssistantMessageEvent, Content, Context, Message, StopReason, ThinkingLevel, UserMessage};
+use rpi_ai::types::{
+    AssistantMessageEvent, Content, Context, Message, StopReason, ThinkingLevel, UserMessage,
+};
 use rpi_ai::{Api, Model, Provider, SimpleStreamOptions};
 
 /// 一次补全的结果。

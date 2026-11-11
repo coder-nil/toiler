@@ -44,10 +44,18 @@ pub async fn bash_output(
     Query(query): Query<BashOutputQuery>,
 ) -> Response {
     let Some(raw) = query.path.as_deref().filter(|p| !p.trim().is_empty()) else {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "path required" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "path required" })),
+        )
+            .into_response();
     };
     let Some(path) = resolve_bash_log(raw) else {
-        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid path" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid path" })),
+        )
+            .into_response();
     };
     if !belongs_to_session(&state, &id, &path) {
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response();

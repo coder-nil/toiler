@@ -176,9 +176,9 @@ fn main() -> Result<()> {
                 }
             }
             let decoded: Result<(), String> = match role.as_str() {
-                "user" | "assistant" | "toolResult" => {
-                    serde_json::from_value::<rpi_ai::Message>(m).map(|_| ()).map_err(|e| e.to_string())
-                }
+                "user" | "assistant" | "toolResult" => serde_json::from_value::<rpi_ai::Message>(m)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
                 // pi 的自定义消息（bashExecution 等）→ rpi 的 Custom 臂。
                 // pi 把它存成 `{role, content:"..."}`（纯字符串），
                 // rpi 的 CustomMessage 要求 `content: [blocks]`，同样要归一。
@@ -196,8 +196,14 @@ fn main() -> Result<()> {
                             );
                         }
                         if obj.get("content").is_some_and(Value::is_string) {
-                            let s = obj.remove("content").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
-                            obj.insert("content".into(), Value::Array(vec![serde_json::json!({"type":"text","text":s})]));
+                            let s = obj
+                                .remove("content")
+                                .and_then(|v| v.as_str().map(str::to_string))
+                                .unwrap_or_default();
+                            obj.insert(
+                                "content".into(),
+                                Value::Array(vec![serde_json::json!({"type":"text","text":s})]),
+                            );
                         }
                         obj.entry("data").or_insert(Value::Null);
                         obj.entry("timestamp").or_insert(Value::from(0));

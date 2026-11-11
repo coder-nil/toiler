@@ -41,7 +41,7 @@ impl MobileAccess {
 
 /// 起两个后台件。`server_port` 是内嵌 axum 监听的端口（代理转发目标）。
 pub fn start(app: &tauri::AppHandle, server_port: u16) {
-    let directory = workman_server::paths::agent_dir();
+    let directory = workman_server::paths::configs_dir();
     let _ = std::fs::create_dir_all(&directory);
 
     let proxy = lan_proxy::start(
@@ -56,8 +56,8 @@ pub fn start(app: &tauri::AppHandle, server_port: u16) {
     // 隧道指向哪个端口不在这里决定：入口代理绑的是随机端口，隧道管理器自己盯
     // `desktop-access.runtime.json` 里的 `lanPort`，变了就带着隧道一起重起。
     let tunnel_dir = directory.join("tunnel");
-    let binary = resolve_cloudflared_binary(app)
-        .unwrap_or_else(|| tunnel_dir.join("cloudflared-not-found"));
+    let binary =
+        resolve_cloudflared_binary(app).unwrap_or_else(|| tunnel_dir.join("cloudflared-not-found"));
     let handle = tunnel::start(
         directory.join("desktop-access.json"),
         directory.join("desktop-access.tunnel.json"),
@@ -109,14 +109,21 @@ fn resolve_cloudflared_binary(app: &tauri::AppHandle) -> Option<PathBuf> {
         return Some(found);
     }
 
-    ["/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared"]
-        .iter()
-        .map(PathBuf::from)
-        .find(|candidate| candidate.is_file())
+    [
+        "/opt/homebrew/bin/cloudflared",
+        "/usr/local/bin/cloudflared",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .find(|candidate| candidate.is_file())
 }
 
 fn cloudflared_on_path() -> Option<PathBuf> {
-    let executable = if cfg!(windows) { "cloudflared.exe" } else { "cloudflared" };
+    let executable = if cfg!(windows) {
+        "cloudflared.exe"
+    } else {
+        "cloudflared"
+    };
     std::env::var_os("PATH")
         .map(|value| {
             std::env::split_paths(&value)

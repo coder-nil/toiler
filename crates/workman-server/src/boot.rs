@@ -17,18 +17,17 @@ use tokio::sync::oneshot;
 use crate::catalog::ModelCatalog;
 use crate::state::AppState;
 
-/// 默认会话根：pi 自己的目录（这样历史会话立刻可见）。
+/// 默认会话根：`<workmanHome>/sessions`（即 `~/.agents/workman/sessions`）。
+///
+/// 首次启动时 [`crate::paths::seed_from_pi_if_needed`] 会把 pi 的会话复制一份
+/// 过来，所以「历史会话立刻可见」这一点不变，只是副本归 workman 自己管。
 pub fn default_sessions_root() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").context("HOME 未设置")?;
-    Ok(PathBuf::from(home).join(".pi/agent/sessions"))
+    Ok(crate::paths::sessions_dir())
 }
 
 /// 会用到的环境变量（CLI 与桌面壳共享，保证两边行为一致）。
 pub fn sessions_root_from_env() -> Result<PathBuf> {
-    match std::env::var("WORKMAN_SESSIONS_ROOT") {
-        Ok(p) if !p.trim().is_empty() => Ok(PathBuf::from(p)),
-        _ => default_sessions_root(),
-    }
+    Ok(crate::paths::sessions_dir())
 }
 
 /// 从最近的会话文件里读最后一个 `model_change`（= 上次用的模型）。
@@ -45,7 +44,9 @@ pub fn last_used_model(sessions_root: &Path) -> Option<(String, String)> {
                 continue;
             }
             let Ok(meta) = file.metadata() else { continue };
-            let Ok(modified) = meta.modified() else { continue };
+            let Ok(modified) = meta.modified() else {
+                continue;
+            };
             if newest.as_ref().map(|(t, _)| modified > *t).unwrap_or(true) {
                 newest = Some((modified, p));
             }
@@ -68,9 +69,14 @@ pub fn last_used_model(sessions_root: &Path) -> Option<(String, String)> {
             Some("message") => {
                 // 更实时的线索：assistant 消息自带 provider/model
                 let message = value.get("message");
-                if message.and_then(|m| m.get("role")).and_then(|r| r.as_str()) == Some("assistant") {
-                    let provider = message.and_then(|m| m.get("provider")).and_then(|v| v.as_str());
-                    let model_id = message.and_then(|m| m.get("model")).and_then(|v| v.as_str());
+                if message.and_then(|m| m.get("role")).and_then(|r| r.as_str()) == Some("assistant")
+                {
+                    let provider = message
+                        .and_then(|m| m.get("provider"))
+                        .and_then(|v| v.as_str());
+                    let model_id = message
+                        .and_then(|m| m.get("model"))
+                        .and_then(|v| v.as_str());
                     if let (Some(provider), Some(model_id)) = (provider, model_id) {
                         found = Some((provider.to_string(), model_id.to_string()));
                         break;
@@ -104,6 +110,26 @@ impl BootOptions {
 ///
 /// 这是唯一一处创建会话根的地方：桌面壳与 CLI 都走它，避免两边各建一次。
 pub fn prepare_state(options: &BootOptions) -> Result<AppState> {
+    // 首次启动：把 pi 的配置与会话复制一份到 `~/.agents/workman/`。
+    //
+    // 必须在载入 models.json 之前做 —— 否则第一次启动会读到空的配置目录，
+    // 表现为「模型列表是空的、要重填 API Key」。
+    match crate::paths::seed_from_pi_if_needed() {
+        Ok(report) if report.acted => {
+            tracing::info!(
+                "已从 {} 初始化 {}（配置 {} 个、会话 {} 个；旧文件保留）",
+                crate::paths::legacy_pi_agent_dir().display(),
+                crate::paths::workman_home().display(),
+                report.configs.len(),
+                report.sessions
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!("初始化配置目录失败（继续启动）：{error}");
+        }
+    }
+
     std::fs::create_dir_all(&options.sessions_root)
         .with_context(|| format!("创建会话根 {} 失败", options.sessions_root.display()))?;
 
@@ -113,11 +139,9 @@ pub fn prepare_state(options: &BootOptions) -> Result<AppState> {
         .default_cwd
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
-    Ok(AppState::with_cwd(
-        &options.sessions_root,
-        catalog,
-        default_cwd,
-    ))
+    // `with_default_projects` 会把项目库指向 `<appDir>/work.sqlite`，
+    // 并在首次启动时从旧的 `<agentDir>/pi.sqlite` 导入项目与选中项。
+    Ok(AppState::with_cwd(&options.sessions_root, catalog, default_cwd).with_default_projects())
 }
 
 /// 绑定监听地址。`port = 0` 表示让内核分配（桌面壳用，避免抢用户的 8787）。
@@ -160,11 +184,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_sessions_root_matches_pi_layout() {
+    fn default_sessions_root_lives_under_workman_home() {
         // 只测纯函数分支，避免改进程环境导致并发测试互相影响。
         let root = default_sessions_root().unwrap();
         assert_eq!(root.file_name().unwrap(), "sessions");
-        assert!(root.ends_with("agent/sessions"), "{} 应以 agent/sessions 结尾", root.display());
+        assert_eq!(root.parent().unwrap(), crate::paths::workman_home());
     }
 
     #[test]

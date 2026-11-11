@@ -32,7 +32,10 @@ pub fn decode_entry(value: &Value, seq: u64) -> Result<Entry, V3Error> {
                     .get("type")
                     .and_then(Value::as_str)
                     .unwrap_or("<none>"),
-                e.to_string().split_whitespace().collect::<Vec<_>>().join(" ")
+                e.to_string()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
             ),
         )
     })
@@ -77,7 +80,10 @@ fn normalize(value: &Value, seq: u64) -> Result<Value, V3Error> {
                 .get("message")
                 .ok_or_else(|| V3Error::schema(seq as usize, "message 条目缺少 message"))?;
             let agent = message::decode_message(raw, entry_ts)?;
-            out.insert("message".into(), serde_json::to_value(agent).unwrap_or(Value::Null));
+            out.insert(
+                "message".into(),
+                serde_json::to_value(agent).unwrap_or(Value::Null),
+            );
             out.insert("type".into(), json!("message"));
         }
         "model_change" | "thinking_level_change" | "branch_summary" | "custom" => {
@@ -89,7 +95,8 @@ fn normalize(value: &Value, seq: u64) -> Result<Value, V3Error> {
         "compaction" => {
             out.insert("type".into(), json!("compaction"));
             // rpi 要 retainedTail（空数组合法）；v3 用 firstKeptEntryId 表达保留位置
-            out.entry("retainedTail").or_insert_with(|| Value::Array(vec![]));
+            out.entry("retainedTail")
+                .or_insert_with(|| Value::Array(vec![]));
             out.entry("tokensBefore").or_insert(json!(0));
 
             let mut details = obj
@@ -165,10 +172,12 @@ pub fn encode_entry(entry: &Entry) -> Result<Value, V3Error> {
         "message" => {
             if let Some(Value::Object(msg)) = obj.get_mut("message") {
                 let encoded = message::encode_message(
-                    &serde_json::from_value::<rpi_agent::message::AgentMessage>(
-                        Value::Object(msg.clone()),
-                    )
-                    .unwrap_or_else(|_| unreachable!("Entry::Message always holds an AgentMessage")),
+                    &serde_json::from_value::<rpi_agent::message::AgentMessage>(Value::Object(
+                        msg.clone(),
+                    ))
+                    .unwrap_or_else(|_| {
+                        unreachable!("Entry::Message always holds an AgentMessage")
+                    }),
                 );
                 *msg = match encoded {
                     Value::Object(m) => m,

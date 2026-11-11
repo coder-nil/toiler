@@ -68,7 +68,7 @@ pub struct SettingsFile {
 
 impl Default for SettingsFile {
     fn default() -> Self {
-        Self::at(paths::agent_file("settings.json"))
+        Self::at(paths::config_file("settings.json"))
     }
 }
 
@@ -138,8 +138,12 @@ impl SettingsFile {
     pub fn default_model(&self) -> (Option<String>, Option<String>) {
         let raw = self.read();
         (
-            raw.get("defaultProvider").and_then(Value::as_str).map(str::to_string),
-            raw.get("defaultModel").and_then(Value::as_str).map(str::to_string),
+            raw.get("defaultProvider")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            raw.get("defaultModel")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         )
     }
 }
@@ -233,7 +237,10 @@ pub fn visible_models(patterns: Option<&[String]>, models: &[ModelRef]) -> Vec<M
     let Some(patterns) = patterns else {
         return models.to_vec();
     };
-    let parsed: Vec<ModelPattern> = patterns.iter().filter_map(|p| ModelPattern::parse(p)).collect();
+    let parsed: Vec<ModelPattern> = patterns
+        .iter()
+        .filter_map(|p| ModelPattern::parse(p))
+        .collect();
     models
         .iter()
         .filter(|m| parsed.iter().any(|p| pattern_matches(p, m)))
@@ -316,8 +323,12 @@ pub fn collapse_patterns(models: &[ModelRef], selected: &[String]) -> Option<Vec
 }
 
 fn has_glob_chars(text: &str) -> bool {
-    text.chars()
-        .any(|c| matches!(c, '*' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '!' | '+' | '|' | '@' | ','))
+    text.chars().any(|c| {
+        matches!(
+            c,
+            '*' | '?' | '[' | ']' | '{' | '}' | '(' | ')' | '!' | '+' | '|' | '@' | ','
+        )
+    })
 }
 
 #[cfg(test)]

@@ -136,14 +136,16 @@ pub async fn save_api_key(
     Path(provider): Path<String>,
     Json(body): Json<ApiKeyBody>,
 ) -> Response {
-    let Some(key) = body.api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) else {
+    let Some(key) = body
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+    else {
         return error(StatusCode::BAD_REQUEST, "apiKey is required");
     };
     let store = state.auth();
-    if let Err(e) = store.set(
-        &provider,
-        json!({ "type": "api_key", "key": key }),
-    ) {
+    if let Err(e) = store.set(&provider, json!({ "type": "api_key", "key": key })) {
         return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
     state.sessions().invalidate();
@@ -193,10 +195,7 @@ fn remove_credential(store: &AuthStore, provider: &str, expect: &str, expected: 
 }
 
 /// `POST /api/auth/login/{provider}` —— OAuth 登录（不支持）。
-pub async fn login_unsupported(
-    _trusted: Trusted,
-    Path(provider): Path<String>,
-) -> Response {
+pub async fn login_unsupported(_trusted: Trusted, Path(provider): Path<String>) -> Response {
     error(
         StatusCode::NOT_IMPLEMENTED,
         &format!("OAuth 登录未实现（{provider}）：workman 只支持 API Key"),
@@ -218,14 +217,13 @@ mod tests {
     fn app(dir: &std::path::Path) -> (axum::Router, AppState) {
         let catalog =
             crate::catalog::ModelCatalog::from_config(json!({"providers": {}}), None).unwrap();
-        let state = AppState::with_cwd(dir, catalog, dir)
-            .with_stores(
-                AuthStore::new(dir.join("auth.json")),
-                crate::models_json::ModelsFile::at(dir.join("models.json")),
-                crate::settings::SettingsFile::at(dir.join("settings.json")),
-                crate::projects::ProjectStore::at(dir.join("pi.sqlite")),
-                crate::trust::TrustStore::at(dir.join("trust.json")),
-            );
+        let state = AppState::with_cwd(dir, catalog, dir).with_stores(
+            AuthStore::new(dir.join("auth.json")),
+            crate::models_json::ModelsFile::at(dir.join("models.json")),
+            crate::settings::SettingsFile::at(dir.join("settings.json")),
+            crate::projects::ProjectStore::at(dir.join("work.sqlite")),
+            crate::trust::TrustStore::at(dir.join("trust.json")),
+        );
         (crate::routes::router(state.clone()), state)
     }
 
@@ -249,7 +247,10 @@ mod tests {
         let response = router.oneshot(request).await.unwrap();
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
     #[tokio::test]
@@ -272,8 +273,7 @@ mod tests {
         .unwrap();
 
         let (router, _state) = app(&dir);
-        let (status, body) =
-            call(router.clone(), "GET", "/api/auth/api-key/qoder", None).await;
+        let (status, body) = call(router.clone(), "GET", "/api/auth/api-key/qoder", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["configured"], false);
         assert_eq!(body["models"], 2);

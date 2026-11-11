@@ -13,7 +13,7 @@ rpi-agent = { workspace = true }
 rpi-ai = { workspace = true, features = ["providers"] }
 rpi-tools = { workspace = true }
 
-axum = { version = "0.8", features = ["json", "query"] }
+axum = { version = "0.8", features = ["json", "query", "multipart"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net", "signal"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 serde = { workspace = true }
@@ -33,6 +33,12 @@ url = "2"
 # 前端产物在编译期嵌入二进制（阶段 4：不再带 node 运行时）
 include_dir = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# DOCX 预览：zip 容器里的 deflate 流（pi 用 mammoth，这里自己解 OOXML）
+flate2 = "1"
+# 手机配对地址：punycode ↔ Unicode 域名互转（与 pi 的 domainToASCII/Unicode 同源）
+idna = "1"
+# 枚举本机网卡，挑一个手机最可能连上的内网 IPv4（pi 用 os.networkInterfaces）
+libc = "0.2"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }

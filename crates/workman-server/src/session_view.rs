@@ -355,9 +355,7 @@ pub const MAX_PAGE_SIZE: usize = 400;
 
 /// 复刻 `37665.e()`：`limit` 解析（非正/NaN → 默认值，夹到 400）。
 pub fn parse_limit(raw: Option<&str>, default: usize) -> usize {
-    let parsed = raw
-        .and_then(|s| s.trim().parse::<i64>().ok())
-        .unwrap_or(0);
+    let parsed = raw.and_then(|s| s.trim().parse::<i64>().ok()).unwrap_or(0);
     if parsed <= 0 {
         default
     } else {
@@ -440,7 +438,12 @@ pub fn page_tail(messages: &[Value], limit: Option<&str>) -> Page {
 }
 
 /// 复刻 `37665.i()`：取到某个条目为止的一页。
-pub fn page_until(messages: &[Value], entry_ids: &[String], entry_id: &str, limit: Option<&str>) -> Page {
+pub fn page_until(
+    messages: &[Value],
+    entry_ids: &[String],
+    entry_id: &str,
+    limit: Option<&str>,
+) -> Page {
     let total = messages.len();
     let Some(index) = entry_ids.iter().position(|id| id == entry_id) else {
         return Page {
@@ -450,7 +453,12 @@ pub fn page_until(messages: &[Value], entry_ids: &[String], entry_id: &str, limi
         };
     };
     let page_size = parse_limit(limit, DEFAULT_PAGE_SIZE);
-    slice_page(messages, index.saturating_sub(page_size), index + 1, page_size)
+    slice_page(
+        messages,
+        index.saturating_sub(page_size),
+        index + 1,
+        page_size,
+    )
 }
 
 // ---------------------------------------------------------- totalActiveMs
@@ -461,7 +469,10 @@ pub fn total_active_ms(entries: &[Value]) -> i64 {
     let mut pending: Option<i64> = None;
     for entry in entries {
         let ty = entry.get("type").and_then(Value::as_str).unwrap_or("");
-        if !matches!(ty, "message" | "compaction" | "branch_summary" | "custom_message") {
+        if !matches!(
+            ty,
+            "message" | "compaction" | "branch_summary" | "custom_message"
+        ) {
             continue;
         }
         let Some(ts) = entry.get("timestamp").and_then(|v| match v {
@@ -509,7 +520,13 @@ mod tests {
 
     #[test]
     fn preview_truncates_like_pi() {
-        let long = msg("a", None, "user", &"x".repeat(80), "2026-01-01T00:00:00.000Z");
+        let long = msg(
+            "a",
+            None,
+            "user",
+            &"x".repeat(80),
+            "2026-01-01T00:00:00.000Z",
+        );
         let p = branch_preview(&long).unwrap();
         let text = p.get("text").and_then(Value::as_str).unwrap();
         assert!(text.ends_with('…'), "{text}");
@@ -531,7 +548,13 @@ mod tests {
     fn first_message_text_picks_first_user() {
         let entries = vec![
             msg("a", None, "system", "sys", "2026-01-01T00:00:00.000Z"),
-            msg("b", Some("a"), "user", "  你好  ", "2026-01-01T00:00:01.000Z"),
+            msg(
+                "b",
+                Some("a"),
+                "user",
+                "  你好  ",
+                "2026-01-01T00:00:01.000Z",
+            ),
         ];
         assert_eq!(first_message_text(&entries), "  你好  ");
         assert_eq!(first_message_text(&[]), "(no messages)");
@@ -565,7 +588,9 @@ mod tests {
         assert_eq!(arr.len(), 1);
         let root = &arr[0];
         assert_eq!(
-            root.get("entry").and_then(|e| e.get("id")).and_then(Value::as_str),
+            root.get("entry")
+                .and_then(|e| e.get("id"))
+                .and_then(Value::as_str),
             Some("a")
         );
         assert_eq!(
@@ -574,7 +599,13 @@ mod tests {
                 .and_then(Value::as_str),
             Some("1")
         );
-        assert_eq!(root.get("children").and_then(Value::as_array).unwrap().len(), 1);
+        assert_eq!(
+            root.get("children")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     fn boundary(role: &str, i: usize) -> Value {
@@ -599,7 +630,7 @@ mod tests {
         assert_eq!(page.total, 300);
         assert!(page.has_earlier());
         assert_eq!(page.end, 300);
-        assert!(page.len() > 0, "最新一页不能为空");
+        assert!(!page.is_empty(), "最新一页不能为空");
         // 起点必须落在 user 边界上（页大小 120 → 对齐到最近的 user）
         assert_eq!(
             messages[page.start].get("role").and_then(Value::as_str),
@@ -617,7 +648,7 @@ mod tests {
             .collect();
         let page = page_until(&messages, &ids, "e150", None);
         assert_eq!(page.end, 151);
-        assert!(page.len() > 0);
+        assert!(!page.is_empty());
         assert!(page.has_earlier());
         let missing = page_until(&messages, &ids, "nope", None);
         assert_eq!(missing.end, 0);
@@ -714,14 +745,14 @@ fn entry_timestamp(entry: &Value) -> Value {
     entry
         .get("timestamp")
         .and_then(|t| t.as_str())
-        .and_then(|t| workman_session::iso_to_ms(t))
+        .and_then(workman_session::iso_to_ms)
         .map(Value::from)
         .unwrap_or(Value::Null)
 }
 
 /// 一条条目 → context 里的一条消息（pi 的 `Uv` 内层映射）。
 ///
-/// - `message`：系统消息丢掉，其余原样
+/// - `message`：系统消息丢掉，其余归一化后返回（见 [`normalize_tool_calls`]）
 /// - `compaction` → `role:"custom"` + `customType:"compaction"`
 /// - `branch_summary` → 一段 user 提示
 /// - `custom`（`custom_message`）→ `role:"custom"` + 原 `customType`
@@ -732,7 +763,7 @@ pub fn context_entry_message(entry: &Value) -> Option<Value> {
             if message.get("role").and_then(Value::as_str) == Some("system") {
                 return None;
             }
-            Some(message.clone())
+            Some(normalize_tool_calls(message))
         }
         Some("compaction") => {
             let summary = entry.get("summary").cloned().unwrap_or(Value::Null);
@@ -783,6 +814,105 @@ pub fn context_entry_message(entry: &Value) -> Option<Value> {
     }
 }
 
+/// assistant 消息里的 `toolCall` 块归一化（pi 的 `lib/normalize.ts`）。
+///
+/// v3 文件里用的是 `{id, name, arguments}`，而前端（ChatWindow、TurnWrittenFiles、
+/// ToolCall 渲染）读的是 `{toolCallId, toolName, input}`。不归一化时前端拿到
+/// `undefined`，`extractTurnWrittenFiles` 里的 `isFileWritingToolName(undefined)`
+/// 会直接 `TypeError`，整页白屏 —— 这是阶段 5 走查抓到的真实回归。
+///
+/// 兼容两种形状：已归一化的原样返回（幂等）；非 assistant 消息原样返回。
+pub fn normalize_tool_calls(message: &Value) -> Value {
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return message.clone();
+    }
+    let Some(blocks) = message.get("content").and_then(Value::as_array) else {
+        return message.clone();
+    };
+    let normalized: Vec<Value> = blocks
+        .iter()
+        .map(|block| {
+            if block.get("type").and_then(Value::as_str) != Some("toolCall") {
+                return block.clone();
+            }
+            let tool_call_id = block
+                .get("toolCallId")
+                .or_else(|| block.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let tool_name = block
+                .get("toolName")
+                .or_else(|| block.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let input = block
+                .get("input")
+                .filter(|v| v.is_object())
+                .or_else(|| block.get("arguments").filter(|v| v.is_object()))
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            json!({
+                "type": "toolCall",
+                "toolCallId": tool_call_id,
+                "toolName": tool_name,
+                "input": input,
+            })
+        })
+        .collect();
+
+    let mut out = message.clone();
+    if let Some(map) = out.as_object_mut() {
+        map.insert("content".into(), Value::Array(normalized));
+    }
+    out
+}
+
+/// `deferThinking`：把 assistant 里非空的 thinking 正文清空并标记 `deferred`。
+///
+/// 前端靠 `deferred` 决定是否显示「展开思考」入口，点开后单独拉全文；
+/// 不标记的话它会以为这是一段本来就为空的思考。
+pub fn defer_thinking_blocks(message: &Value) -> Value {
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return message.clone();
+    }
+    let Some(blocks) = message.get("content").and_then(Value::as_array) else {
+        return message.clone();
+    };
+    let mut changed = false;
+    let mapped: Vec<Value> = blocks
+        .iter()
+        .map(|block| {
+            if block.get("type").and_then(Value::as_str) != Some("thinking") {
+                return block.clone();
+            }
+            let text = block
+                .get("thinking")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if text.trim().is_empty() {
+                return block.clone();
+            }
+            changed = true;
+            let mut next = block.clone();
+            if let Some(map) = next.as_object_mut() {
+                map.insert("thinking".into(), Value::String(String::new()));
+                map.insert("deferred".into(), Value::Bool(true));
+            }
+            next
+        })
+        .collect();
+    if !changed {
+        return message.clone();
+    }
+    let mut out = message.clone();
+    if let Some(map) = out.as_object_mut() {
+        map.insert("content".into(), Value::Array(mapped));
+    }
+    out
+}
+
 /// 构建 context（消息 + entryIds + 当前模型 / 思考等级）。
 pub fn context_view(entries: &[Value], leaf_id: Option<&str>) -> ContextView {
     let branch = branch_entries(entries, leaf_id);
@@ -818,6 +948,101 @@ pub fn leaf_id(entries: &[Value]) -> Option<String> {
         .filter_map(|e| e.get("id").and_then(Value::as_str))
         .next_back()
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod normalize_tests {
+    use super::*;
+
+    #[test]
+    fn tool_call_blocks_are_normalized_to_the_ui_shape() {
+        // v3 原生形状（name/arguments/id）→ 前端读的（toolName/input/toolCallId）
+        let message = json!({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "先跑一下"},
+                {"type": "toolCall", "id": "call_1", "name": "bash", "arguments": {"command": "ls"}},
+            ],
+        });
+        let out = normalize_tool_calls(&message);
+        let blocks = out["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "text", "非 toolCall 块原样保留");
+        assert_eq!(blocks[1]["toolCallId"], "call_1");
+        assert_eq!(blocks[1]["toolName"], "bash");
+        assert_eq!(blocks[1]["input"]["command"], "ls");
+    }
+
+    #[test]
+    fn tool_call_normalization_is_idempotent() {
+        let already = json!({
+            "role": "assistant",
+            "content": [{"type": "toolCall", "toolCallId": "c1", "toolName": "read", "input": {"path": "/a"}}],
+        });
+        assert_eq!(normalize_tool_calls(&already), already);
+    }
+
+    #[test]
+    fn non_assistant_messages_pass_through() {
+        let user = json!({"role": "user", "content": [{"type": "text", "text": "hi"}]});
+        assert_eq!(normalize_tool_calls(&user), user);
+        let result = json!({
+            "role": "toolResult",
+            "toolCallId": "c1",
+            "toolName": "bash",
+            "content": [{"type": "text", "text": "ok"}],
+        });
+        assert_eq!(
+            normalize_tool_calls(&result),
+            result,
+            "toolResult 不需要改名（本来就是 toolName）"
+        );
+    }
+
+    #[test]
+    fn missing_tool_fields_become_empty_defaults() {
+        let broken = json!({
+            "role": "assistant",
+            "content": [{"type": "toolCall"}],
+        });
+        let out = normalize_tool_calls(&broken);
+        assert_eq!(out["content"][0]["toolCallId"], "");
+        assert_eq!(out["content"][0]["toolName"], "");
+        assert_eq!(out["content"][0]["input"], json!({}));
+    }
+
+    #[test]
+    fn defer_thinking_clears_non_empty_thinking() {
+        let message = json!({
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "一大段推理"},
+                {"type": "thinking", "thinking": "   "},
+                {"type": "text", "text": "答案"},
+            ],
+        });
+        let out = defer_thinking_blocks(&message);
+        assert_eq!(out["content"][0]["thinking"], "");
+        assert_eq!(out["content"][0]["deferred"], true);
+        // 空白 thinking 不动
+        assert!(out["content"][1].get("deferred").is_none());
+        assert_eq!(out["content"][2]["text"], "答案");
+    }
+
+    #[test]
+    fn defer_thinking_leaves_messages_without_thinking_untouched() {
+        let message = json!({"role": "assistant", "content": [{"type": "text", "text": "x"}]});
+        assert_eq!(defer_thinking_blocks(&message), message);
+    }
+
+    #[test]
+    fn system_messages_are_not_part_of_the_context() {
+        let entry = json!({
+            "type": "message",
+            "id": "m1",
+            "message": {"role": "system", "content": [{"type": "text", "text": "prompt"}]},
+        });
+        assert!(context_entry_message(&entry).is_none());
+    }
 }
 
 #[cfg(test)]

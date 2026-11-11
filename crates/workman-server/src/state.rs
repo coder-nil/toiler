@@ -1,7 +1,7 @@
 //! 服务状态：会话存储、活 agent、模型目录、可信性策略、配置存储。
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::agent_runtime::LiveSessions;
 use crate::auth::AuthStore;
@@ -32,12 +32,33 @@ pub struct Inner {
     pub models_file: ModelsFile,
     /// `settings.json`
     pub settings: SettingsFile,
-    /// `pi.sqlite` 里的项目表
+    /// `work.sqlite` 里的项目表（见 `paths::project_db`）
     pub projects: ProjectStore,
     /// `trust.json`
     pub project_trust: TrustStore,
     /// 新会话默认 cwd
     pub default_cwd: PathBuf,
+    /// 服务真正监听的地址（配对地址与 `desktopShell` 判定要用）。
+    ///
+    /// 单独用 `Arc<Mutex<..>>` 而不是普通字段：监听端口只有 `bind` 之后才知道，
+    /// 而那时 `state` 往往已经被 clone 过（预热任务持有一份），拿不到 `&mut Inner`。
+    pub binding: Arc<Mutex<Binding>>,
+}
+
+/// 服务绑定的地址；`port == 0` 表示还没绑定。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Binding {
+    pub host: String,
+    pub port: u16,
+}
+
+impl Default for Binding {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        }
+    }
 }
 
 impl AppState {
@@ -68,10 +89,50 @@ impl AppState {
                 projects: ProjectStore::default(),
                 project_trust: TrustStore::default(),
                 default_cwd,
+                binding: Arc::new(Mutex::new(Binding::default())),
             }),
         }
     }
 
+    /// 记录服务真正监听的地址。任意时刻调用都安全（共享槽），
+    /// 已被 clone 的 state 也能看到新值。
+    pub fn with_binding(self, host: impl Into<String>, port: u16) -> Self {
+        let host = host.into();
+        if let Ok(mut binding) = self.inner.binding.lock() {
+            binding.host = host;
+            binding.port = port;
+        }
+        self
+    }
+
+    pub fn server_port(&self) -> u16 {
+        self.inner
+            .binding
+            .lock()
+            .map(|binding| binding.port)
+            .unwrap_or(0)
+    }
+
+    pub fn bind_host(&self) -> String {
+        self.inner
+            .binding
+            .lock()
+            .map(|binding| binding.host.clone())
+            .unwrap_or_else(|_| "127.0.0.1".to_string())
+    }
+
+    /// 真实启动路径专用：把项目库指向 `<appDir>/work.sqlite` 并做一次旧库迁移。
+    ///
+    /// 与 [`Self::with_cwd`] 分开是故意的：`with_cwd` 是纯构造函数（测试大量
+    /// 用它），绝不能在里面碰磁盘上的用户库；而迁移必须发生在真实启动时
+    /// （CLI 与桌面壳都走 `boot::prepare_state`）。
+    pub fn with_default_projects(mut self) -> Self {
+        let store = ProjectStore::init_default();
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.projects = store;
+        }
+        self
+    }
     /// 覆盖各配置文件路径（测试用）。
     pub fn with_stores(
         mut self,

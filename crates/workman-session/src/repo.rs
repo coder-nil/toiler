@@ -15,10 +15,10 @@ use std::sync::{Arc, Mutex};
 use rpi_harness::error::{SessionError, SessionResult};
 use rpi_harness::session::memory::Clock;
 use rpi_harness::session::types::IdGenerator;
-use rpi_harness::session::{DefaultIdGenerator, SystemClock};
 use rpi_harness::session::types::{
     ForkOptions, SessionCreateOptions, SessionMetadata, SessionRepo, SessionStorage,
 };
+use rpi_harness::session::{DefaultIdGenerator, SystemClock};
 
 use crate::home::{session_directory_name, session_id_from_file_name};
 use crate::storage::{metadata_for, SessionFileInfo, V3SessionStorage};
@@ -135,10 +135,7 @@ impl V3SessionRepo {
         cwd: &str,
         options: &SessionCreateOptions,
     ) -> SessionResult<V3SessionStorage> {
-        let id = options
-            .id
-            .clone()
-            .unwrap_or_else(|| self.ids.next());
+        let id = options.id.clone().unwrap_or_else(|| self.ids.next());
         let created_at = self.clock.now_ms();
         let header = V3Header::new(id, created_at, cwd);
         let dir = self.sessions_root.join(session_directory_name(cwd));
@@ -175,9 +172,8 @@ impl V3SessionRepo {
                 format!("找不到会话 {id}"),
             )
         })?;
-        std::fs::remove_file(&path).map_err(|e| {
-            SessionError::storage(format!("删除 {} 失败：{e}", path.display()))
-        })?;
+        std::fs::remove_file(&path)
+            .map_err(|e| SessionError::storage(format!("删除 {} 失败：{e}", path.display())))?;
         self.refresh_index();
         Ok(())
     }
@@ -268,14 +264,18 @@ impl SessionRepo for V3SessionRepo {
 
         for entry in entries {
             let provisioned = to_provisioned(&entry);
-            target.append_entry(provisioned, crate::storage::DEFAULT_LANE).await?;
+            target
+                .append_entry(provisioned, crate::storage::DEFAULT_LANE)
+                .await?;
         }
         self.refresh_index();
         Ok(target)
     }
 }
 
-fn to_provisioned(entry: &rpi_harness::session::types::Entry) -> rpi_harness::session::types::ProvisionedEntry {
+fn to_provisioned(
+    entry: &rpi_harness::session::types::Entry,
+) -> rpi_harness::session::types::ProvisionedEntry {
     use rpi_harness::session::types::{Entry, ProvisionedEntry, ProvisionedKind};
     let kind = match entry {
         Entry::Message(m) => ProvisionedKind::Message {

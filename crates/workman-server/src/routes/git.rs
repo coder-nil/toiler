@@ -74,8 +74,14 @@ pub async fn command(
     if let Some(credential) = body.get("credential") {
         if !credential.is_null() {
             let kind = credential.get("kind").and_then(Value::as_str).unwrap_or("");
-            let secret = credential.get("secret").and_then(Value::as_str).unwrap_or("");
-            let username_ok = matches!(credential.get("username"), None | Some(Value::Null) | Some(Value::String(_)));
+            let secret = credential
+                .get("secret")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let username_ok = matches!(
+                credential.get("username"),
+                None | Some(Value::Null) | Some(Value::String(_))
+            );
             if (kind != "https" && kind != "ssh") || secret.is_empty() || !username_ok {
                 return git_error(400, "Invalid Git credential");
             }
@@ -94,7 +100,12 @@ pub async fn status_only(
     Query(query): Query<CwdQuery>,
 ) -> Response {
     state.sync_allowed_roots();
-    let Some(raw) = query.cwd.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+    let Some(raw) = query
+        .cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
         return git_error(400, "cwd must be an absolute path");
     };
     if !crate::paths::is_absolute_path(raw) {
@@ -188,10 +199,16 @@ pub async fn commit_message(
     };
 
     let Some((provider_id, model_id)) = state.default_model_ref() else {
-        return git_error(400, "No available model configured for commit-message generation");
+        return git_error(
+            400,
+            "No available model configured for commit-message generation",
+        );
     };
     let Some(model) = state.catalog().model_for(&provider_id, &model_id).cloned() else {
-        return git_error(400, "No available model configured for commit-message generation");
+        return git_error(
+            400,
+            "No available model configured for commit-message generation",
+        );
     };
     let Some(runtime) = state
         .catalog()
@@ -200,7 +217,10 @@ pub async fn commit_message(
         .find(|p| p.id() == provider_id.as_str())
         .cloned()
     else {
-        return git_error(400, "No available model configured for commit-message generation");
+        return git_error(
+            400,
+            "No available model configured for commit-message generation",
+        );
     };
 
     let instructions = if locale == "zh-CN" {
@@ -374,9 +394,8 @@ pub async fn worktrees_create(
             gitsvc::checkout_branch(Path::new(&cwd), &branch)
                 .map(|branch| json!({ "path": cwd, "branch": branch }))
         } else {
-            gitsvc::create_worktree(Path::new(&cwd), &branch).map(|(path, branch)| {
-                json!({ "path": path, "branch": branch })
-            })
+            gitsvc::create_worktree(Path::new(&cwd), &branch)
+                .map(|(path, branch)| json!({ "path": path, "branch": branch }))
         }
     })
     .await
@@ -410,7 +429,9 @@ pub async fn worktrees_delete(
         return git_error(403, "Access denied");
     }
     let force = body.force.unwrap_or(false);
-    match blocking_git(move || gitsvc::remove_worktree(Path::new(&cwd), Path::new(&path), force)).await {
+    match blocking_git(move || gitsvc::remove_worktree(Path::new(&cwd), Path::new(&path), force))
+        .await
+    {
         Ok(()) => Json(json!({ "success": true })).into_response(),
         Err(message) => {
             let dirty = message.contains("contains modified or untracked files")

@@ -19,16 +19,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use workman_session::V3SessionStorage;
 use rpi_agent::events::{AgentEmitter, AgentEvent};
 use rpi_agent::message::{assistant_json, AgentMessage};
 use rpi_agent::types::AgentToolResult;
+use rpi_ai::types::AssistantMessageEvent;
 use rpi_harness::agent_harness::{AgentHarness, AgentLane};
+use rpi_harness::session::types::{ProvisionedEntry, ProvisionedKind};
 use rpi_harness::session::Session;
 use rpi_harness::types::{AgentHarnessOptions, SendMessageOptions};
-use rpi_ai::types::AssistantMessageEvent;
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
+use workman_session::V3SessionStorage;
 
 use crate::catalog::ModelCatalog;
 
@@ -45,12 +46,16 @@ pub struct LiveAgent {
     pub id: String,
     pub path: PathBuf,
     pub cwd: String,
-    #[allow(dead_code)]
     harness: Arc<AgentHarness>,
     lane: Arc<dyn AgentLane>,
     events: broadcast::Sender<Value>,
     running: Arc<AtomicBool>,
-    model: rpi_ai::Model,
+    /// 当前模型。`set_model` 会在运行中替换它，所以不是不可变字段。
+    model: Mutex<rpi_ai::Model>,
+    /// 切模型时按 `provider/modelId` 查 `rpi_ai::Model`。
+    ///
+    /// 活会话比一次请求活得久，不能临时从 `AppState` 借引用。
+    catalog: ModelCatalog,
     /// 活会话表的变化通知（`insert` 之后才挂上）
     changes: Mutex<Option<broadcast::Sender<()>>>,
 }
@@ -62,10 +67,11 @@ impl LiveAgent {
         path: &Path,
         cwd: &str,
         catalog: &ModelCatalog,
+        preferred: Option<(String, String)>,
     ) -> Result<Arc<Self>> {
         let storage = V3SessionStorage::load(path)
             .with_context(|| format!("加载会话 {} 失败", path.display()))?;
-        Self::start_with_storage(id, path, storage, cwd, catalog).await
+        Self::start_with_storage(id, path, storage, cwd, catalog, preferred).await
     }
 
     pub async fn start_with_storage(
@@ -74,11 +80,18 @@ impl LiveAgent {
         storage: V3SessionStorage,
         cwd: &str,
         catalog: &ModelCatalog,
+        preferred: Option<(String, String)>,
     ) -> Result<Arc<Self>> {
         let session = Session::new(Arc::new(storage), None);
 
-        let model = catalog
-            .default_model()
+        // 优先用「设置里选的默认模型」，其次退回 catalog 的默认。
+        //
+        // 早先只用了 `catalog.default_model()`（models.json 里第一个可用项），
+        // 于是用户在任何界面选过的默认模型都不生效 —— 续聊会用错模型。
+        let model = preferred
+            .as_ref()
+            .and_then(|(provider, id)| catalog.model_for(provider, id))
+            .or_else(|| catalog.default_model())
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("models.json 里没有可用模型"))?;
         let tools = crate::tools::build_tools(cwd, &model);
@@ -112,7 +125,8 @@ impl LiveAgent {
             lane,
             events,
             running: Arc::new(AtomicBool::new(false)),
-            model,
+            model: Mutex::new(model),
+            catalog: catalog.clone(),
             changes: Mutex::new(None),
         }))
     }
@@ -166,6 +180,12 @@ impl LiveAgent {
                         .await;
                     this.running.store(false, Ordering::Relaxed);
                     this.notify_running_changed();
+                    tracing::info!(
+                        "prompt 结束：session={} ok={} err={:?}",
+                        this.id,
+                        result.is_ok(),
+                        result.as_ref().err().map(|e| e.to_string())
+                    );
                     if let Err(e) = result {
                         let _ = this.events.send(json!({
                             "type": "run_error",
@@ -192,8 +212,48 @@ impl LiveAgent {
                 self.notify_running_changed();
                 Ok(json!({ "accepted": true }))
             }
+            "set_model" => self.set_model(command).await,
             other => Err(anyhow::anyhow!("不支持的 agent 命令：{other}")),
         }
+    }
+
+    /// `{"type":"set_model","provider":…,"modelId":…}`。
+    ///
+    /// pi 的 `setModel` 会往会话文件追加一条 `model_change`，前端切完立刻
+    /// `loadSession` 读回的 `context.model` 就是它。只改内存不落盘的话，界面
+    /// 会在切换成功的下一秒弹回旧模型 —— 看起来像「切了但没生效」。
+    async fn set_model(&self, command: &Value) -> Result<Value> {
+        let provider = command
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let model_id = command
+            .get("modelId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let model = self
+            .catalog
+            .model_for(provider, model_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Model not found: {provider}/{model_id}"))?;
+
+        let session = self.harness.session();
+        let entry = ProvisionedEntry {
+            id: session.id_generator().next(),
+            kind: ProvisionedKind::ModelChange {
+                provider: model.provider.as_str().to_string(),
+                model_id: model.id.clone(),
+            },
+        };
+        session
+            .append_entry(entry, "main")
+            .await
+            .context("写 model_change 失败")?;
+
+        self.lane.set_model(model.clone()).await?;
+        *self.model.lock().expect("model") = model.clone();
+
+        Ok(json!({ "id": model.id, "provider": model.provider.as_str() }))
     }
 
     /// `get_state` 形状。`/api/agent/[id]`、`/api/mobile/state` 都用它。
@@ -202,15 +262,16 @@ impl LiveAgent {
             Ok(queued) => (queued.steering.len(), queued.follow_up.len()),
             Err(_) => (0, 0),
         };
+        let model = self.model.lock().expect("model").clone();
         Ok(json!({
             "isStreaming": self.is_streaming(),
             "queuedMessages": { "steering": steering, "followUp": follow_up },
             "sessionId": self.id,
             "cwd": self.cwd,
             "model": {
-                "provider": self.model.provider.as_str(),
-                "id": self.model.id,
-                "name": self.model.name,
+                "provider": model.provider.as_str(),
+                "id": model.id,
+                "name": model.name,
             },
             "thinkingLevel": "off",
         }))
@@ -231,10 +292,9 @@ fn prompt_message(command: &Value) -> Result<AgentMessage> {
             now,
         ))),
         Some(Value::Array(blocks)) => {
-            let content: Vec<rpi_ai::types::Content> = serde_json::from_value(Value::Array(
-                blocks.clone(),
-            ))
-            .context("message 不是合法的内容块数组")?;
+            let content: Vec<rpi_ai::types::Content> =
+                serde_json::from_value(Value::Array(blocks.clone()))
+                    .context("message 不是合法的内容块数组")?;
             Ok(AgentMessage::User(rpi_ai::types::UserMessage::new(
                 rpi_ai::types::UserContent::Blocks(content),
                 now,
@@ -298,7 +358,10 @@ pub fn project_event(event: &AgentEvent) -> Option<Value> {
             "delayMs": delay_ms,
             "error": error,
         })),
-        AgentEvent::MessageStart { message, message_id } => {
+        AgentEvent::MessageStart {
+            message,
+            message_id,
+        } => {
             if is_system(message) {
                 return None;
             }
@@ -311,7 +374,10 @@ pub fn project_event(event: &AgentEvent) -> Option<Value> {
             }
             Some(out)
         }
-        AgentEvent::MessageEnd { message, message_id } => {
+        AgentEvent::MessageEnd {
+            message,
+            message_id,
+        } => {
             if is_system(message) {
                 return None;
             }
@@ -572,7 +638,10 @@ impl LiveSessions {
     }
 
     pub fn guard_starting(&self, id: &str) -> bool {
-        self.starting.lock().expect("starting").insert(id.to_string())
+        self.starting
+            .lock()
+            .expect("starting")
+            .insert(id.to_string())
     }
 
     pub fn clear_starting(&self, id: &str) {

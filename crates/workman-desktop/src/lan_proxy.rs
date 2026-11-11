@@ -26,19 +26,10 @@ const CLIENT_HEAD_TIMEOUT: Duration = Duration::from_secs(20);
 const COPY_BUFFER_SIZE: usize = 32 * 1024;
 
 /// 配置文件内容（与 lib/desktop-access.ts 共享同一份 JSON）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LanAccessConfig {
     pub enabled: bool,
     pub password: Option<String>,
-}
-
-impl Default for LanAccessConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            password: None,
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -437,21 +428,53 @@ fn bad_gateway_response() -> Vec<u8> {
     text_response("502 Bad Gateway", &[], "Pi Desktop server is unavailable")
 }
 
+/// 把 `reader` 的全部字节写到 `writer`，返回写出的字节数。
+///
+/// **必须容忍 `WouldBlock`**：`SO_RCVTIMEO`（`set_read_timeout`）在 unix 上会把
+/// socket 一并设成非阻塞，于是内核发送缓冲满时 `write` 返回 `EAGAIN`。早先这里把
+/// 任何写错误都当成致命错误直接 `break`，结果 1.29MB 的 `/_next/static/chunks/*.js`
+/// 经代理只发出 290KB —— 浏览器报 `ERR_CONTENT_LENGTH_MISMATCH`，手机端 chunk 加载
+/// 失败、页面白屏（阶段 5 手机回归实测）。
+///
+/// 重试时用 1ms 起步的短退避，最长 50ms，避免空转吃满一个核心。
 fn copy_stream<R: Read, W: Write>(mut reader: R, mut writer: W) -> usize {
     let mut buffer = vec![0u8; COPY_BUFFER_SIZE];
     let mut total = 0usize;
+    let mut backoff = Duration::from_millis(1);
     loop {
-        match reader.read(&mut buffer) {
-            Ok(0) | Err(_) => break,
-            Ok(read) => {
-                if writer.write_all(&buffer[..read]).is_err() {
-                    break;
+        let read = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            // 上游读超时：SSE / 长连接空闲属正常，不算错误。
+            Err(_) => break,
+        };
+
+        let mut written = 0usize;
+        while written < read {
+            match writer.write(&buffer[written..read]) {
+                Ok(0) => break,
+                Ok(count) => {
+                    written += count;
+                    backoff = Duration::from_millis(1);
                 }
-                if writer.flush().is_err() {
-                    break;
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                // 发送缓冲满：等内核腾出空间再继续，绝不能在这里截断响应。
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(backoff);
+                    backoff = (backoff * 2).min(Duration::from_millis(50));
                 }
-                total += read;
+                Err(_) => {
+                    let _ = writer.flush();
+                    return total;
+                }
             }
+        }
+        total += written;
+        if written < read {
+            // 写端已经关了（客户端断开），把已读的这一块算完就收工。
+            let _ = writer.flush();
+            return total;
         }
     }
     let _ = writer.flush();
@@ -556,8 +579,12 @@ fn handle_client(
     // 升级请求（Next dev 的 HMR WebSocket）在握手后就是一条长连接隧道：
     // 需要双向透传，并且不能给客户端设读超时，否则空闲几十秒就会被我们自己掐断。
     let upgrading = header_value(&head, "upgrade").is_some();
+    // 响应方向不能留任何超时：`set_read_timeout` 在 unix 上同时把 socket 设成
+    // 非阻塞，写大响应（前端 chunk 动辄 1MB+）会在内核缓冲满时拿到 EAGAIN。
+    // 读请求头的超时只对「读头」有意义，头已经读完了就撤掉。
+    let _ = writer.set_read_timeout(None);
     if upgrading {
-        let _ = writer.set_read_timeout(None);
+        let _ = writer.set_write_timeout(None);
     }
 
     let transfer_chunked = header_value(&head, "transfer-encoding")
@@ -830,11 +857,14 @@ mod tests {
             },
         );
         // 没有密码就绝不能算启用。
-        assert_eq!(
-            parse_access_config(r#"{"enabled":true,"password":""}"#).enabled,
-            false
+        assert!(
+            !parse_access_config(r#"{"enabled":true,"password":""}"#).enabled,
+            "空密码不能算启用"
         );
-        assert_eq!(parse_access_config("not json").enabled, false);
+        assert!(
+            !parse_access_config("not json").enabled,
+            "坏配置要退回未启用"
+        );
     }
 
     #[test]
@@ -955,6 +985,72 @@ mod tests {
         let (head, leftover) = read_request_head(&mut reader).unwrap();
         assert!(String::from_utf8_lossy(&head).starts_with("POST /api/agent/abc"));
         assert!(!leftover.is_empty());
+    }
+
+    /// 阶段 5 手机回归抓到的真实回归：`SO_RCVTIMEO` 在 unix 上让 socket 变成
+    /// 非阻塞，大响应写满内核缓冲时 `write` 返回 `EAGAIN`。早先的实现把任何写错误
+    /// 都当致命错误 `break`，1.29MB 的 `/_next/static/chunks/*.js` 只发出 290KB，
+    /// 浏览器 `ERR_CONTENT_LENGTH_MISMATCH`，手机端 chunk 加载失败整页白屏。
+    #[test]
+    fn copy_stream_survives_a_writer_that_temporarily_blocks() {
+        use std::io::{self, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// 每第三次写返回 `WouldBlock`，模拟内核发送缓冲满。
+        struct FlakyWriter {
+            written: Arc<std::sync::Mutex<Vec<u8>>>,
+            calls: Arc<AtomicUsize>,
+        }
+        impl Write for FlakyWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                let call = self.calls.fetch_add(1, Ordering::Relaxed);
+                if call % 3 == 2 {
+                    return Err(io::Error::new(io::ErrorKind::WouldBlock, "blocked"));
+                }
+                // 每次只吃一半，逼出「部分写」路径。
+                let take = (buf.len() / 2).max(1);
+                self.written.lock().unwrap().extend_from_slice(&buf[..take]);
+                Ok(take)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let payload = vec![7u8; 300 * 1024];
+        let sink = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = FlakyWriter {
+            written: sink.clone(),
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let total = copy_stream(payload.as_slice(), writer);
+        assert_eq!(total, payload.len(), "一个字节都不能少");
+        assert_eq!(sink.lock().unwrap().len(), payload.len());
+    }
+
+    /// 上游读超时（SSE 空闲）不该被当成错误刷日志，正常结束即可。
+    #[test]
+    fn copy_stream_treats_a_read_timeout_as_end_of_stream() {
+        use std::io::{self, Read};
+
+        struct TimeoutReader {
+            served: bool,
+        }
+        impl Read for TimeoutReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.served {
+                    return Err(io::Error::new(io::ErrorKind::WouldBlock, "timed out"));
+                }
+                self.served = true;
+                buf[..3].copy_from_slice(b"abc");
+                Ok(3)
+            }
+        }
+
+        let mut out: Vec<u8> = Vec::new();
+        let total = copy_stream(TimeoutReader { served: false }, &mut out);
+        assert_eq!(total, 3);
+        assert_eq!(out, b"abc");
     }
 
     #[test]
@@ -1125,10 +1221,9 @@ mod integration_tests {
         let upstream_port = probe.local_addr().unwrap().port();
         drop(probe);
 
+        let capture_literal = format!("{:?}", capture.to_string_lossy());
         let script = format!(
-            "const fs=require('fs');require('http').createServer((req,res)=>{{let fin=false;req.socket.on('end',()=>{{fin=true}});setTimeout(()=>{{fs.writeFileSync({capture},JSON.stringify({{finBeforeResponse:fin}}));res.writeHead(200,{{'content-type':'text/plain'}});res.end('node-ok:'+req.url)}},150)}}).listen({port},'127.0.0.1')",
-            capture = format!("{:?}", capture.to_string_lossy()),
-            port = upstream_port,
+            "const fs=require('fs');require('http').createServer((req,res)=>{{let fin=false;req.socket.on('end',()=>{{fin=true}});setTimeout(()=>{{fs.writeFileSync({capture_literal},JSON.stringify({{finBeforeResponse:fin}}));res.writeHead(200,{{'content-type':'text/plain'}});res.end('node-ok:'+req.url)}},150)}}).listen({upstream_port},'127.0.0.1')",
         );
         let mut child = std::process::Command::new("node")
             .arg("-e")
@@ -1153,6 +1248,9 @@ mod integration_tests {
         let response = call(port, Some(GOOD));
         let record = std::fs::read_to_string(&capture).unwrap_or_else(|_| "{}".to_string());
         let _ = child.kill();
+        // kill 之后必须 wait：否则子进程变僵尸，clippy 也会报
+        // `spawned process is never wait()ed on`。
+        let _ = child.wait();
         proxy.stop();
         let _ = std::fs::remove_dir_all(&directory);
 

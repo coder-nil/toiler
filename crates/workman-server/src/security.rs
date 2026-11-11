@@ -50,7 +50,11 @@ fn normalize_host(host: &str) -> String {
 
 /// 从 `Host` 头解析 hostname；带 userinfo / path / query / fragment 的一律不认。
 fn host_from_header(value: &str) -> Option<String> {
-    if value.is_empty() || value.chars().any(|c| c.is_whitespace() || "/@\\".contains(c)) {
+    if value.is_empty()
+        || value
+            .chars()
+            .any(|c| c.is_whitespace() || "/@\\".contains(c))
+    {
         return None;
     }
     let url = url::Url::parse(&format!("http://{value}")).ok()?;
@@ -126,8 +130,22 @@ fn is_navigation_export(method: &Method, uri_path: &str, headers: &HeaderMap) ->
     }
     let mut parts = uri_path.trim_start_matches('/').split('/');
     matches!(
-        (parts.next(), parts.next(), parts.next(), parts.next(), parts.next(), parts.next()),
-        (Some("api"), Some("sessions"), Some(_id), Some("export"), None, None)
+        (
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next()
+        ),
+        (
+            Some("api"),
+            Some("sessions"),
+            Some(_id),
+            Some("export"),
+            None,
+            None
+        )
     )
 }
 
@@ -194,8 +212,7 @@ pub fn is_json_request(headers: &HeaderMap) -> bool {
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
-    base == "application/json"
-        || (base.starts_with("application/") && base.ends_with("+json"))
+    base == "application/json" || (base.starts_with("application/") && base.ends_with("+json"))
 }
 
 /// Extractor：不经校验的 403 就是 pi 的 `{"error":"Untrusted API request"}`。
@@ -246,16 +263,31 @@ mod tests {
     fn localhost_is_trusted() {
         let policy = TrustPolicy::default();
         let h = headers(&[("host", "127.0.0.1:3000")]);
-        assert!(is_trusted_api_request(&Method::GET, "/api/sessions", &h, &policy));
+        assert!(is_trusted_api_request(
+            &Method::GET,
+            "/api/sessions",
+            &h,
+            &policy
+        ));
     }
 
     #[test]
     fn lan_ip_is_trusted_but_foreign_dns_is_not() {
         let policy = TrustPolicy::default();
         let lan = headers(&[("host", "192.168.1.10:3000")]);
-        assert!(is_trusted_api_request(&Method::GET, "/api/sessions", &lan, &policy));
+        assert!(is_trusted_api_request(
+            &Method::GET,
+            "/api/sessions",
+            &lan,
+            &policy
+        ));
         let dns = headers(&[("host", "evil.example.com")]);
-        assert!(!is_trusted_api_request(&Method::GET, "/api/sessions", &dns, &policy));
+        assert!(!is_trusted_api_request(
+            &Method::GET,
+            "/api/sessions",
+            &dns,
+            &policy
+        ));
     }
 
     #[test]
@@ -265,7 +297,12 @@ mod tests {
             desktop_api_origin: None,
         };
         let h = headers(&[("host", "pi.local:3000")]);
-        assert!(is_trusted_api_request(&Method::GET, "/api/sessions", &h, &policy));
+        assert!(is_trusted_api_request(
+            &Method::GET,
+            "/api/sessions",
+            &h,
+            &policy
+        ));
     }
 
     #[test]
@@ -275,14 +312,24 @@ mod tests {
             ("host", "127.0.0.1:3000"),
             ("origin", "http://127.0.0.1:3000"),
         ]);
-        assert!(is_trusted_api_request(&Method::POST, "/api/agent/x", &same, &policy));
+        assert!(is_trusted_api_request(
+            &Method::POST,
+            "/api/agent/x",
+            &same,
+            &policy
+        ));
 
         let cross = headers(&[
             ("host", "127.0.0.1:3000"),
             ("origin", "http://evil.example.com"),
             ("sec-fetch-site", "cross-site"),
         ]);
-        assert!(!is_trusted_api_request(&Method::POST, "/api/agent/x", &cross, &policy));
+        assert!(!is_trusted_api_request(
+            &Method::POST,
+            "/api/agent/x",
+            &cross,
+            &policy
+        ));
     }
 
     #[test]
@@ -301,14 +348,28 @@ mod tests {
             &policy
         ));
         // 同一组头用到别的路径就不算例外，但没有 Origin 仍然通过
-        assert!(is_trusted_api_request(&Method::GET, "/api/sessions", &h, &policy));
+        assert!(is_trusted_api_request(
+            &Method::GET,
+            "/api/sessions",
+            &h,
+            &policy
+        ));
     }
 
     #[test]
     fn json_content_type() {
-        assert!(is_json_request(&headers(&[("content-type", "application/json; charset=utf-8")])));
-        assert!(is_json_request(&headers(&[("content-type", "application/vnd.x+json")])));
-        assert!(!is_json_request(&headers(&[("content-type", "text/plain")])));
+        assert!(is_json_request(&headers(&[(
+            "content-type",
+            "application/json; charset=utf-8"
+        )])));
+        assert!(is_json_request(&headers(&[(
+            "content-type",
+            "application/vnd.x+json"
+        )])));
+        assert!(!is_json_request(&headers(&[(
+            "content-type",
+            "text/plain"
+        )])));
         assert!(!is_json_request(&HeaderMap::new()));
     }
 }

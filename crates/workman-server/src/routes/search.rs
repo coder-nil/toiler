@@ -70,7 +70,11 @@ pub async fn search(
         // 元数据没命中再扫文件内容
         let snippet = match snippet {
             Some(s) => s,
-            None => match state.sessions().path_of(id).and_then(|p| std::fs::read_to_string(p).ok()) {
+            None => match state
+                .sessions()
+                .path_of(id)
+                .and_then(|p| std::fs::read_to_string(p).ok())
+            {
                 Some(text) => match scan_file(&text, &needle) {
                     Some(s) => s,
                     None => continue,
@@ -151,7 +155,8 @@ fn make_snippet(text: &str, needle: &str) -> Option<String> {
 
     // 按字符下标切（避免破坏 UTF-8）
     let chars: Vec<char> = collapsed.chars().collect();
-    let byte_to_char = |byte_index: usize| collapsed[..byte_index.min(collapsed.len())].chars().count();
+    let byte_to_char =
+        |byte_index: usize| collapsed[..byte_index.min(collapsed.len())].chars().count();
     let start_char = byte_to_char(index);
     let end_char = byte_to_char(index + needle.len());
 

@@ -12,10 +12,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use workman_session::{WorkmanHome, V3SessionRepo, V3SessionStorage};
 use rpi_agent::message::{AgentMessage, CustomMessage};
 use rpi_harness::session::types::{EntryQuery, SessionStorage};
 use rpi_harness::session::Session;
+use workman_session::{V3SessionRepo, V3SessionStorage, WorkmanHome};
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -130,7 +130,10 @@ fn show(path: Option<&str>) -> Result<()> {
     let path = path.context("需要会话文件路径")?;
     let info = V3SessionStorage::inspect(path)?;
     println!("id        : {}", info.id);
-    println!("created_at: {}", workman_session::ms_to_iso(info.created_at));
+    println!(
+        "created_at: {}",
+        workman_session::ms_to_iso(info.created_at)
+    );
     println!("cwd       : {}", info.cwd);
     println!("entries   : {}", info.entries);
     println!("name      : {}", info.name.unwrap_or_else(|| "-".into()));

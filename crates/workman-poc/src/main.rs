@@ -12,9 +12,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use rpi_ai::{
-    providers::openai_responses::OpenAiResponsesProvider,
-    Api, AssistantMessageEvent, Context as AiContext, InputModality, Message, Model,
-    Provider, SimpleStreamOptions, UserMessage,
+    providers::openai_responses::OpenAiResponsesProvider, Api, AssistantMessageEvent,
+    Context as AiContext, InputModality, Message, Model, Provider, SimpleStreamOptions,
+    UserMessage,
 };
 use serde_json::Value;
 
@@ -38,8 +38,8 @@ struct Resolved {
 /// 映射成 rpi 的 `Model`。这正是将来 workman 的 provider 加载层要做的事。
 fn resolve_from_pi_config(wanted_model: Option<&str>) -> Result<Resolved> {
     let path = pi_models_path()?;
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("读不到 {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("读不到 {}", path.display()))?;
     let config: Value = serde_json::from_str(&text).context("pi models.json 不是合法 JSON")?;
 
     let providers = config
@@ -124,14 +124,20 @@ async fn main() -> Result<()> {
     let resolved = resolve_from_pi_config(wanted.as_deref())?;
     println!("✔ 配置映射成功（pi 的 models.json 原样读取）");
     println!("  provider : {}", resolved.provider_id);
-    println!("  model    : {} ({})", resolved.model.id, resolved.model.name);
+    println!(
+        "  model    : {} ({})",
+        resolved.model.id, resolved.model.name
+    );
     println!("  baseUrl  : {}", resolved.model.base_url);
     println!("  api      : {:?}", resolved.model.api);
     println!(
         "  context  : {} / maxTokens {} / reasoning {}",
         resolved.model.context_window, resolved.model.max_tokens, resolved.model.reasoning
     );
-    println!("  apiKey   : {}…", &resolved.api_key[..resolved.api_key.len().min(8)]);
+    println!(
+        "  apiKey   : {}…",
+        &resolved.api_key[..resolved.api_key.len().min(8)]
+    );
 
     if mode != "stream" {
         return Ok(());
