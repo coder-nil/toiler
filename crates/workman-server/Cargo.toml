@@ -14,7 +14,7 @@ rpi-ai = { workspace = true, features = ["providers"] }
 rpi-tools = { workspace = true }
 
 axum = { version = "0.8", features = ["json", "query", "multipart"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net", "signal", "process"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

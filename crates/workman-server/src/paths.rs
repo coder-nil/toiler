@@ -19,7 +19,9 @@
 //     │   ├── trust.json           项目信任
 //!     │   └── desktop-access*.json 手机访问（3 份）
 //!     ├── sessions/                v3 会话
-//!     ├── plugins/                 插件（预留）
+//!     ├── plugins/                 插件安装根
+//!     │   ├── npm/node_modules/    `npm:` 来源的包（与 pi 的 `<agentDir>/npm` 同构）
+//!     │   └── git/<host>/<path>    `git:` 来源的包
 //!     └── work.sqlite              项目列表 + 选中项
 //! ```
 //!
@@ -119,7 +121,11 @@ pub fn sessions_dir() -> PathBuf {
     workman_home().join("sessions")
 }
 
-/// 插件目录：`<workmanHome>/plugins`（预留）。
+/// 插件安装根：`<workmanHome>/plugins`。
+///
+/// `settings.json` 的 `packages` 里的全局包都装在这里（内部按来源分子目录，见
+/// `routes/plugins.rs` 的模块文档）。**不**用 `<workmanHome>/npm`：那是 pi 的布局
+/// （`<agentDir>/npm`），workman 的根目录留给配置 / 会话 / 项目库，插件单开一层。
 pub fn plugins_dir() -> PathBuf {
     workman_home().join("plugins")
 }

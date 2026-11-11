@@ -325,6 +325,12 @@ pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文�
 | `GET/POST/DELETE /api/worktrees` | ✅ | 列出 / 新建（`action:"checkout"` 走切分支）/ 删除（脏工作区 409 + `dirty:true`） |
 | `GET/PUT/PATCH/DELETE /api/projects` | ✅ | 用 workman 自己的 `<appDir>/work.sqlite`（`~/.agents/workman/work.sqlite`）；接口形状与 pi 一致，但**不再共库** |
 | `GET/POST /api/project-trust` | ✅ | `{requiresTrust,trusted}`；`trust.json` 与 pi 同格式 |
+| `GET /api/plugins?cwd=` | ⚠️ | 只读：列 `settings.json` 的 `packages` + 安装状态 + 包内资源；安装根只认 workman 自己的 agent 目录（见差异 19） |
+| `POST /api/plugins` | ⚠️ | `install`/`remove`/`update`/`disable`/`enable` 全支持：npm 走本机 npm（`--legacy-peer-deps`，安装根 `<workmanHome>/plugins/npm`），启停改 `settings.json`；**git: 来源不支持**；找不到 npm → 500 + 中文提示。注意：装上的 TS 扩展 rpi 不会加载，功能不生效 |
+| `GET /api/plugins/catalog` | ⚠️ | 恒为空页（`{plugins:[],hasMore:false}`）：插件市场同技能市场，PLAN 明确不做 |
+| `POST /api/plugins/catalog/translate` | ⚠️ | 恒为 `{translations:{}}`：没有目录可翻 |
+| `GET/PUT /api/tools/settings` | ⚠️ | `{isWindows:false,powerShellEnabled:false}`；PUT 501（shell 工具是 bash，没有 PowerShell 通道） |
+| `GET/PUT /api/queue-modes` | ❌ | 未实现：rpi 的 lane 没有 `all` / `one-at-a-time` 投递模式可配，写 `settings.json` 也不会生效（常规页的「引导消息投递」会显示一条 `Not found`） |
 
 ### `/api/files` 的实现细节（阶段 5）
 
@@ -386,6 +392,18 @@ pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文�
     历史会话都整页白屏（阶段 5 走查实测）。
 18. **`role: "system"` 的转录消息不进 context**（与 pi 的 `entryToUiMessage` 一致）：
     pi ≥0.86 把 prompt / 工具清单写成 system 消息，它们是 provider 输入而不是对话。
+19. **`/api/plugins` 只读，且只认 workman 自己的安装目录**：pi 的插件面板背后是
+    `DefaultPackageManager`（npm/git 安装 + 启停 + 资源池合并）；workman 只做投影：
+    读 `settings.json` 的 `packages`，按 `<agentDir>/npm/node_modules/<name>`、
+    `<agentDir>/git/<host>/<path>`（项目作用域换成 `<cwd>/.pi/…`）判断装没装。
+    **不**回退 `~/.pi/agent/npm`，也不跑 `npm root -g` / pnpm —— 因为 workman 的
+    agent 目录是自己的（`~/.agents/workman`），把 pi 那边装的包显示成「已安装」会误导：
+    rpi 并不会加载它们。资源发现按 `package.json` 的 `pi` 清单（存在则只按清单字段收，
+    缺失的类型不再回退约定目录），无清单时扫 `extensions/` `skills/` `prompts/` `themes/`；
+    不做 `.gitignore` 过滤、不展开清单里的 glob、对象形态的过滤清单只认「空数组 = 该类型
+    全禁用」。`totals` 只统计包内资源（不含 `settings.json` 顶层条目与自动发现目录）。
+    少这条路由时插件页会拿到静态兜底的 404 `{"error":"Not found"}`，并把它当成
+    一条插件画出来——这就是「不显示已安装插件」的直接原因。
 
 ### 目录与文件
 

@@ -1313,6 +1313,33 @@ async fn home_and_default_cwd_answer_the_shapes_the_shell_needs() {
 }
 
 #[tokio::test]
+async fn tools_settings_hides_the_powershell_group_on_non_windows() {
+    // 前端 SettingsPanel 依赖：`GET /api/tools/settings` 只要**失败**（原先是缺路由
+    // → 404），常规页就会渲染「Shell 工具」这一组，并把 error 原文当红字显示出来
+    // （就是设置页里那条莫名其妙的 "Not found"）。`isWindows === false` 时整组不渲染。
+    let root = fixture_root("tools-settings");
+    let reply = get(app(&root, &root), "/api/tools/settings").await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    let body = reply.json();
+    assert_eq!(body["isWindows"], cfg!(windows));
+    assert_eq!(
+        body["powerShellEnabled"], false,
+        "workman 的 shell 工具是 bash，没有 PowerShell 通道"
+    );
+
+    // PUT 只在 Windows 的 pi 上有意义，这里给明确错误而不是静默成功。
+    let put = call(
+        app(&root, &root),
+        "PUT",
+        "/api/tools/settings",
+        Some("{\"enabled\":true}"),
+        &[],
+    )
+    .await;
+    assert_eq!(put.status, StatusCode::NOT_IMPLEMENTED, "{}", put.text());
+}
+
+#[tokio::test]
 async fn cwd_validate_returns_project_identity() {
     // 前端的项目切换器直接用这三个字段建项目条目。
     let root = fixture_root("cwdvalidate");
@@ -2278,4 +2305,552 @@ async fn project_and_user_skills_are_merged_even_with_same_name() {
         matched[0]["sourceInfo"]["source"] == "project",
         "项目版排在前面（先扫到的优先）：{body}"
     );
+}
+
+// ============================================================================
+// 7) /api/plugins —— 插件面板
+// ============================================================================
+
+/// 打一次 `POST /api/plugins`（body 是 JSON）。
+async fn post_plugins(root: &Path, configs: &Path, body: Value) -> Reply {
+    call(
+        app_with_agent_dir(root, root, Some(configs)),
+        "POST",
+        "/api/plugins",
+        Some(&body.to_string()),
+        &[],
+    )
+    .await
+}
+
+/// 假的 npm：只做 workman 真正会调用的两件事（install / uninstall），不碰网络。
+/// 真 npm 在离线机器 / CI 上不可用，但这里要验证的是「命令怎么拼、settings 怎么落盘」。
+#[cfg(unix)]
+const FAKE_NPM: &str = r#"#!/usr/bin/env python3
+import json, pathlib, re, shutil, sys
+
+args = sys.argv[1:]
+cmd = args[0] if args else ""
+prefix = ""
+specs = []
+i = 1
+while i < len(args):
+    arg = args[i]
+    if arg == "--prefix":
+        prefix = args[i + 1]
+        i += 2
+        continue
+    if arg.startswith("-"):
+        i += 1
+        continue
+    specs.append(arg)
+    i += 1
+
+for spec in specs:
+    name = re.match(r"^(@[^/]+/[^@]+|[^@]+)", spec).group(1)
+    target = pathlib.Path(prefix) / "node_modules" / name
+    if cmd == "install":
+        (target / "extensions").mkdir(parents=True, exist_ok=True)
+        (target / "package.json").write_text(json.dumps({"name": name, "version": "9.9.9"}))
+        (target / "extensions" / "entry.js").write_text("export default {};")
+    elif cmd == "uninstall":
+        shutil.rmtree(target, ignore_errors=True)
+print("fake npm ok")
+"#;
+
+#[tokio::test]
+async fn plugins_list_reports_configured_packages_and_install_state() {
+    // 前端 PluginsConfig 依赖：`GET /api/plugins?cwd=` 的
+    // `packages[].{source,scope,filtered,disabled,installedPath,packageName,version,
+    // configuredVersion,counts,resources,status}`、`totals`、`diagnostics`、
+    // `projectResourcesLoaded`。
+    // 这条路由最初根本不存在：请求落到静态兜底拿到 404 `{"error":"Not found"}`，
+    // 前端把这个 error 当成一条插件画在左侧列表里（就是「不显示已安装插件」）。
+    let root = fixture_root("plugins");
+    let agent = fixture_root("plugins-agent");
+    // 生产的配置目录是 `<workmanHome>/configs`（见 paths.rs 的目录布局），
+    // 路由按这个位置反推「插件安装根」= `<workmanHome>/plugins`。
+    let configs = agent.join("configs");
+    std::fs::create_dir_all(&configs).unwrap();
+
+    // 带 `pi` 清单的包：清单声明了一个扩展入口。
+    // 注意清单存在时**只**按清单字段收资源（与 pi 的 collectPackageResources 一致），
+    // 所以这里故意再放一个技能目录，用来断言它**不**被算进去。
+    let manifest_pkg = agent.join("plugins/npm/node_modules/@demo/plugin");
+    std::fs::create_dir_all(manifest_pkg.join("dist")).unwrap();
+    std::fs::create_dir_all(manifest_pkg.join("skills/ignored")).unwrap();
+    std::fs::write(manifest_pkg.join("dist/extension.js"), "export default {};").unwrap();
+    std::fs::write(
+        manifest_pkg.join("skills/ignored/SKILL.md"),
+        "---\nname: ignored\n---\n",
+    )
+    .unwrap();
+    std::fs::write(
+        manifest_pkg.join("package.json"),
+        json!({
+            "name": "@demo/plugin",
+            "version": "1.2.3",
+            "pi": { "extensions": ["./dist/extension.js"] }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // 没有 `pi` 清单的包：按约定目录（skills/、prompts/…）收资源。
+    let plain_pkg = agent.join("plugins/npm/node_modules/plain");
+    std::fs::create_dir_all(plain_pkg.join("skills/demo")).unwrap();
+    std::fs::create_dir_all(plain_pkg.join("prompts")).unwrap();
+    std::fs::write(
+        plain_pkg.join("skills/demo/SKILL.md"),
+        "---\nname: demo\n---\n",
+    )
+    .unwrap();
+    std::fs::write(plain_pkg.join("prompts/hello.md"), "hi").unwrap();
+    std::fs::write(
+        plain_pkg.join("package.json"),
+        json!({ "name": "plain", "version": "0.1.0" }).to_string(),
+    )
+    .unwrap();
+
+    std::fs::write(
+        configs.join("settings.json"),
+        json!({
+            "packages": [
+                "npm:@demo/plugin",
+                "npm:plain",
+                // 对象形态 + 四个空数组 = 用户禁用了它（pi 的 isDisabledPackage）
+                { "source": "npm:off", "extensions": [], "skills": [], "prompts": [], "themes": [] },
+                // 配置了但没装：要给出 warning，configuredVersion 取 `@` 之后的版本段
+                "npm:absent@^2.0.0"
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    // 未信任的项目里配一个包：pi 与 workman 都**不**读项目 settings。
+    std::fs::create_dir_all(root.join(".pi")).unwrap();
+    std::fs::write(
+        root.join(".pi/settings.json"),
+        json!({ "packages": ["npm:project-only"] }).to_string(),
+    )
+    .unwrap();
+
+    let url = format!("/api/plugins?cwd={}", url_encode(&root.to_string_lossy()));
+    let reply = get(app_with_agent_dir(&root, &root, Some(&configs)), &url).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    let body = reply.json();
+
+    let packages = body["packages"].as_array().unwrap();
+    assert_eq!(packages.len(), 4, "项目未信任时不列项目包：{body}");
+    assert_eq!(
+        body["projectResourcesLoaded"], false,
+        "未信任时前端要禁用 Project 作用域"
+    );
+
+    let demo = packages
+        .iter()
+        .find(|pkg| pkg["source"] == "npm:@demo/plugin")
+        .unwrap_or_else(|| panic!("已安装的包要出现在列表里：{body}"));
+    assert_eq!(demo["scope"], "global", "pi 内部叫 user，对外是 global");
+    assert_eq!(demo["filtered"], false, "字符串条目不是 filtered");
+    assert_eq!(demo["disabled"], false);
+    assert_eq!(demo["packageName"], "@demo/plugin");
+    assert_eq!(demo["version"], "1.2.3");
+    assert_eq!(demo["status"], "loaded", "有资源就是 loaded：{demo}");
+    assert_eq!(demo["counts"]["extensions"], 1);
+    assert_eq!(demo["counts"]["skills"], 0, "有清单时不回退约定目录");
+    let resource = &demo["resources"][0];
+    assert_eq!(resource["kind"], "extension");
+    assert_eq!(
+        resource["name"], "extension",
+        "去掉扩展名（index.ts 才取目录名）"
+    );
+    assert_eq!(resource["relativePath"], "dist/extension.js");
+    assert!(
+        demo["installedPath"]
+            .as_str()
+            .unwrap()
+            .ends_with("plugins/npm/node_modules/@demo/plugin"),
+        "{demo}"
+    );
+
+    let plain = packages
+        .iter()
+        .find(|pkg| pkg["source"] == "npm:plain")
+        .unwrap_or_else(|| panic!("约定目录形态的包也要列出来：{body}"));
+    assert_eq!(plain["counts"]["skills"], 1);
+    assert_eq!(plain["counts"]["prompts"], 1);
+    assert_eq!(plain["resources"][0]["kind"], "skill");
+    assert_eq!(plain["resources"][0]["name"], "demo", "SKILL.md 取目录名");
+
+    let off = packages
+        .iter()
+        .find(|pkg| pkg["source"] == "npm:off")
+        .unwrap();
+    assert_eq!(off["filtered"], true);
+    assert_eq!(off["disabled"], true);
+    assert_eq!(off["status"], "disabled", "禁用优先于其它状态：{off}");
+
+    let absent = packages
+        .iter()
+        .find(|pkg| pkg["source"] == "npm:absent@^2.0.0")
+        .unwrap();
+    assert_eq!(absent["status"], "missing");
+    assert_eq!(absent["configuredVersion"], "^2.0.0");
+    assert!(
+        absent.get("installedPath").is_none(),
+        "没安装就不该有 installedPath 键（pi 的 JSON.stringify 会丢掉 undefined）：{absent}"
+    );
+
+    // 每个未安装的包两条 warning（pi 的 resolve 与列表各一条），文案逐字一致。
+    let diagnostics = body["diagnostics"].as_array().unwrap();
+    let messages: Vec<&str> = diagnostics
+        .iter()
+        .filter_map(|item| item["message"].as_str())
+        .collect();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| **m == "Package is configured but not installed yet.")
+            .count(),
+        2,
+        "{body}"
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| **m == "Configured package path was not found.")
+            .count(),
+        2,
+        "{body}"
+    );
+
+    assert_eq!(
+        body["totals"]["extensions"], 1,
+        "totals 只统计包内资源：{body}"
+    );
+    assert_eq!(body["totals"]["skills"], 1);
+    assert_eq!(body["totals"]["prompts"], 1);
+    assert_eq!(body["totals"]["themes"], 0);
+
+    // 信任之后项目包才出现，且作用域是 project。
+    workman_server::trust::TrustStore::at(configs.join("trust.json"))
+        .set(root.to_str().unwrap(), Some(true))
+        .unwrap();
+    let trusted = get(app_with_agent_dir(&root, &root, Some(&configs)), &url)
+        .await
+        .json();
+    assert_eq!(trusted["projectResourcesLoaded"], true, "{trusted}");
+    assert!(
+        trusted["packages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|pkg| pkg["source"] == "npm:project-only" && pkg["scope"] == "project"),
+        "信任后项目包要出现：{trusted}"
+    );
+
+    // 缺 cwd：与 pi 一致返回 400（否则前端会把「参数丢了」当成「没有插件」）。
+    let missing = get(
+        app_with_agent_dir(&root, &root, Some(&configs)),
+        "/api/plugins",
+    )
+    .await;
+    assert_eq!(
+        missing.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        missing.text()
+    );
+
+    // POST 的校验分支（真正装包的那条见下一个用例）：前端会把 error 原文画在面板上，
+    // 所以状态码和文案都要能直接看懂。
+    let no_cwd = post_plugins(
+        &root,
+        &configs,
+        json!({"action": "install", "source": "npm:x"}),
+    )
+    .await;
+    assert_eq!(no_cwd.status, StatusCode::BAD_REQUEST, "{}", no_cwd.text());
+    assert_eq!(no_cwd.json()["error"], "cwd required");
+
+    let no_action = post_plugins(&root, &configs, json!({"cwd": root.to_str().unwrap()})).await;
+    assert_eq!(
+        no_action.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        no_action.text()
+    );
+    assert_eq!(no_action.json()["error"], "action required");
+
+    let unknown = post_plugins(
+        &root,
+        &configs,
+        json!({"cwd": root.to_str().unwrap(), "action": "explode", "source": "npm:x"}),
+    )
+    .await;
+    assert_eq!(
+        unknown.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        unknown.text()
+    );
+    assert!(unknown.json()["error"]
+        .as_str()
+        .unwrap()
+        .contains("Unsupported action: explode"));
+
+    let no_source = post_plugins(
+        &root,
+        &configs,
+        json!({"cwd": root.to_str().unwrap(), "action": "install"}),
+    )
+    .await;
+    assert_eq!(
+        no_source.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        no_source.text()
+    );
+    assert_eq!(no_source.json()["error"], "source required");
+
+    // 插件市场返回空页：抽屉显示「没有结果」，而不是一条 404 错误。
+    let catalog = get(
+        app_with_agent_dir(&root, &root, Some(&configs)),
+        "/api/plugins/catalog?q=pi&from=0&size=40",
+    )
+    .await;
+    assert_eq!(catalog.status, StatusCode::OK, "{}", catalog.text());
+    let catalog_body = catalog.json();
+    assert_eq!(catalog_body["plugins"].as_array().unwrap().len(), 0);
+    assert_eq!(catalog_body["hasMore"], false);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn plugins_install_remove_run_local_npm_and_persist_settings() {
+    // 前端 PluginsConfig 的三个按钮直接依赖它：
+    // `install`（抽屉「添加插件」）、`remove`（详情页「移除」）、`disable`/`enable`（详情页开关）。
+    // 装包必须走本机 npm；找不到 npm 时要给一句能看懂的提示，而不是 `spawn npm ENOENT`。
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = fixture_root("plugins-npm");
+    let agent = fixture_root("plugins-npm-agent");
+    let configs = agent.join("configs");
+    std::fs::create_dir_all(&configs).unwrap();
+    std::fs::write(
+        configs.join("settings.json"),
+        json!({ "packages": [], "defaultProvider": "keep-me" }).to_string(),
+    )
+    .unwrap();
+
+    let bin = agent.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let npm = bin.join("npm");
+    std::fs::write(&npm, FAKE_NPM).unwrap();
+    std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("WORKMAN_NPM", &npm);
+
+    // 项目作用域要先信任项目（这里 trust.json 还没写）：否则一个刚 clone 的仓库
+    // 就能靠 `.pi/settings.json` 决定装什么。注意「需要信任」的前提是项目里已经有
+    // 需要信任的资源（`trust.rs` 的 TRUST_REQUIRING），所以先落一个 `.pi/settings.json`。
+    let project_settings = root.join(".pi").join("settings.json");
+    std::fs::create_dir_all(project_settings.parent().unwrap()).unwrap();
+    std::fs::write(&project_settings, json!({ "packages": [] }).to_string()).unwrap();
+    let untrusted = post_plugins(
+        &root,
+        &configs,
+        json!({
+            "cwd": root.to_str().unwrap(),
+            "action": "install",
+            "source": "npm:x",
+            "scope": "project",
+        }),
+    )
+    .await;
+    assert_eq!(
+        untrusted.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        untrusted.text()
+    );
+    assert!(
+        untrusted.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("must be trusted"),
+        "{}",
+        untrusted.text()
+    );
+    assert_eq!(
+        read_settings_file(&project_settings)["packages"],
+        json!([]),
+        "被拒绝的安装不能改动项目 settings"
+    );
+
+    let read_settings = || -> Value { read_settings_file(&configs.join("settings.json")) };
+
+    // ---- install：npm 装到 <workmanHome>/plugins/npm，并把条目写进 settings.json
+    let installed = post_plugins(
+        &root,
+        &configs,
+        json!({
+            "cwd": root.to_str().unwrap(),
+            "action": "install",
+            "source": "npm:pi-mcp-adapter@1.0.0",
+            "scope": "global",
+        }),
+    )
+    .await;
+    assert_eq!(installed.status, StatusCode::OK, "{}", installed.text());
+    let body = installed.json();
+    let package = body["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pkg| pkg["source"] == "npm:pi-mcp-adapter@1.0.0")
+        .unwrap_or_else(|| panic!("装完要出现在列表里：{body}"));
+    assert_eq!(
+        package["status"], "loaded",
+        "假 npm 也写了 extensions/entry.js"
+    );
+    assert_eq!(package["version"], "9.9.9", "版本来自已装包的 package.json");
+    assert!(
+        package["installedPath"]
+            .as_str()
+            .unwrap()
+            .ends_with("plugins/npm/node_modules/pi-mcp-adapter"),
+        "全局安装根是 <workmanHome>/plugins/npm：{package}"
+    );
+    assert!(
+        agent
+            .join("plugins/npm/node_modules/pi-mcp-adapter/package.json")
+            .is_file(),
+        "包要真的落到磁盘上"
+    );
+    let settings = read_settings();
+    assert_eq!(settings["packages"][0], "npm:pi-mcp-adapter@1.0.0");
+    assert_eq!(
+        settings["defaultProvider"], "keep-me",
+        "写 packages 不能丢掉 settings.json 的其它键"
+    );
+    assert!(
+        configs.join("settings.json").is_file(),
+        "settings.json 路径不能变"
+    );
+
+    // ---- install 是幂等的：同一个包再装一次不会出现两条
+    let again = post_plugins(
+        &root,
+        &configs,
+        json!({
+            "cwd": root.to_str().unwrap(),
+            "action": "install",
+            "source": "npm:pi-mcp-adapter@1.0.0",
+            "scope": "global",
+        }),
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.text());
+    assert_eq!(read_settings()["packages"].as_array().unwrap().len(), 1);
+
+    // ---- disable / enable：只改 settings.json 的条目形态，不碰磁盘
+    let source = "npm:pi-mcp-adapter@1.0.0";
+    let disabled = post_plugins(
+        &root,
+        &configs,
+        json!({"cwd": root.to_str().unwrap(), "action": "disable", "source": source}),
+    )
+    .await;
+    assert_eq!(disabled.status, StatusCode::OK, "{}", disabled.text());
+    let disabled_body = disabled.json();
+    let disabled_pkg = disabled_body["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pkg| pkg["source"] == source)
+        .unwrap();
+    assert_eq!(disabled_pkg["disabled"], true);
+    assert_eq!(disabled_pkg["status"], "disabled");
+    assert_eq!(settings["packages"].as_array().unwrap().len(), 1);
+    let settings_after_disable = read_settings();
+    assert_eq!(settings_after_disable["packages"][0]["source"], source);
+    assert_eq!(
+        settings_after_disable["packages"][0]["extensions"],
+        json!([])
+    );
+
+    let enabled = post_plugins(
+        &root,
+        &configs,
+        json!({"cwd": root.to_str().unwrap(), "action": "enable", "source": source}),
+    )
+    .await;
+    assert_eq!(enabled.status, StatusCode::OK, "{}", enabled.text());
+    assert_eq!(
+        enabled.json()["packages"][0]["disabled"],
+        false,
+        "{}",
+        enabled.text()
+    );
+    assert_eq!(
+        read_settings()["packages"][0],
+        source,
+        "启用后回到字符串形态"
+    );
+
+    // ---- remove：npm uninstall + 从 settings 删除条目
+    let removed = post_plugins(
+        &root,
+        &configs,
+        json!({"cwd": root.to_str().unwrap(), "action": "remove", "source": source}),
+    )
+    .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.text());
+    assert!(
+        removed.json()["packages"].as_array().unwrap().is_empty(),
+        "{}",
+        removed.text()
+    );
+    assert_eq!(read_settings()["packages"], json!([]));
+    assert!(
+        !agent
+            .join("plugins/npm/node_modules/pi-mcp-adapter")
+            .exists(),
+        "卸载要真的删掉目录"
+    );
+
+    // ---- 找不到 npm：给一句能看懂的中文提示（不是 spawn ENOENT）
+    std::env::set_var("WORKMAN_NPM", "/nonexistent/npm");
+    let missing = post_plugins(
+        &root,
+        &configs,
+        json!({
+            "cwd": root.to_str().unwrap(),
+            "action": "install",
+            "source": "npm:pi-mcp-adapter",
+            "scope": "global",
+        }),
+    )
+    .await;
+    assert_eq!(
+        missing.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        missing.text()
+    );
+    assert!(
+        missing.json()["error"].as_str().unwrap().contains("npm"),
+        "{}",
+        missing.text()
+    );
+
+    std::env::remove_var("WORKMAN_NPM");
+}
+
+/// 读一个 settings.json 文件（测试用；文件必须是合法 JSON 对象）。
+fn read_settings_file(path: &Path) -> Value {
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|error| panic!("读 {path:?} 失败：{error}"));
+    serde_json::from_str(&text).unwrap_or_else(|error| panic!("解析 {path:?} 失败：{error}"))
 }

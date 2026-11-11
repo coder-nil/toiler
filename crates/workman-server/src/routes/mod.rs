@@ -10,6 +10,7 @@ pub mod git;
 pub mod misc;
 pub mod mobile;
 pub mod models_config;
+pub mod plugins;
 pub mod projects;
 pub mod search;
 pub mod sessions;
@@ -100,6 +101,19 @@ pub fn router(state: AppState) -> Router {
             "/api/skills/install",
             post(crate::routes::skills::market_not_implemented),
         )
+        // ---- plugins ----
+        // 只读列出 `settings.json` 里配置的包与安装状态（见 routes/plugins.rs）。
+        // 少了这条路由，插件页会把静态兜底的 404 `{"error":"Not found"}` 当成一条插件画出来。
+        .route(
+            "/api/plugins",
+            get(crate::routes::plugins::list).post(crate::routes::plugins::command),
+        )
+        // 插件市场：pi 搜 npm 扩展包；workman 返回空页（PLAN「明确不做的」）
+        .route("/api/plugins/catalog", get(crate::routes::plugins::catalog))
+        .route(
+            "/api/plugins/catalog/translate",
+            post(crate::routes::plugins::catalog_translate),
+        )
         .route("/api/models", get(crate::routes::misc::models))
         .route(
             "/api/models-config",
@@ -186,6 +200,12 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/mobile/pair", get(crate::routes::mobile::pair))
         .route("/api/home", get(crate::routes::misc::home))
+        // Shell 工具开关：非 Windows 恒 `{isWindows:false,powerShellEnabled:false}`，
+        // 前端据此整组不渲染（缺路由会让常规页多一行红色的 "Not found"）。
+        .route(
+            "/api/tools/settings",
+            get(crate::routes::misc::tools_settings).put(crate::routes::misc::tools_settings_put),
+        )
         .route("/api/default-cwd", post(crate::routes::misc::default_cwd))
         .with_state(state)
         // 其余路径一律交给内嵌的前端产物：`/api/*` 会先命中上面的具体路由，

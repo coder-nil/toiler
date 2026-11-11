@@ -299,3 +299,30 @@ pub async fn default_cwd(State(state): State<AppState>, _trusted: Trusted) -> Re
     }
     Json(json!({ "cwd": cwd.to_string_lossy() })).into_response()
 }
+
+/// `GET /api/tools/settings` —— Shell 工具开关。
+///
+/// pi 用它决定常规页「Shell 工具」那一组画不画：`isWindows` 为 `false` 时前端
+/// 整组不渲染（`SettingsPanel` 的条件是 `isWindows === true || 读取失败`）。
+/// 少了这条路由，请求会落到静态兜底的 404 `{"error":"Not found"}`，前端把 error
+/// 原文画在开关下面——这就是设置页里那条莫名其妙的红字。
+///
+/// workman 的 shell 工具是 bash（`rpi`），没有 PowerShell 通道，所以恒为关闭。
+pub async fn tools_settings(_trusted: Trusted) -> Response {
+    Json(json!({
+        "isWindows": cfg!(windows),
+        "powerShellEnabled": false,
+    }))
+    .into_response()
+}
+
+/// `PUT /api/tools/settings` —— pi 只在 Windows 上接受这个开关。
+pub async fn tools_settings_put() -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({
+            "error": "workman 的 shell 工具是 bash，没有 PowerShell 通道可切换"
+        })),
+    )
+        .into_response()
+}
