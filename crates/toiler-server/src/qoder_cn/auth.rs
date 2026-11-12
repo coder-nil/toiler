@@ -210,16 +210,26 @@ pub fn start_device_login() -> DeviceLogin {
     }
 }
 
+/// 设备码轮询地址。
+///
+/// **`?` 必须自己写**：`Serializer::new` 只是把键值对拼到前缀字符串后面，不会
+/// 补查询分隔符。少了它上游收到的是 `/deviceToken/pollnonce=…` 这种垃圾路径，
+/// 回的是 `401 {"errorMessage":"User not authenticated"}` —— 与「用户还没在浏览器
+/// 里确认」的回答一模一样，于是轮询把 5 分钟窗口耗光、登录永远不成功。
+fn poll_url(nonce: &str, verifier: &str) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("nonce", nonce)
+        .append_pair("verifier", verifier)
+        .append_pair("challenge_method", "S256")
+        .finish();
+    format!("{OPENAPI}{DEVICE_POLL_PATH}?{query}")
+}
+
 impl DeviceLogin {
     /// 轮询直到用户完成授权（404/202 = 还在等），最长 [`POLL_WINDOW_MS`]。
     pub async fn poll(&self) -> Result<TokenSet, String> {
         let deadline = SystemTime::now() + Duration::from_millis(POLL_WINDOW_MS);
-        let poll_url =
-            url::form_urlencoded::Serializer::new(format!("{OPENAPI}{DEVICE_POLL_PATH}"))
-                .append_pair("nonce", &self.nonce)
-                .append_pair("verifier", &self.verifier)
-                .append_pair("challenge_method", "S256")
-                .finish();
+        let poll_url = poll_url(&self.nonce, &self.verifier);
         let client = http();
         loop {
             if SystemTime::now() > deadline {
@@ -233,6 +243,9 @@ impl DeviceLogin {
             {
                 Ok(response) => {
                     let status = response.status().as_u16();
+                    // 401 既可能是「还没确认」也可能是地址拼错了，留下状态码是排查
+                    // 这类问题的唯一线索（原因见 [`poll_url`]）。
+                    tracing::debug!(status, "qoder-cn 设备码轮询");
                     if status == 404 || status == 202 {
                         // 用户还没在浏览器里点确认（pi 的判定）
                     } else if status == 200 {
@@ -388,6 +401,19 @@ mod tests {
                 login.auth_url
             );
         }
+    }
+
+    #[test]
+    fn poll_url_keeps_the_query_separator() {
+        let url = poll_url("n-1", "v-1");
+        assert_eq!(
+            url,
+            format!("{OPENAPI}{DEVICE_POLL_PATH}?nonce=n-1&verifier=v-1&challenge_method=S256")
+        );
+        assert!(
+            !url.contains("pollnonce"),
+            "缺 `?` 会把 nonce 拼进路径：{url}"
+        );
     }
 
     #[test]
