@@ -80,6 +80,8 @@ async fn main() -> Result<()> {
     });
 
     let state = state.with_binding(&host, addr.port());
+    // 内置 `qoder-cn` 目录的 baseUrl 要指向真实监听端口，所以只能在 bind 之后注入。
+    state.attach_qoder_cn();
     boot::serve(listener, routes::router(state), shutdown_rx).await
 }
 

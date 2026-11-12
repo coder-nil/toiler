@@ -330,6 +330,42 @@ impl ModelCatalog {
         Ok(catalog)
     }
 
+    /// 把内置 `qoder-cn` 目录注入一份副本（`base_url` 指向本机转发端点）。
+    ///
+    /// `qoder-cn` 是订阅 provider：模型清单在 pi 侧是静态快照，不走 `models.json`。
+    /// 用户自己在 `models.json` 里写了同名 provider 的话，调用方不该再注入
+    /// （[`crate::state::AppState::attach_qoder_cn`] 会先查一遍）。
+    pub fn with_qoder_cn(mut self, base_url: &str) -> Self {
+        let provider_id = crate::qoder_cn::PROVIDER_ID;
+        if self.providers.iter().any(|p| p.id() == provider_id) {
+            return self;
+        }
+        let models = crate::qoder_cn::models(base_url);
+        self.entries.extend(models.iter().map(|model| {
+            ModelEntry {
+                provider: provider_id.to_string(),
+                id: model.id.clone(),
+                name: model.name.clone(),
+                api: "openai-completions".to_string(),
+                context_window: model.context_window,
+                max_tokens: model.max_tokens,
+                reasoning: model.reasoning,
+                input: model
+                    .input
+                    .iter()
+                    .map(|modality| match modality {
+                        InputModality::Text => "text".to_string(),
+                        InputModality::Image => "image".to_string(),
+                    })
+                    .collect(),
+            }
+        }));
+        self.models.extend(models.iter().cloned());
+        self.providers
+            .push(Arc::new(crate::qoder_cn::provider(base_url)));
+        self
+    }
+
     /// 选默认模型：`WORKMAN_MODEL=provider/id` > 历史会话提示 > 第一个。
     ///
     /// 历史会话提示（`hint`）来自最近一个会话的 `model_change` 条目——也就是

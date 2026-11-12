@@ -340,7 +340,8 @@ async fn ensure_agent(state: &AppState, id: &str) -> Result<Arc<LiveAgent>, Agen
     }
 
     let preferred = state.default_model_ref();
-    let started = LiveAgent::start(id, &path, &cwd, state.catalog(), preferred).await;
+    let catalog = state.catalog();
+    let started = LiveAgent::start(id, &path, &cwd, &catalog, preferred, state.settings()).await;
     state.live().clear_starting(id);
     match started {
         Ok(agent) => {

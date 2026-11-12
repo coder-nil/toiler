@@ -1,7 +1,7 @@
 //! 服务状态：会话存储、活 agent、模型目录、可信性策略、配置存储。
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::agent_runtime::LiveSessions;
 use crate::auth::AuthStore;
@@ -22,7 +22,9 @@ pub struct AppState {
 pub struct Inner {
     pub sessions: SessionList,
     pub live: LiveSessions,
-    pub catalog: ModelCatalog,
+    /// 模型目录。可替换：`qoder-cn` 的内置模型要等 `bind` 之后（知道端口）才能
+    /// 注入，登录/退出也要重建一次（见 [`AppState::attach_qoder_cn`]）。
+    pub catalog: RwLock<Arc<ModelCatalog>>,
     pub trust: TrustPolicy,
     /// 允许访问的根目录（git / 文件 / worktree 用）
     pub roots: AllowedRoots,
@@ -43,6 +45,8 @@ pub struct Inner {
     /// 单独用 `Arc<Mutex<..>>` 而不是普通字段：监听端口只有 `bind` 之后才知道，
     /// 而那时 `state` 往往已经被 clone 过（预热任务持有一份），拿不到 `&mut Inner`。
     pub binding: Arc<Mutex<Binding>>,
+    /// `qoder-cn` 本机转发端点的路径令牌（进程内随机串，见 `qoder_cn::proxy`）。
+    pub qoder_cn_token: String,
 }
 
 /// 服务绑定的地址；`port == 0` 表示还没绑定。
@@ -80,7 +84,7 @@ impl AppState {
             inner: Arc::new(Inner {
                 sessions: SessionList::new(sessions_root),
                 live: LiveSessions::new(),
-                catalog,
+                catalog: RwLock::new(Arc::new(catalog)),
                 trust: TrustPolicy::from_env(),
                 roots: AllowedRoots::new(),
                 auth: AuthStore::default(),
@@ -90,6 +94,7 @@ impl AppState {
                 project_trust: TrustStore::default(),
                 default_cwd,
                 binding: Arc::new(Mutex::new(Binding::default())),
+                qoder_cn_token: uuid::Uuid::new_v4().simple().to_string(),
             }),
         }
     }
@@ -159,8 +164,49 @@ impl AppState {
         &self.inner.live
     }
 
-    pub fn catalog(&self) -> &ModelCatalog {
-        &self.inner.catalog
+    pub fn catalog(&self) -> Arc<ModelCatalog> {
+        match self.inner.catalog.read() {
+            Ok(guard) => Arc::clone(&guard),
+            Err(poisoned) => Arc::clone(&poisoned.into_inner()),
+        }
+    }
+
+    /// 换一份模型目录（[`Self::attach_qoder_cn`] 与登录/退出后用）。
+    pub fn replace_catalog(&self, catalog: ModelCatalog) {
+        match self.inner.catalog.write() {
+            Ok(mut guard) => *guard = Arc::new(catalog),
+            Err(poisoned) => *poisoned.into_inner() = Arc::new(catalog),
+        }
+    }
+
+    /// `qoder-cn` 本机转发端点的路径令牌。
+    pub fn qoder_cn_token(&self) -> String {
+        self.inner.qoder_cn_token.clone()
+    }
+
+    /// 把内置 `qoder-cn` 模型注入目录（幂等）。
+    ///
+    /// 必须在 `bind` 之后调用：模型的 `baseUrl` 要指向本进程的监听端口。
+    /// 用户自己在 `models.json` 里写了 `qoder-cn` 时以用户的为准（不覆盖）。
+    pub fn attach_qoder_cn(&self) -> bool {
+        let port = self.server_port();
+        if port == 0 {
+            return false;
+        }
+        let current = self.catalog();
+        if current
+            .providers
+            .iter()
+            .any(|p| p.id() == crate::qoder_cn::PROVIDER_ID)
+        {
+            return false;
+        }
+        let base = crate::qoder_cn::local_base_url(port, &self.qoder_cn_token());
+        // 只在 debug 级打出来：地址里含路径令牌（防局域网滥用），默认日志不落盘。
+        tracing::debug!("qoder-cn 本机转发端点：{base}");
+        let next = (*current).clone().with_qoder_cn(&base);
+        self.replace_catalog(next);
+        true
     }
 
     pub fn trust(&self) -> &TrustPolicy {

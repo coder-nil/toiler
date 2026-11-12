@@ -156,7 +156,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/auth/login/{provider}",
-            post(crate::routes::auth::login_unsupported),
+            get(crate::routes::auth::login_stream).post(crate::routes::auth::login_unsupported),
         )
         // ---- git / worktrees ----
         .route(
@@ -207,6 +207,19 @@ pub fn router(state: AppState) -> Router {
             get(crate::routes::misc::tools_settings).put(crate::routes::misc::tools_settings_put),
         )
         .route("/api/default-cwd", post(crate::routes::misc::default_cwd))
+        // 引导 / 续跑队列的投递模式。缺路由会让常规页在「完成提示音」下面
+        // 常驻一行红色的 "Not found"（静态兜底的 404 原文），见 routes/misc.rs。
+        .route(
+            "/api/queue-modes",
+            get(crate::routes::misc::queue_modes).put(crate::routes::misc::queue_modes_put),
+        )
+        // `qoder-cn` 的本机转发端点（不是 `/api` 契约的一部分）：rpi 的 provider
+        // 只能按 baseUrl 发标准 OpenAI 请求，这里把它改写成 COSY 签名请求再转发。
+        // 路径带进程内随机令牌 + 只收 loopback 对端，见 `qoder_cn::proxy`。
+        .route(
+            "/qoder-cn/{token}/v1/chat/completions",
+            post(crate::qoder_cn::proxy::chat_completions),
+        )
         .with_state(state)
         // 其余路径一律交给内嵌的前端产物：`/api/*` 会先命中上面的具体路由，
         // 所以这里只需处理静态文件、客户端路由与 404。

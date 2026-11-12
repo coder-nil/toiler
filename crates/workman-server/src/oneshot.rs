@@ -42,12 +42,14 @@ pub async fn complete(
 ) -> Result<Reply> {
     let context = Context::new(vec![Message::User(UserMessage::new(prompt, now_ms()))]);
 
-    let mut options = SimpleStreamOptions::default();
-    options.api_key = api_key;
-    options.max_tokens = Some(max_tokens);
-    options.timeout = Some(timeout);
-    options.max_retries = Some(0);
-    options.reasoning = Some(ThinkingLevel::Off);
+    let options = SimpleStreamOptions {
+        api_key,
+        max_tokens: Some(max_tokens),
+        timeout: Some(timeout),
+        max_retries: Some(0),
+        reasoning: Some(ThinkingLevel::Off),
+        ..Default::default()
+    };
 
     let mut stream = provider.stream_simple(model, &context, &options).await;
     let mut text = String::new();

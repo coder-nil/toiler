@@ -95,6 +95,14 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 到 v3 会话文件（前端切完的 `loadSession` 靠它回显模型），返回 `{id, provider}`；
 查不到时 `500 {"error":"Model not found: <provider>/<modelId>"}`。
 
+`navigate_tree`（`{"type":"navigate_tree","targetId":"<entryId>"}`）把 main lane 的叶子
+**移到**目标条目上（不是它的父节点），返回 `{cancelled, leafId}`。前端三个入口都发它：
+消息上的「从此处编辑」、消息树点节点、分支下拉切换叶子。拿到 `leafId` 后前端一定跟一次
+`GET /api/sessions/{id}/context?leafId=…` 重载分支，所以返回值必须是**导航后**的叶子。
+v3 文件里没有 leaf 记录（pi 也没有）：只挪内存指针，重开会话时叶子退回最后一条条目；
+真在新分支上续聊时新条目带 `parentId` 落盘，那一行自己就成了叶子。
+目标条目不存在时 `500`（pi 抛 `Entry <id> not found`）。
+
 响应：`200 {"success":true,"data":<command 返回值>}`
 - 会话不存在：`404 {"error":"Session not found", "code":"prompt_rejected", "accepted":false}`（仅 prompt）
 - 其它错误：`500 {"error": "<msg>"}`（prompt 额外带 `code`/`accepted`）
@@ -274,7 +282,7 @@ pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文�
 | `DELETE /api/sessions/{id}` | ✅ | 关活 agent + 删文件 |
 | `GET /api/sessions/{id}/state` | ✅ | 与 `GET /api/agent/{id}` 同实现 |
 | `GET /api/sessions/search` | ✅ | 元数据 + 文本块 + compaction.summary，58 字符 snippet |
-| `POST /api/agent/{id}` | ✅ | `prompt`/`steer`/`follow_up`/`abort`/`get_state`/`set_model` |
+| `POST /api/agent/{id}` | ✅ | `prompt`/`steer`/`follow_up`/`abort`/`get_state`/`set_model`/`navigate_tree`/`set_steering_mode`/`set_follow_up_mode`（后两个只落盘，`applied:false`，新会话生效；见 `GET/PUT /api/queue-modes`） |
 | `GET /api/agent/{id}` | ✅ | `{running}` / `{running, state}` |
 | `GET /api/agent/{id}/events` | ✅ | SSE，裁剪规则与 pi 逐条对齐 |
 | `POST /api/agent/new` | ✅ | 建 v3 会话 + 登记项目 + 执行 body 里的命令；`{success,sessionId,data,model,thinkingLevel}` |
@@ -302,13 +310,14 @@ pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文�
 | `GET /api/sessions/{id}/export` | ⚠️ | 单文件 HTML 下载（header/文件名规则同 pi，内容是线性转写稿，不是 pi 的树状视图） |
 | `GET /api/sessions/{id}/entries/{entryId}/thinking` | ✅ | `?blockIndex=N` → `{thinking}` |
 | `POST /api/sessions/{id}/auto-name` | ✅ | 用会话自己的模型起标题，写回 `session_info` → `{title,usage}` |
-| `GET /api/auth/providers` | ⚠️ | `{providers}`；只列 `models.json` 里没写 `apiKey` 的 provider（见差异 6） |
-| `GET /api/auth/all-providers` | ⚠️ | 恒为空：只支持 API Key，没有 OAuth 登录流程 |
+| `GET /api/auth/providers` | ✅ | **OAuth / 订阅**列表：`{id,name,baseUrl?,usesCallbackServer,loggedIn,supportsApiKey}`，11 家（含 `qoder-cn`，见差异 6） |
+| `GET /api/auth/all-providers` | ✅ | **API Key** 列表：`{id,displayName,baseUrl?,configured,source?,modelCount,supportsOAuth}`，42 家（含 `apisets`） |
 | `GET /api/auth/api-key/{provider}` | ✅ | `{provider,displayName,configured,source,models,maskedKey}`，明文 key 永不出站 |
 | `POST /api/auth/api-key/{provider}` | ✅ | `{apiKey}` → 写 `auth.json`（0600，原子替换） |
 | `DELETE /api/auth/api-key/{provider}` | ✅ | 类型不符 → 409 |
 | `POST /api/auth/logout/{provider}` | ✅ | 删 oauth 凭据；类型不符 → 409 |
-| `POST /api/auth/login/{provider}` | ❌ | 501：rpi 没有 OAuth 登录流程 |
+| `POST /api/auth/login/{provider}` | ⚠️ | 501 + `{error}`：只有 `qoder-cn` 有 OAuth 登录，且走 GET（见下一行） |
+| `GET /api/auth/login/{provider}` | ✅ | `text/event-stream`（前端用 `EventSource`）。`qoder-cn` 走真实的设备码登录；其它 provider 只发一条 `{type:"error",message}` 就结束 |
 | `GET /api/models-config` | ✅ | 原样返回 `models.json` |
 | `PUT /api/models-config` | ✅ | 保留 `$schema`、清洗无 id 的模型、`cost` 缺项补 0 |
 | `DELETE /api/models-config` | ✅ | `{kind:"provider"\|"model", provider, modelId?}`，顺手清 `enabledModels` |
@@ -330,7 +339,7 @@ pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文�
 | `GET /api/plugins/catalog` | ⚠️ | 恒为空页（`{plugins:[],hasMore:false}`）：插件市场同技能市场，PLAN 明确不做 |
 | `POST /api/plugins/catalog/translate` | ⚠️ | 恒为 `{translations:{}}`：没有目录可翻 |
 | `GET/PUT /api/tools/settings` | ⚠️ | `{isWindows:false,powerShellEnabled:false}`；PUT 501（shell 工具是 bash，没有 PowerShell 通道） |
-| `GET/PUT /api/queue-modes` | ❌ | 未实现：rpi 的 lane 没有 `all` / `one-at-a-time` 投递模式可配，写 `settings.json` 也不会生效（常规页的「引导消息投递」会显示一条 `Not found`） |
+| `GET/PUT /api/queue-modes` | ⚠️ | `{steeringMode, followUpMode}`（`all` / `one-at-a-time`，缺省 `one-at-a-time`），读写 `settings.json` 同名键；非法值 / 空 body 400。差异：pi 的 `AgentSession` 能改内存里的队列模式，rpi 的在 `AgentHarness::create` 时就定下来（`AgentHarnessOptions::steering_mode` / `follow_up_mode`），没有运行期 setter，所以 `PUT` 与 `set_steering_mode` / `set_follow_up_mode` 命令只对**新会话**生效；`GET` 必须实现，否则常规页在「完成提示音」下面常驻一行 `Not found` |
 
 ### `/api/files` 的实现细节（阶段 5）
 
@@ -360,22 +369,61 @@ pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文�
    **`deferMedia`** 仍未做：pi 会把 toolResult 里的 base64 图片换成一段占位文字，这里原样返回。
 4. **tree 的 `compressedEntryIds`** 只在深度超过 200 时出现（与 pi 的代码路径一致，但 pi 的 `visible` 集合还有别的分支，未 100% 验证）。
 5. **自定义 role 的消息**：写 v3 时降级为 `role:"custom"` + `customType`（pi 认的集合有限）。
-6. **auth provider 列表只来自 `models.json`**：pi 的列表来自 models.dev 注册表（几百个），
-   workman 砍掉了那个目录，所以 `/api/auth/providers` 只列「`models.json` 里声明过但没写
-   `apiKey`」的 provider。全部 provider 都写了 key 时它是空数组——这不影响已有配置的使用。
-7. **OAuth 登录**（`POST /api/auth/login/{provider}`）返回 501：rpi 只有 API Key 通道。
-8. **`/api/auth/api-key/{provider}` 的 `displayName`** 取 `models.json` 的 `name`，缺省用 id
+6. **auth provider 列表来自写死的内置表**：pi 的列表来自 provider 目录
+   —— `@earendil-works/pi-ai` 的 `builtinProviders()`（1.4.0 版 42 家）**加上
+   pi-desktop 自己注册的 2 家**（`apisets` / `qoder-cn`，见 `lib/desktop-providers.ts`）。
+   rpi 只有三种 `api` 协议的实现、没有目录接口，所以 workman 把这份目录**写死**在
+   `crates/workman-server/src/builtin_providers.rs`（`PROVIDERS` + `DESKTOP_PROVIDERS`，
+   每家含 id/name/baseUrl/是否 API Key/OAuth 名/chat 模型 id）。
+   文件头注释里有重新提取的脚本。
+
+   | 列表 | pi 的行为 | workman |
+   |---|---|---|
+   | `/api/auth/providers`（订阅区） | `buildOAuthProviderList`：声明了 OAuth 的 10 家 | 一致（含 `anthropic`、`qoder-cn`） |
+   | `/api/auth/all-providers`（API Key 区） | `buildApiKeyProviderList`：声明了 API Key 登录的 42 家，跳过 `source` 是 `models_json_key`/`models_json_command` 的 | 一致 |
+
+   改名历史：阶段 5 之前这两个 route **语义是反的**（`providers` 返回 API Key 形状、
+   `all-providers` 恒空），前端「添加模型 → 供应商」面板因此只剩一张自定义卡片。
+   `modelCount` 取内置目录的 chat 模型数，加上 `models.json` 同名 provider 的模型并去重。
+
+   仍然缺的部分：
+   - **内置模型目录没带过来**：`/api/models` 依旧只读 `models.json`，所以选中内置
+     供应商、填了 API Key 之后，还得自己把模型 id 写进 `models.json`（面板上的
+     「N models」只是 pi 目录里的条数）。
+   - **OAuth 登录**（差异 7）：`/api/auth/providers` 里那 10 家照样列出来。
+     `qoder-cn` 可以真的登录（设备码 + COSY 签名全部移植，模型能直接对话）；
+     其余 9 家点「Login」只会拿到一条「OAuth 登录未实现」的 SSE 错误，其中 8 家是
+     双通道，可以改走「API Key」区配置，只有 `openai-codex` 完全没有可用通道。
+   - **`api` 协议支持面**：pi 目录里 `bedrock-converse-stream`、`google-generative-ai`、
+     `google-vertex`、`azure-openai-responses`、`mistral-conversations`、
+     `openai-codex-responses`、`typesafe-system-one`、`pi-messages`、`openrouter-images`
+     这几类 rpi 没有实现（见 `catalog.rs` 的映射表），供应商能列出来但跑不通。
+7. **OAuth 登录只有 `qoder-cn` 是真的**：`GET /api/auth/login/qoder-cn` 跑完整的设备码
+   + PKCE S256 流程（`pi-desktop/lib/qoder-cn/auth.ts` 的移植），成功后把 oauth 凭据
+   写进 `auth.json`（`{type:"oauth", access, refresh, expires, uid, nickname, userType,
+   organizationId, organizationName}`），前端据此把卡片标成已连接。
+   其余 10 家仍是「不支持」：`POST` 回 501，`GET` 回一条
+   `{type:"error",message:"OAuth 登录未实现…"}` 的 SSE 事件（前端只认这个形状，
+   回 501/405 会显示英文「Connection lost」）。
+8. **`qoder-cn` 的本机转发端点不是 `/api` 契约**：
+   `POST /qoder-cn/{token}/v1/chat/completions`。rpi 的 provider 不允许注入传输层，
+   所以把模型的 `baseUrl` 指到本进程，由它做 COSY 签名 + 请求体改写 + SSE 信封解包
+   （等价于 pi 的 `withQoderCnFetch`）。路径令牌是进程启动时的随机串，且只收
+   loopback 对端 —— 这条端点会带着账号凭据刷上游额度。
+   与 pi 的差异：模型目录用内置静态快照（pi 登录后还会拉一次官方 `model/list`）；
+   `user/plan`、`quota/usage` 这些用量接口没移植。
+9. **`/api/auth/api-key/{provider}` 的 `displayName`** 取 `models.json` 的 `name`，缺省用 id
    （pi 取 models.dev 的展示名）。
-9. **git 凭据**：pi 用 AES-256-GCM 加密存进 `git-credentials.json`（密钥在 macOS Keychain）。
+10. **git 凭据**：pi 用 AES-256-GCM 加密存进 `git-credentials.json`（密钥在 macOS Keychain）。
    workman 把凭据交给系统 credential helper（`git credential approve`），因此
    `hasSavedCredential` / `savedCredentialUsername` 恒为 `false` / `null`；
    「记住凭据」对后续 `git` 命令仍然生效。
-10. **`/api/git/commit-message` 的流**：pi 每收到一段就发一行 `update`；workman 攒完再一次
+11. **`/api/git/commit-message` 的流**：pi 每收到一段就发一行 `update`；workman 攒完再一次
     `update` + `done`（字段相同，少了中间增量）。
-11. **`/api/sessions/{id}/export` 的 HTML**：响应头与文件名规则与 pi 一致，但内容是自己渲染的
+12. **`/api/sessions/{id}/export` 的 HTML**：响应头与文件名规则与 pi 一致，但内容是自己渲染的
     线性转写稿（pi 用 `pi` CLI 生成带树状导航的 HTML）。`?inline=1` / `?desktop=1` / `returnTo`
     都支持。
-12. **`/api/agent/{id}/bash-output` 的会话归属校验**：pi 只认
+13. **`/api/agent/{id}/bash-output` 的会话归属校验**：pi 只认
     `role:"bashExecution"` 的顶层 `fullOutputPath`；workman 额外接受新工具形态
     （`role:"toolResult"` 的 `details.fullOutputPath`），因为当前 pi 就是这么写的。
 13. **`/api/models-config/catalog`** 恒为空表（models.dev 目录已砍，见 PLAN「明确不做的」）。

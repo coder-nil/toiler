@@ -43,17 +43,12 @@ const REGISTERED_MARKER: &str = "Registered tunnel connection";
 // 配置
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TunnelMode {
+    #[default]
     Quick,
     Named,
-}
-
-impl Default for TunnelMode {
-    fn default() -> Self {
-        Self::Quick
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -162,7 +157,7 @@ pub fn extract_quick_url(line: &str) -> Option<String> {
     let end = rest
         .find(|c: char| c.is_whitespace() || c == '|' || c == '│')
         .unwrap_or(rest.len());
-    let candidate = rest[..end].trim_end_matches(|c: char| c == '.' || c == ',' || c == ')');
+    let candidate = rest[..end].trim_end_matches(['.', ',', ')']);
     if candidate.contains(".trycloudflare.com") {
         Some(candidate.to_string())
     } else {
@@ -228,7 +223,8 @@ pub fn find_credentials(cloudflared_home: &Path) -> Option<(String, PathBuf)> {
             .unwrap_or(UNIX_EPOCH);
         candidates.push((modified, stem.to_string(), path));
     }
-    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    // 最新的在前（按 mtime 倒序），取第一个就是最近用过的隧道
+    candidates.sort_by_key(|right| std::cmp::Reverse(right.0));
     candidates
         .into_iter()
         .next()

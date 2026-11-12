@@ -164,12 +164,17 @@ pub async fn serve(
     app: axum::Router,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            let _ = shutdown.await;
-        })
-        .await
-        .context("axum 服务异常退出")
+    // 带上 peer 地址：`qoder-cn` 的本机转发端点靠它判断「调用方是不是本机」
+    // （见 `qoder_cn::proxy`），没有 ConnectInfo 就只能靠路径里的令牌。
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        let _ = shutdown.await;
+    })
+    .await
+    .context("axum 服务异常退出")
 }
 
 /// 打包好的日志（CLI 与桌面壳共用同一套 tracing 过滤规则）。

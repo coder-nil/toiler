@@ -123,7 +123,7 @@ fn prune_enabled_models(state: &AppState, provider: &str, model_id: Option<&str>
                 // 删 provider：该 provider 的模式全删
                 None => false,
                 // 删模型：只删精确指向该模型的条目（`*` 保留）
-                Some(id) => !(pattern.model == id),
+                Some(id) => pattern.model != id,
             }
         })
         .cloned()
@@ -462,18 +462,34 @@ fn bad_request(message: &str) -> Response {
 
 /// models.json 里所有模型（顺序按配置）。
 pub fn collect_models(state: &AppState) -> Vec<ModelRef> {
+    // `models.json` 的模型 + catalog 里多出来的（内置目录 provider，如 `qoder-cn`）。
+    //
+    // 只读 `models.json` 会让内置 provider 的模型「不可见也不可勾选」，还会报
+    // `No models match pattern "qoder-cn/gfmodel"` 这种假警告；只读 catalog 又会在
+    // catalog 尚未跟上 `models.json` 改动时丢模型（`/api/models` 用 catalog，
+    // 编辑中的 `models.json` 未必已经重建）。两份取并集最稳。
     let root = state.models_file().read();
-    models_json::providers(&root)
-        .into_iter()
-        .flat_map(|(provider, _)| {
-            provider_model_ids(&root, &provider)
-                .into_iter()
-                .map(move |id| ModelRef {
+    let mut seen: std::collections::BTreeSet<(String, String)> = std::collections::BTreeSet::new();
+    let mut out: Vec<ModelRef> = Vec::new();
+    for (provider, _) in models_json::providers(&root) {
+        for id in provider_model_ids(&root, &provider) {
+            if seen.insert((provider.clone(), id.clone())) {
+                out.push(ModelRef {
                     provider: provider.clone(),
                     id,
-                })
-        })
-        .collect()
+                });
+            }
+        }
+    }
+    for entry in &state.catalog().entries {
+        if seen.insert((entry.provider.clone(), entry.id.clone())) {
+            out.push(ModelRef {
+                provider: entry.provider.clone(),
+                id: entry.id.clone(),
+            });
+        }
+    }
+    out
 }
 
 /// 「可用」模型 = 该 provider 的凭据能解析出来的模型（pi 的 `getAvailable()`）。
@@ -487,16 +503,42 @@ fn available_models(state: &AppState, provider: &str) -> Vec<ModelRef> {
     if status.source == Some("models_json_command") {
         // 命令型凭据要跑子进程才知道有没有，先当作可用
     }
-    provider_model_ids(&root, provider)
-        .into_iter()
-        .map(|id| ModelRef {
+    let from_config = provider_model_ids(&root, provider);
+    if !from_config.is_empty() {
+        return from_config
+            .into_iter()
+            .map(|id| ModelRef {
+                provider: provider.to_string(),
+                id,
+            })
+            .collect();
+    }
+    // `qoder-cn` 这类**内置目录** provider 不在 `models.json` 里，模型清单来自
+    // catalog（pi 的 SDK 目录同源）。订阅详情的「模型勾选」区靠这条分支才有内容。
+    state
+        .catalog()
+        .entries
+        .iter()
+        .filter(|entry| entry.provider == provider)
+        .map(|entry| ModelRef {
             provider: provider.to_string(),
-            id,
+            id: entry.id.clone(),
         })
         .collect()
 }
 
+/// 模型的显示名：`models.json` 里的 `name` 优先，其次目录里的名字，最后用 id。
 fn model_name(root: &Value, provider: &str, id: &str) -> String {
+    if let Some(name) = models_json_name(root, provider, id) {
+        return name;
+    }
+    crate::qoder_cn::constants::catalog_entry(id)
+        .filter(|_| provider == crate::qoder_cn::PROVIDER_ID)
+        .map(|entry| entry.display_name.to_string())
+        .unwrap_or_else(|| id.to_string())
+}
+
+fn models_json_name(root: &Value, provider: &str, id: &str) -> Option<String> {
     provider_config(root, provider)
         .and_then(|p| p.get("models"))
         .and_then(Value::as_array)
@@ -508,7 +550,6 @@ fn model_name(root: &Value, provider: &str, id: &str) -> String {
         .and_then(|m| m.get("name"))
         .and_then(Value::as_str)
         .map(str::to_string)
-        .unwrap_or_else(|| id.to_string())
 }
 
 /// 模式一条都匹配不上时给警告（pi 的 `no-match` / `ambiguous`）。

@@ -6,6 +6,8 @@
 //!   `provider/model`、`provider/*`、`provider/model:high` 这类模式
 //!   （模块 `13888`）。空 / 缺省 = 全部可见（`unscoped`）。
 //! - `defaultProvider` / `defaultModel`：默认模型。
+//! - `steeringMode` / `followUpMode`：引导 / 续跑队列的投递模式（`all` /
+//!   `one-at-a-time`），是 pi 自己的设置而非桌面端私有偏好，见 [`QueueModes`]。
 //!
 //! 匹配规则（`model-resolver.js:resolveModelScopeFromModels`）：
 //! 带 `/` 的模式匹配 `provider/id` 全串；不带 `/` 的模式只匹配模型 id；
@@ -134,6 +136,41 @@ impl SettingsFile {
         self.write(&Value::Object(obj.clone()))
     }
 
+    /// `steeringMode` / `followUpMode`；缺省或手改坏了都回落到 `one-at-a-time`。
+    ///
+    /// 与 pi 的 `readQueueModes` 一致：缺字段等于默认值，不是「未配置」。所以
+    /// 返回值永远是确定的一对模式，调用方不必再处理 `Option`。
+    pub fn queue_modes(&self) -> QueueModes {
+        let raw = self.read();
+        QueueModes {
+            steering_mode: parse_queue_mode(raw.get(STEERING_MODE_KEY)),
+            follow_up_mode: parse_queue_mode(raw.get(FOLLOW_UP_MODE_KEY)),
+        }
+    }
+
+    /// 写 `steeringMode` / `followUpMode`；只改传进来的那几个键。
+    ///
+    /// 供 `PUT /api/queue-modes` 与 `set_steering_mode` / `set_follow_up_mode`
+    /// 命令共用（两边语义一样：落盘给**下一个**会话用）。
+    pub fn set_queue_modes(&self, patch: QueueModePatch) -> std::io::Result<QueueModes> {
+        let mut root = self.read();
+        if !root.is_object() {
+            // 文件是 `null` / 数组这类坏形状时直接重建，别把用户的模型配置连带丢掉
+            // ——那种情况本来也读不出任何字段。
+            root = serde_json::json!({});
+        }
+        if let Some(obj) = root.as_object_mut() {
+            if let Some(mode) = patch.steering_mode {
+                obj.insert(STEERING_MODE_KEY.into(), Value::from(mode.as_str()));
+            }
+            if let Some(mode) = patch.follow_up_mode {
+                obj.insert(FOLLOW_UP_MODE_KEY.into(), Value::from(mode.as_str()));
+            }
+        }
+        self.write(&root)?;
+        Ok(self.queue_modes())
+    }
+
     /// `(defaultProvider, defaultModel)`。
     pub fn default_model(&self) -> (Option<String>, Option<String>) {
         let raw = self.read();
@@ -146,6 +183,87 @@ impl SettingsFile {
                 .map(str::to_string),
         )
     }
+}
+
+/// 引导 / 续跑队列的投递模式（pi 的 `QueueMode`）。
+///
+/// `OneAtATime` 表示每完成一个 assistant turn 只投递一条排队消息，因此连发多条
+/// 引导会被拆到多个 turn 里陆续注入；`All` 一次性把它们都推进这一轮。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub enum QueueMode {
+    #[serde(rename = "all")]
+    All,
+    #[default]
+    #[serde(rename = "one-at-a-time")]
+    OneAtATime,
+}
+
+impl QueueMode {
+    /// `all` / `one-at-a-time`（pi 的线上取值）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::OneAtATime => "one-at-a-time",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "all" => Some(Self::All),
+            "one-at-a-time" => Some(Self::OneAtATime),
+            _ => None,
+        }
+    }
+}
+
+impl From<QueueMode> for rpi_agent::types::QueueMode {
+    fn from(mode: QueueMode) -> Self {
+        match mode {
+            QueueMode::All => Self::All,
+            QueueMode::OneAtATime => Self::OneAtATime,
+        }
+    }
+}
+
+/// `GET /api/queue-modes` 的响应形状，与 pi 的 `QueueModes` 逐字一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueModes {
+    pub steering_mode: QueueMode,
+    pub follow_up_mode: QueueMode,
+}
+
+impl Default for QueueModes {
+    fn default() -> Self {
+        Self {
+            steering_mode: QueueMode::OneAtATime,
+            follow_up_mode: QueueMode::OneAtATime,
+        }
+    }
+}
+
+/// `PUT /api/queue-modes` 的请求体：两个键都可省略，但至少要有一个。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QueueModePatch {
+    pub steering_mode: Option<QueueMode>,
+    pub follow_up_mode: Option<QueueMode>,
+}
+
+impl QueueModePatch {
+    pub fn is_empty(&self) -> bool {
+        self.steering_mode.is_none() && self.follow_up_mode.is_none()
+    }
+}
+
+const STEERING_MODE_KEY: &str = "steeringMode";
+const FOLLOW_UP_MODE_KEY: &str = "followUpMode";
+
+/// 非法值回落到默认模式，避免一个手改坏掉的 `settings.json` 让会话读不出模式。
+fn parse_queue_mode(value: Option<&Value>) -> QueueMode {
+    value
+        .and_then(Value::as_str)
+        .and_then(QueueMode::parse)
+        .unwrap_or_default()
 }
 
 /// 一个待匹配的模型。

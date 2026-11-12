@@ -161,7 +161,8 @@ if version != 4 {
 | MCP | ✅ 内置 | ❌ | 自己实现，或砍掉 |
 | TS 扩展 / 插件市场 | ✅ | ❌（只有 Rust cdylib ABI） | 砍掉 |
 | models.dev 定价目录 | ✅ | ❌ | 砍掉 |
-| OAuth 登录 | ✅ | 仅扩展内 | 不用（当前两个 provider 都是 API Key） |
+| 供应商目录（44 家 provider） | ✅ provider 目录 | ❌ | 写死在 server 端：`builtin_providers.rs` |
+| OAuth 登录 | ✅ | 仅扩展内 | 只有 `qoder-cn` 自己实现了（见 `qoder_cn/`） |
 | 内置工具 | read/write/edit/bash/grep/find/ls… | 同左 + powershell | ✅ 够用 |
 
 ## 阶段 1：v3 会话层（`crates/workman-session`）
@@ -286,7 +287,18 @@ curl -s "localhost:8787/api/auth/providers" | jq .
 ### 仍未做
 
 `files?type=diff` 与图片缩略、手机端消息二次裁剪、模型价格目录（models.dev 已按
-计划砍掉）、OAuth 登录（返回 501）。前端联调已在阶段 4 打通（见下）。
+计划砍掉）、除 `qoder-cn` 之外的 OAuth 登录（返回 501）。前端联调已在阶段 4 打通（见下）。
+
+`qoder-cn`（Qoder 国内版订阅）是完整移植：设备码登录、COSY 签名、请求体改写、
+SSE 信封解包、15 个内置模型 —— 见 `crates/workman-server/src/qoder_cn/`。
+rpi 的 provider 不允许注入传输层，所以模型的 `baseUrl` 指向本进程的
+`/qoder-cn/<token>/v1/chat/completions`，由它完成改写（等价 pi 的 `withQoderCnFetch`）。
+
+供应商目录（pi 面板里那 44 家）已经补齐：写死在
+`crates/workman-server/src/builtin_providers.rs`（pi SDK 目录 42 家 + pi-desktop
+自注册的 `apisets` / `qoder-cn`），由 `/api/auth/providers`（10 家订阅）
+与 `/api/auth/all-providers`（42 家 API Key）输出。但**内置模型目录仍没带过来**：
+填了 API Key 之后，模型 id 还得自己写进 `models.json`。
 
 ## 阶段 4：Tauri 单进程（`crates/workman-desktop`）
 

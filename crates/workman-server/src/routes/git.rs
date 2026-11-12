@@ -189,12 +189,8 @@ pub async fn commit_message(
     let diff = match blocking_git(move || gitsvc::staged_diff(&cwd)).await {
         Ok(diff) => diff,
         Err(message) => {
-            let status = if message.contains("Not a Git repository") {
-                400
-            } else {
-                400
-            };
-            return git_error(status, &message);
+            // pi 对暂存区 diff 的失败一律 400（「Not a Git repository」也是）
+            return git_error(400, &message);
         }
     };
 

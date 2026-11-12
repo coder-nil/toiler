@@ -23,7 +23,7 @@ use rpi_agent::events::{AgentEmitter, AgentEvent};
 use rpi_agent::message::{assistant_json, AgentMessage};
 use rpi_agent::types::AgentToolResult;
 use rpi_ai::types::AssistantMessageEvent;
-use rpi_harness::agent_harness::{AgentHarness, AgentLane};
+use rpi_harness::agent_harness::{AgentHarness, AgentLane, NavigationOutcome};
 use rpi_harness::session::types::{ProvisionedEntry, ProvisionedKind};
 use rpi_harness::session::Session;
 use rpi_harness::types::{AgentHarnessOptions, SendMessageOptions};
@@ -32,6 +32,7 @@ use tokio::sync::broadcast;
 use workman_session::V3SessionStorage;
 
 use crate::catalog::ModelCatalog;
+use crate::settings::{QueueMode, QueueModePatch, SettingsFile};
 
 /// 广播缓冲：足够一次长回答的 delta 不被丢弃。
 const EVENT_BUFFER: usize = 8192;
@@ -58,22 +59,30 @@ pub struct LiveAgent {
     catalog: ModelCatalog,
     /// 活会话表的变化通知（`insert` 之后才挂上）
     changes: Mutex<Option<broadcast::Sender<()>>>,
+    /// `settings.json`：`set_steering_mode` / `set_follow_up_mode` 要落盘。
+    ///
+    /// 不能借用 `AppState`（活会话比一次请求活得久），所以拿一份落定的路径句柄。
+    settings: SettingsFile,
 }
 
 impl LiveAgent {
     /// 打开已有会话文件并建 agent。
+    #[allow(clippy::too_many_arguments)]
     pub async fn start(
         id: &str,
         path: &Path,
         cwd: &str,
         catalog: &ModelCatalog,
         preferred: Option<(String, String)>,
+        settings: &SettingsFile,
     ) -> Result<Arc<Self>> {
         let storage = V3SessionStorage::load(path)
             .with_context(|| format!("加载会话 {} 失败", path.display()))?;
-        Self::start_with_storage(id, path, storage, cwd, catalog, preferred).await
+        Self::start_with_storage(id, path, storage, cwd, catalog, preferred, settings).await
     }
 
+    /// 同上，但直接用现成的 `V3SessionStorage`（新建会话时省一次重读）。
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_with_storage(
         id: &str,
         path: &Path,
@@ -81,6 +90,7 @@ impl LiveAgent {
         cwd: &str,
         catalog: &ModelCatalog,
         preferred: Option<(String, String)>,
+        settings: &SettingsFile,
     ) -> Result<Arc<Self>> {
         let session = Session::new(Arc::new(storage), None);
 
@@ -95,6 +105,7 @@ impl LiveAgent {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("models.json 里没有可用模型"))?;
         let tools = crate::tools::build_tools(cwd, &model);
+        let queue_modes = settings.queue_modes();
 
         let (events, _rx) = broadcast::channel(EVENT_BUFFER);
         let tap = Arc::new(EventTap {
@@ -111,6 +122,11 @@ impl LiveAgent {
             allow_existing_session: true,
             models: catalog.providers.clone(),
             agent_emitter: Some(tap),
+            // 队列模式在 `AgentHarness::create` 时定下来（rpi 没有运行期 setter），
+            // 所以这里每次开会话都重新读一遍 `settings.json`：用户在设置页改完，
+            // 新开的会话立刻按新模式投递。
+            steering_mode: queue_modes.steering_mode.into(),
+            follow_up_mode: queue_modes.follow_up_mode.into(),
             ..Default::default()
         };
 
@@ -128,6 +144,7 @@ impl LiveAgent {
             model: Mutex::new(model),
             catalog: catalog.clone(),
             changes: Mutex::new(None),
+            settings: settings.clone(),
         }))
     }
 
@@ -213,8 +230,52 @@ impl LiveAgent {
                 Ok(json!({ "accepted": true }))
             }
             "set_model" => self.set_model(command).await,
+            "set_steering_mode" => self.set_queue_mode(command, true).await,
+            "set_follow_up_mode" => self.set_queue_mode(command, false).await,
+            "navigate_tree" => self.navigate_tree(command).await,
             other => Err(anyhow::anyhow!("不支持的 agent 命令：{other}")),
         }
+    }
+
+    /// `{"type":"set_steering_mode"|"set_follow_up_mode","mode":…}`。
+    ///
+    /// # 与 pi 的差异：只落盘，不改当前会话
+    ///
+    /// pi 的这两个命令直接改 `AgentSession` 内存里的队列模式，当前会话立刻生效。
+    /// rpi 的队列模式在 `AgentHarness::create` 时就定下来了（`AgentHarnessOptions`
+    /// 的 `steering_mode` / `follow_up_mode`），没有运行期 setter；重建 harness 又会
+    /// 把正在跑的会话拆掉（丢流、丢正在执行的工具）。所以这里只能写
+    /// `settings.json`，与 `PUT /api/queue-modes` 同语义：**对之后新建的会话生效**。
+    ///
+    /// 不报错是故意的：前端保存完接着就调这两个命令，报错会在设置页弹一行红字，
+    /// 而用户要的结果（模式已保存）实际上已经达成了。
+    async fn set_queue_mode(&self, command: &Value, steering: bool) -> Result<Value> {
+        let raw = command
+            .get("mode")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("缺少 mode"))?;
+        let mode = QueueMode::parse(raw)
+            .ok_or_else(|| anyhow::anyhow!("mode 只能是 all 或 one-at-a-time"))?;
+        let patch = if steering {
+            QueueModePatch {
+                steering_mode: Some(mode),
+                follow_up_mode: None,
+            }
+        } else {
+            QueueModePatch {
+                steering_mode: None,
+                follow_up_mode: Some(mode),
+            }
+        };
+        let modes = self.settings.set_queue_modes(patch)?;
+        Ok(json!({
+            "accepted": true,
+            // 当前会话仍是旧模式：rpi 没有运行期 setter。
+            "applied": false,
+            "note": "rpi 的队列模式在会话创建时确定，新会话生效",
+            "steeringMode": modes.steering_mode.as_str(),
+            "followUpMode": modes.follow_up_mode.as_str(),
+        }))
     }
 
     /// `{"type":"set_model","provider":…,"modelId":…}`。
@@ -254,6 +315,46 @@ impl LiveAgent {
         *self.model.lock().expect("model") = model.clone();
 
         Ok(json!({ "id": model.id, "provider": model.provider.as_str() }))
+    }
+
+    /// `{"type":"navigate_tree","targetId":…}` → `{cancelled, leafId}`。
+    ///
+    /// 语义与 pi 的 `navigateTree(targetId)` 一致：把 main lane 的叶子**移到**
+    /// 目标条目上（不是它的父节点），于是目标消息仍在分支里，下一条消息成为
+    /// 它的子节点 —— 这就是「从此处编辑」在同一会话里开分支的做法。
+    ///
+    /// 前端的三个入口都发这一条命令：消息上的「从此处编辑」、消息树点节点、
+    /// 分支下拉切换叶子。返回的 `leafId` 会被原样带去
+    /// `GET /api/sessions/{id}/context?leafId=…`，所以这里必须是**导航后**的叶子。
+    ///
+    /// v3 文件里没有 leaf 记录（pi 也一样）：只挪内存指针，重开文件时叶子
+    /// 退回最后一条条目。真按新分支续聊时新条目会带着 `parentId` 落盘，
+    /// 那一行自己就成了叶子，行为与 pi 相同。
+    async fn navigate_tree(&self, command: &Value) -> Result<Value> {
+        let target = command
+            .get("targetId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("navigate_tree 缺少 targetId"))?;
+
+        let result = self
+            .lane
+            .navigate_tree(Some(target), false, None, None)
+            .await?;
+        match result.outcome {
+            NavigationOutcome::Completed { new_leaf_id, .. } => Ok(json!({
+                "cancelled": false,
+                "leafId": new_leaf_id,
+            })),
+            NavigationOutcome::Declined { leaf_id } | NavigationOutcome::Aborted { leaf_id } => {
+                Ok(json!({ "cancelled": true, "leafId": leaf_id }))
+            }
+            NavigationOutcome::Failed { leaf_id, error } => Err(anyhow::anyhow!(
+                "导航到 {target} 失败（叶子仍是 {}）：{}",
+                leaf_id.as_deref().unwrap_or("null"),
+                error.message
+            )),
+        }
     }
 
     /// `get_state` 形状。`/api/agent/[id]`、`/api/mobile/state` 都用它。

@@ -1340,6 +1340,89 @@ async fn tools_settings_hides_the_powershell_group_on_non_windows() {
 }
 
 #[tokio::test]
+async fn queue_modes_route_round_trips_and_never_404s() {
+    // 前端 `SettingsPanel` 一挂载就 `GET /api/queue-modes`，**只要失败**（原先缺路由
+    // → 静态兜底的 `{"error":"Not found"}`），它就把 error 原文画成「聊天」分组
+    // 末尾的一行红字 —— 位置正好在「完成提示音」下面，就是用户看到的那条 "Not found"。
+    let root = fixture_root("queue-modes");
+    let agent_dir = fixture_root("queue-modes-agent");
+
+    let reply = get(
+        app_with_agent_dir(&root, &root, Some(&agent_dir)),
+        "/api/queue-modes",
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    let body = reply.json();
+    // 没配过 = pi 的默认值（一条一条投），不是「未配置」，更不该是 404。
+    assert_eq!(body["steeringMode"], "one-at-a-time");
+    assert_eq!(body["followUpMode"], "one-at-a-time");
+
+    // 两个都给：返回写盘后的完整一对。
+    let put = call(
+        app_with_agent_dir(&root, &root, Some(&agent_dir)),
+        "PUT",
+        "/api/queue-modes",
+        Some(r#"{"steeringMode":"all","followUpMode":"all"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(put.status, StatusCode::OK, "{}", put.text());
+    assert_eq!(put.json()["steeringMode"], "all");
+    assert_eq!(put.json()["followUpMode"], "all");
+
+    // rpi 的队列模式在 `AgentHarness::create` 时就定下来（没有运行期 setter），
+    // 所以这份文件是「新会话按什么模式投递」的唯一依据，必须真的落盘。
+    let text = std::fs::read_to_string(agent_dir.join("settings.json")).unwrap();
+    assert!(text.contains("\"steeringMode\": \"all\""), "{text}");
+    assert!(text.contains("\"followUpMode\": \"all\""), "{text}");
+
+    // 只给一个：另一个保持原值（不是被重置成默认）。
+    let partial = call(
+        app_with_agent_dir(&root, &root, Some(&agent_dir)),
+        "PUT",
+        "/api/queue-modes",
+        Some(r#"{"followUpMode":"one-at-a-time"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(partial.status, StatusCode::OK, "{}", partial.text());
+    assert_eq!(partial.json()["steeringMode"], "all");
+    assert_eq!(partial.json()["followUpMode"], "one-at-a-time");
+
+    // 非法值与「什么都不给」：400 + 可读原因。前端会把这条画成红字，不能是空串。
+    let bad = call(
+        app_with_agent_dir(&root, &root, Some(&agent_dir)),
+        "PUT",
+        "/api/queue-modes",
+        Some(r#"{"steeringMode":"sometimes"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text());
+    assert!(
+        bad.json()["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("steeringMode")),
+        "{}",
+        bad.text()
+    );
+
+    let empty = call(
+        app_with_agent_dir(&root, &root, Some(&agent_dir)),
+        "PUT",
+        "/api/queue-modes",
+        Some("{}"),
+        &[],
+    )
+    .await;
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST, "{}", empty.text());
+
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+}
+
+#[tokio::test]
 async fn cwd_validate_returns_project_identity() {
     // 前端的项目切换器直接用这三个字段建项目条目。
     let root = fixture_root("cwdvalidate");
@@ -1423,6 +1506,191 @@ async fn models_dict_and_list_share_the_same_keys() {
         assert!(dict.contains_key(&key), "缺字典键 {key}：{body}");
         assert_eq!(dict[&key], item["name"], "两个字典的显示名不一致");
     }
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn auth_provider_lists_come_from_the_builtin_catalog() {
+    // 对应设置页「模型 → 添加模型 → 供应商」面板（`components/ModelsConfig.tsx`
+    // 里的 `AddProviderPicker` 与 `loadOAuthProviders` / `loadApiKeyProviders`）：
+    //   * 「订阅」区   ← `GET /api/auth/providers`（pi 的 `buildOAuthProviderList`）
+    //   * 「API Key」区 ← `GET /api/auth/all-providers`（pi 的 `buildApiKeyProviderList`）
+    //
+    // 阶段 5 之前：前一个只遍历 `models.json`（用户在里边写全 `apiKey` 时就是空
+    // 数组），后一个恒返回 `[]` —— 面板里只剩「OpenAI / Anthropic compatible」
+    // 一张自定义卡片。现在供应商来自写死的内置表（`crate::builtin_providers`，
+    // pi SDK 的 42 家 provider 目录）。
+    let root = fixture_root("auth-providers");
+    let agent = root.join("agent");
+    std::fs::create_dir_all(&agent).unwrap();
+    let router = app_with_agent_dir(&root, &root, Some(&agent));
+
+    let api_key = get(router.clone(), "/api/auth/all-providers").await.json();
+    let api_key_rows = api_key["providers"]
+        .as_array()
+        .expect("providers 必须是数组");
+    let mut api_key_ids: Vec<&str> = api_key_rows
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    api_key_ids.sort_unstable();
+    // 42 家里只有 openai-codex 不声明 API Key 登录；加上 pi-desktop 自注册的
+    // `apisets`（每家都声明 API Key）共 42。
+    assert_eq!(api_key_ids.len(), 42, "{api_key}");
+    assert!(api_key_ids.contains(&"anthropic"));
+    assert!(api_key_ids.contains(&"deepseek"));
+    assert!(api_key_ids.contains(&"apisets"));
+    assert!(api_key_ids.contains(&"zai"));
+    assert!(!api_key_ids.contains(&"openai-codex"));
+    assert!(!api_key_ids.contains(&"qoder-cn"));
+
+    let anthropic = api_key_rows
+        .iter()
+        .find(|row| row["id"] == "anthropic")
+        .unwrap();
+    assert_eq!(anthropic["displayName"], "Anthropic");
+    assert_eq!(anthropic["baseUrl"], "https://api.anthropic.com");
+    assert_eq!(anthropic["configured"], false);
+    assert_eq!(anthropic["modelCount"], 17);
+    assert_eq!(anthropic["supportsOAuth"], true);
+
+    let oauth = get(router, "/api/auth/providers").await.json();
+    let oauth_rows = oauth["providers"].as_array().expect("providers 必须是数组");
+    let mut oauth_ids: Vec<&str> = oauth_rows
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    oauth_ids.sort_unstable();
+    assert_eq!(
+        oauth_ids,
+        vec![
+            "anthropic",
+            "github-copilot",
+            "kimi-coding",
+            "meta",
+            "openai",
+            "openai-codex",
+            "openrouter",
+            "qoder-cn",
+            "radius",
+            "xai",
+        ],
+        "{oauth}"
+    );
+    // pi-desktop 自注册的订阅家：卡片标题取 `oauth.name`
+    let qoder = oauth_rows
+        .iter()
+        .find(|row| row["id"] == "qoder-cn")
+        .unwrap();
+    assert_eq!(qoder["name"], "Qoder CN (subscription)");
+    assert_eq!(qoder["supportsApiKey"], false);
+    // 面板卡片标题取的是 OAuth 名（不是 provider.name），openai-codex 被 pi 的
+    // `OAUTH_DISPLAY_NAMES` 改成 `ChatGPT Plus/Pro`。
+    let codex = oauth_rows
+        .iter()
+        .find(|row| row["id"] == "openai-codex")
+        .unwrap();
+    assert_eq!(codex["name"], "ChatGPT Plus/Pro");
+    assert_eq!(codex["supportsApiKey"], false);
+    assert_eq!(codex["loggedIn"], false);
+
+    // 面板总数：42（API Key）+ 10（订阅）+ 1（自定义卡片）= pi 的 53 张。
+    assert_eq!(api_key_rows.len() + oauth_rows.len() + 1, 53);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 建一个隔离的 `AppState`（`qoder-cn` 的用例要拿目录与令牌，不只是 Router）。
+fn state_with_agent_dir(sessions_root: &Path, cwd: &Path, agent_dir: &Path) -> AppState {
+    let catalog = ModelCatalog::from_config(json!({ "providers": {} }), None).unwrap();
+    AppState::with_cwd(sessions_root, catalog, cwd)
+        .with_stores(
+            workman_server::auth::AuthStore::new(agent_dir.join("auth.json")),
+            workman_server::models_json::ModelsFile::at(agent_dir.join("models.json")),
+            workman_server::settings::SettingsFile::at(agent_dir.join("settings.json")),
+            workman_server::projects::ProjectStore::at(agent_dir.join("work.sqlite")),
+            workman_server::trust::TrustStore::at(agent_dir.join("trust.json")),
+        )
+        .with_binding("127.0.0.1", 30141)
+}
+
+#[tokio::test]
+async fn qoder_cn_relay_requires_the_token_and_a_login() {
+    // 对应 `qoder_cn::proxy`：rpi 的 provider 只能按 baseUrl 发标准 OpenAI 请求，
+    // 所以 `qoder-cn` 的模型 baseUrl 指向本进程的
+    // `POST /qoder-cn/{token}/v1/chat/completions`。这条端点会带着账号凭据刷上游
+    // 额度，因此两件事必须成立：
+    //   1. 路径令牌对不上 → 403（令牌是进程内随机串，只有内嵌目录知道）；
+    //   2. 没登录 → 502 + 中文提示（前端把这条消息原样显示给用户）。
+    let root = fixture_root("qoder-relay");
+    let agent = root.join("agent");
+    std::fs::create_dir_all(&agent).unwrap();
+    let state = state_with_agent_dir(&root, &root, &agent);
+    let token = state.qoder_cn_token();
+    let router = routes::router(state);
+
+    let body = json!({
+        "model": "gfmodel",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    .to_string();
+
+    // 令牌不匹配
+    let reply = call(
+        router.clone(),
+        "POST",
+        "/qoder-cn/not-the-token/v1/chat/completions",
+        Some(&body),
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.text());
+
+    // 令牌正确但 auth.json 里没有 qoder-cn 凭据
+    let reply = call(
+        router,
+        "POST",
+        &format!("/qoder-cn/{token}/v1/chat/completions"),
+        Some(&body),
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::BAD_GATEWAY, "{}", reply.text());
+    let payload = reply.json();
+    let message = payload["error"]["message"].as_str().unwrap_or("");
+    assert!(message.contains("未登录"), "{payload}");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn qoder_cn_models_come_from_the_builtin_catalog() {
+    // 对应设置页「模型」下拉与模型设置列表：`qoder-cn` 的 15 个模型来自内置静态
+    // 目录（pi 的 `QODER_CN_STATIC_CATALOG`），`baseUrl` 指向本机转发端点。
+    let root = fixture_root("qoder-models");
+    let agent = root.join("agent");
+    std::fs::create_dir_all(&agent).unwrap();
+    let state = state_with_agent_dir(&root, &root, &agent);
+    let token = state.qoder_cn_token();
+    assert!(state.attach_qoder_cn(), "第一次注入应生效");
+    assert!(!state.attach_qoder_cn(), "重复注入应幂等");
+
+    let catalog = state.catalog();
+    let qoder: Vec<&workman_server::catalog::ModelEntry> = catalog
+        .entries
+        .iter()
+        .filter(|entry| entry.provider == "qoder-cn")
+        .collect();
+    assert_eq!(qoder.len(), 15, "内置目录 15 条");
+    assert_eq!(qoder[0].id, "auto");
+    assert_eq!(qoder[0].context_window, 200_000);
+    let model = catalog
+        .models
+        .iter()
+        .find(|model| model.id == "auto")
+        .expect("rpi 模型");
+    assert_eq!(
+        model.base_url,
+        format!("http://127.0.0.1:30141/qoder-cn/{token}")
+    );
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -1643,6 +1911,136 @@ async fn set_model_on_existing_session_persists_model_change() {
             .contains("Model not found"),
         "{}",
         missing.text()
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+}
+
+/// 消息上的「从此处编辑」→ `POST /api/agent/{id} {"type":"navigate_tree"}`。
+///
+/// 这条命令以前没实现，落到 `send` 的兜底分支报「不支持的 agent 命令：
+/// navigate_tree」；前端 `handleEditFromHere` 把 500 吞进 `console.error` 后
+/// 返回 false —— 按钮点了完全没反应，消息内容也不会回填到编辑器。
+///
+/// 拿到返回值后前端一定接着 `loadContext(sid, leafId)`（`?leafId=…`），
+/// 所以「叶子挪到位 + context 截止到那条消息」才算完整可用。
+#[tokio::test]
+async fn navigate_tree_moves_leaf_and_truncates_context() {
+    let root = fixture_root("navigatetree");
+    let agent_dir = fixture_root("navigatetree-agent");
+    let cwd = Path::new("/tmp/demo");
+    write_session(
+        &root,
+        &[
+            r#"{"type":"message","id":"m0","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","message":{"role":"user","content":[{"type":"text","text":"第一个问题"}],"timestamp":1794292905000}}"#,
+            r#"{"type":"message","id":"m1","parentId":"m0","timestamp":"2026-11-10T06:41:46.000Z","message":{"role":"assistant","content":[{"type":"text","text":"第一个答案"}],"api":"openai-responses","provider":"qoder","model":"x","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1794292906000}}"#,
+            r#"{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-11-10T06:41:47.000Z","message":{"role":"user","content":[{"type":"text","text":"第二个问题"}],"timestamp":1794292907000}}"#,
+            r#"{"type":"message","id":"m3","parentId":"m2","timestamp":"2026-11-10T06:41:48.000Z","message":{"role":"assistant","content":[{"type":"text","text":"第二个答案"}],"api":"openai-responses","provider":"qoder","model":"x","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1794292908000}}"#,
+        ],
+    );
+    let router = app_with_two_models(&root, cwd, &agent_dir);
+
+    // 没有 leafId 时取文件尾部：四条全在
+    let full = get(router.clone(), "/api/sessions/sess-a/context")
+        .await
+        .json();
+    assert_eq!(
+        full["context"]["messages"].as_array().unwrap().len(),
+        4,
+        "{full}"
+    );
+
+    let reply = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"navigate_tree","targetId":"m2"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    let body = reply.json();
+    assert_eq!(body["success"], true, "{body}");
+    assert_eq!(body["data"]["cancelled"], false, "{body}");
+    assert_eq!(body["data"]["leafId"], "m2", "{body}");
+
+    // `loadContext(sid, leafId)`：编辑区要能取回被编辑的那条消息，
+    // 上下文得截止到它（含），后面的回答不能再被带进下一轮
+    let after = get(
+        router.clone(),
+        "/api/sessions/sess-a/context?leafId=m2&deferThinking=1&deferMedia=1",
+    )
+    .await
+    .json();
+    let messages = after["context"]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 3, "{after}");
+    assert_eq!(messages.last().unwrap()["role"], "user", "{after}");
+    assert_eq!(
+        messages.last().unwrap()["content"][0]["text"],
+        "第二个问题",
+        "{after}"
+    );
+    assert_eq!(after["paging"]["totalMessages"], 3, "{after}");
+
+    // 「从此处编辑」真正要的是：接下来的一条新条目成为 m2 的**子节点**，
+    // 即一条新分支，而不是接在 m3 后面。`set_model` 是纯本地写盘的 lane
+    // 追加，用它看 parentId 最直接（不用真的发 prompt 打模型）。
+    let retarget = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"navigate_tree","targetId":"m2"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(retarget.status, StatusCode::OK, "{}", retarget.text());
+    let switched = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"set_model","provider":"second","modelId":"model-b"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(switched.status, StatusCode::OK, "{}", switched.text());
+    let text =
+        std::fs::read_to_string(&root.join("--tmp-demo--/2026-11-10T06-41-44-431Z_sess-a.jsonl"))
+            .unwrap();
+    let last: Value = serde_json::from_str(text.lines().next_back().unwrap()).unwrap();
+    assert_eq!(last["type"], "model_change", "{last}");
+    assert_eq!(
+        last["parentId"], "m2",
+        "新条目得挂在被编辑的消息下，否则就不是分支：{last}"
+    );
+
+    // 同一个活会话再挪一次（消息树点节点 / 分支下拉切换叶子）：
+    // 返回的 leafId 必须是**导航后**的叶子，不是上一次的
+    let back = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"navigate_tree","targetId":"m0"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(back.status, StatusCode::OK, "{}", back.text());
+    assert_eq!(back.json()["data"]["leafId"], "m0", "{}", back.text());
+
+    // 不存在的条目：pi 抛 `Entry <id> not found` → 500
+    let ghost = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"navigate_tree","targetId":"ghost"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        ghost.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        ghost.text()
     );
 
     std::fs::remove_dir_all(&root).ok();

@@ -4,6 +4,7 @@
 //! - `GET  /api/mobile/state`：手机端会话状态
 //! - `GET  /api/home`：`{home}`
 //! - `POST /api/default-cwd`：建目录并返回 `{cwd}`
+//! - `GET/PUT /api/queue-modes`：引导 / 续跑队列的投递模式
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -15,7 +16,7 @@ use serde_json::{json, Value};
 use crate::mobile_view;
 use crate::security::Trusted;
 use crate::session_view;
-use crate::settings::{self, ModelPattern, ModelRef};
+use crate::settings::{self, ModelPattern, ModelRef, QueueMode, QueueModePatch};
 use crate::state::AppState;
 use rpi_ai::ThinkingLevel;
 
@@ -325,4 +326,84 @@ pub async fn tools_settings_put() -> Response {
         })),
     )
         .into_response()
+}
+
+/// `GET /api/queue-modes` —— 引导 / 续跑队列的投递模式。
+///
+/// 缺了这条路由，请求会落到静态兜底的 404 `{"error":"Not found"}`，而
+/// `SettingsPanel` 把 `queueModeError` 画在「聊天」分组的末尾（正好在「完成提示音」
+/// 下面），于是常规页常驻一行红色的 "Not found"。
+///
+/// 读的是 `settings.json` 的 `steeringMode` / `followUpMode`：缺字段等于 pi 的默认值
+/// `one-at-a-time`，不是「未配置」（见 `settings::QueueModes`）。
+pub async fn queue_modes(State(state): State<AppState>, _trusted: Trusted) -> Response {
+    Json(state.settings().queue_modes()).into_response()
+}
+
+/// `PUT /api/queue-modes` 的请求体。
+///
+/// 两个字段都收 `String` 而不是枚举：非法值要按 pi 的语义回 400 + 可读原因，
+/// 直接交给 serde 只会在解包时报一句看不懂的 `expected value`。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueModeBody {
+    steering_mode: Option<String>,
+    follow_up_mode: Option<String>,
+}
+
+/// `PUT /api/queue-modes` —— 写 `settings.json`，返回写入后的完整一对模式。
+///
+/// # 与 pi 的差异：活着的会话不会立刻改观
+///
+/// pi 的 `AgentSession` 能改内存里的队列模式，所以它保存后立即对当前会话生效。
+/// rpi 的队列模式在 `AgentHarness::create` 时就定下来了
+/// （`AgentHarnessOptions::steering_mode`），没有运行期 setter，所以这里写盘只对
+/// **之后新建的会话**生效；已经在跑的会话要重开才换模式。
+/// `set_steering_mode` / `set_follow_up_mode` 命令也按这个口径处理（见
+/// `agent_runtime::LiveAgent::send`）。
+pub async fn queue_modes_put(
+    State(state): State<AppState>,
+    _trusted: Trusted,
+    Json(body): Json<QueueModeBody>,
+) -> Response {
+    let steering = match parse_mode(body.steering_mode.as_deref(), "steeringMode") {
+        Ok(mode) => mode,
+        Err(message) => return bad_request(&message),
+    };
+    let follow_up = match parse_mode(body.follow_up_mode.as_deref(), "followUpMode") {
+        Ok(mode) => mode,
+        Err(message) => return bad_request(&message),
+    };
+    let patch = QueueModePatch {
+        steering_mode: steering,
+        follow_up_mode: follow_up,
+    };
+    if patch.is_empty() {
+        return bad_request("需要提供 steeringMode 或 followUpMode");
+    }
+    match state.settings().set_queue_modes(patch) {
+        Ok(modes) => Json(modes).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// 解析一个可选的模式字段：`None` = 请求体没这个键（保留原值）。
+///
+/// 错误用 `String` 而不是 `Response`：`Response` 当 `Err` 会让每个调用点的
+/// `Result` 都胀到一百多字节（clippy 的 `result_large_err`）。
+fn parse_mode(raw: Option<&str>, field: &str) -> Result<Option<QueueMode>, String> {
+    match raw {
+        None => Ok(None),
+        Some(value) => QueueMode::parse(value).map(Some).ok_or_else(|| {
+            format!("{field} 只能是 \"all\" 或 \"one-at-a-time\"（收到 {value:?}）")
+        }),
+    }
+}
+
+fn bad_request(message: &str) -> Response {
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
 }

@@ -23,6 +23,14 @@ async-trait = "0.1"
 futures = "0.3"
 async-stream = "0.3"
 base64 = "0.22"
+# Qoder CN（COSY 签名）：md5 盖 body、sha512 派生机器令牌、AES-128-CBC 包身份、
+# RSA-PKCS1v15 包会话密钥 —— 与官方客户端的字节级对齐，不能换算法。
+md-5 = "0.10"
+sha2 = "0.10"
+aes = "0.8"
+cbc = "0.1"
+rsa = { version = "0.9", features = ["pem"] }
+rand = "0.8"
 # 项目列表 / 选中项目与 pi-desktop 共用一个 SQLite 库（`pi.sqlite`）
 rusqlite = { version = "0.31", features = ["bundled"] }
 tracing = "0.1"

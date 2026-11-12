@@ -1656,7 +1656,7 @@ mod tests {
         let list = worktrees(&dir);
         assert_eq!(list.len(), 1);
         assert!(list[0].is_main);
-        assert_eq!(current_worktree_path(&list, &dir).is_some(), true);
+        assert!(current_worktree_path(&list, &dir).is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
