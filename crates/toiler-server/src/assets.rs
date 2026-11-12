@@ -151,7 +151,13 @@ fn not_found(path: &str) -> Response {
             .into_response();
     }
     // 单独维护的 404 页（pi 的静态导出里有），否则退回正文里的最小页。
-    if let Some(response) = html_of("404.html") {
+    //
+    // 注意状态码：`body_of()` 是「命中文件就 200」，而这里语义是「没找到」。
+    // 直接返回 `body_of("404.html")` 会让 404 页面以 200 发出——占位产物里没有
+    // 404.html 时看不出问题，换上真实前端产物后才会露出来。所以命中后必须把
+    // 状态码改回 404 再返回。
+    if let Some(mut response) = html_of("404.html") {
+        *response.status_mut() = StatusCode::NOT_FOUND;
         return response;
     }
     (
@@ -289,5 +295,20 @@ mod tests {
     #[test]
     fn embedded_frontend_has_entry() {
         assert!(has_entry(), "嵌入目录 {} 缺少 index.html", FRONTEND_DIR);
+    }
+
+    #[test]
+    fn not_found_keeps_404_status_even_when_a_404_page_exists() {
+        // `not_found()` 会优先返回产物里的 `404.html`，而取文件的 `body_of()`
+        // 语义是「命中就 200」。两者接错的话，404 页面会以 200 发出。
+        //
+        // 回归用例不用「产物里到底有没有 404.html」做前提：占位页没有这个文件、
+        // 真实 Next 产物有，靠产物形状的测试会在换前端时静默失效。这里直接断言
+        // 状态码，两条分支都要求 404。
+        let response = not_found("nope");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        // `/api` 命名空间不走页面，回 JSON；同样必须是 404。
+        let api = not_found("api/whatever");
+        assert_eq!(api.status(), StatusCode::NOT_FOUND);
     }
 }

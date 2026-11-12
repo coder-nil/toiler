@@ -1,0 +1,83 @@
+[
+  {
+    "id": "deepwiki",
+    "name": "DeepWiki",
+    "nameZh": "DeepWiki",
+    "summary": "Ask questions about public GitHub repositories.",
+    "summaryZh": "查询公开 GitHub 仓库的项目结构、实现细节和使用方式。",
+    "auth": "none",
+    "entry": {
+      "url": "https://mcp.deepwiki.com/mcp",
+      "protocolVersion": "auto"
+    },
+    "homepage": "https://deepwiki.com"
+  },
+  {
+    "id": "context7",
+    "name": "Context7",
+    "nameZh": "Context7",
+    "summary": "Look up current library documentation and examples.",
+    "summaryZh": "查询最新的库文档和代码示例，减少过时 API 带来的问题。",
+    "auth": "none",
+    "entry": {
+      "url": "https://mcp.context7.com/mcp",
+      "protocolVersion": "auto"
+    },
+    "homepage": "https://context7.com"
+  },
+  {
+    "id": "parallel-search",
+    "name": "Parallel Search",
+    "nameZh": "Parallel 搜索",
+    "summary": "Search the web and fetch pages without an API key.",
+    "summaryZh": "无需 API Key 搜索网页并抓取页面内容。",
+    "auth": "none",
+    "entry": {
+      "url": "https://search.parallel.ai/mcp",
+      "protocolVersion": "auto",
+      "directTools": true
+    },
+    "homepage": "https://parallel.ai"
+  },
+  {
+    "id": "notion",
+    "name": "Notion",
+    "nameZh": "Notion",
+    "summary": "Search and work with your Notion workspace.",
+    "summaryZh": "搜索并操作你的 Notion 工作区内容。",
+    "auth": "oauth",
+    "entry": {
+      "url": "https://mcp.notion.com/mcp",
+      "auth": "oauth",
+      "protocolVersion": "auto"
+    },
+    "homepage": "https://www.notion.so"
+  },
+  {
+    "id": "github",
+    "name": "GitHub",
+    "nameZh": "GitHub",
+    "summary": "Work with GitHub through your Copilot account.",
+    "summaryZh": "通过 GitHub Copilot 账户搜索和操作 GitHub 内容。",
+    "auth": "oauth",
+    "entry": {
+      "url": "https://api.githubcopilot.com/mcp",
+      "auth": "oauth",
+      "protocolVersion": "auto"
+    },
+    "homepage": "https://github.com"
+  },
+  {
+    "id": "chrome-devtools",
+    "name": "Chrome DevTools",
+    "nameZh": "Chrome 开发者工具",
+    "summary": "Inspect and automate a local Chrome browser.",
+    "summaryZh": "检查并自动化操作本机 Chrome 浏览器。首次使用会通过 npx 下载服务端。",
+    "auth": "none",
+    "entry": {
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@1.6.0"]
+    },
+    "homepage": "https://developer.chrome.com/docs/devtools"
+  }
+]

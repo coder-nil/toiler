@@ -41,12 +41,35 @@ cargo build                   # 若 API 变了，编译器直接告诉你
 ### 桌面应用（正式形态）
 
 ```bash
-# 构建（会把 pi 的静态导出前端嵌进二进制）
-tools/frontend/build-release.sh
+# 首次：装前端依赖
+tools/run-desktop.sh     # 会提示先装；或手动：
+                         # cd crates/toiler-desktop/frontend && npm install
 
-# 启动：原生窗口，单进程，端口由内核分配
+# 日常：前端有改动才重建，然后编译 + 启动（一条命令搞定）
+tools/run-desktop.sh
+```
+
+`tools/run-desktop.sh` 做的事：前端源码比 `dist/` 新才重跑 `npm run build`
+（否则秒过）→ `cargo build --release` → 停掉旧实例 → 启动 → 打印实际端口。
+
+| 参数 | 用途 |
+|---|---|
+| `--rebuild-frontend` | 强制重建前端（改了 `next.config.ts` 或依赖时） |
+| `--skip-frontend` | 完全不碰前端，只编译 Rust（调后端时最快） |
+| `--no-build` | 只重启，不编译（二进制已是最新时） |
+| `--foreground` / `-f` | 前台运行，日志直接打终端 |
+
+手工分步也可以：
+
+```bash
+cd crates/toiler-desktop/frontend && npm run build   # 产物到 dist/
+cargo build --release -p toiler-desktop              # build.rs 自动捡 dist/
 ./target/release/toiler-desktop
 ```
+
+前端源码就在 `crates/toiler-desktop/frontend/`（来自 pi-desktop 的 Next 应用，
+已去掉 Node 后端部分）。产物由 `crates/toiler-server/build.rs` 自动发现，不需要
+手动复制或设环境变量。
 
 从 Finder 双击也行（`bundle` 见 `crates/toiler-desktop/tauri.conf.json`）。
 启动后只监听 `127.0.0.1:<随机端口>`，手机访问要另外在设置页开关。
@@ -60,9 +83,11 @@ cargo build --release -p toiler-server
 
 打开 `http://127.0.0.1:8787/`。
 
-> `cargo build -p toiler-server`（debug）内嵌的是 `crates/toiler-server/frontend/`
-> 的占位页 —— API 全可用，但没有界面。要界面必须走
-> `tools/frontend/build-release.sh`（它设 `TOILER_FRONTEND_DIR` 后再编译）。
+> 前端产物是否存在决定二进制里是「真界面」还是「占位页」：
+> 跑过 `crates/toiler-desktop/frontend` 里的 `npm run build` 就有界面，
+> 否则 `cargo build` 仍然能过，但内嵌的是 `crates/toiler-server/frontend/`
+> 的占位页（API 全可用）。启动日志会打印实际嵌入的产物目录与
+> `已嵌入 / 占位页`，以它为准。
 
 参数：
 
@@ -308,8 +333,9 @@ rpi 的 provider 不允许注入传输层，所以模型的 `baseUrl` 指向本�
 # 不嵌真实前端（二进制里是占位页，API 照常可用）
 cargo run -p toiler-desktop
 
-# 嵌 pi 的静态导出产物后构建 release
-tools/frontend/build-release.sh /path/to/pi-desktop/src-tauri/frontend
+# 嵌前端源码构建出的产物（在 frontend/ 里先跑 npm run build）
+cd crates/toiler-desktop/frontend && npm run build && cd -
+cargo build -p toiler-desktop --release
 ./target/release/toiler-desktop
 ```
 
@@ -320,6 +346,8 @@ tools/frontend/build-release.sh /path/to/pi-desktop/src-tauri/frontend
 | `toiler_server::boot` | 启动引导：会话根 → 模型目录 → `AppState` → `bind` / `serve`；CLI 与桌面壳共用 |
 | `toiler_server::assets` | `include_dir!` 嵌前端；`_next/static` immutable、目录 index、RSC `.txt`、客户端路由兜底 |
 | `toiler-desktop::server` | 把 `bind(127.0.0.1:0)` → `tauri::async_runtime::spawn(serve)`，顺手预热会话列表 |
+| `toiler-desktop::frontend` | **前端源码**（Next 应用，源自 pi-desktop）；`npm run build` 产出 `dist/` |
+| `toiler-desktop::shell` | Tauri 的资源目录（`frontendDist`）：只有窗口占位页与启动失败页 |
 | `toiler-desktop::{lan_proxy,tunnel}` | 从 pi 原样移植的手机访问件（局域网反代 + Cloudflare 隧道） |
 
 三处与 pi 的关键差别：
@@ -328,6 +356,42 @@ tools/frontend/build-release.sh /path/to/pi-desktop/src-tauri/frontend
    API origin）。`/api` 与前端一个端口，SSE/fetch 不用处理跨域。
 2. **端口由内核分配**（`port = 0`）：不再抢 8787，也不会出现「端口被占用」。
 3. **没有启动探测**：`bind` 完成即可用（pi 是轮询 45s 等 node 起来）。
+
+### 前端
+
+前端源码在 `crates/toiler-desktop/frontend/`，是从 pi-desktop 搬过来完整 Next
+应用（排除 Node 后端部分）。三个目录各管一件事，不要混：
+
+| 路径 | 内容 | 进 git |
+|---|---|---|
+| `crates/toiler-desktop/frontend/` | Next 源码（`app/` `components/` `hooks/` `lib/` `data/` `public/`） | 是 |
+| `crates/toiler-desktop/frontend/dist/` | `npm run build` 的静态导出产物 | 否 |
+| `crates/toiler-server/frontend/` | `include_dir!` 的嵌入目录（占位页） | 是 |
+| `crates/toiler-desktop/shell/` | Tauri 的 `frontendDist`（窗口占位页 + 启动失败页） | 是 |
+
+`build.rs` 选目录的顺序：`TOILER_FRONTEND_DIR` → `frontend/dist/`（存在
+`index.html` 时）→ `crates/toiler-server/frontend/` 占位页。所以日常开发只用：
+
+```bash
+cd crates/toiler-desktop/frontend && npm install   # 首次
+npm run build                                       # 产出 dist/
+cargo build -p toiler-desktop                       # 自动嵌入 dist/
+```
+
+与 pi 的前端差异（都是为了去掉 Node 后端）：
+
+| 项 | pi | toiler |
+|---|---|---|
+| `output` | 按目标在 `standalone` / `export` 间切 | 恒为 `export` |
+| `distDir` | `.next` / `.next-desktop-dev` / `.next-desktop-frontend` | 恒为 `dist` |
+| `app/api/` | pi 的 Node 后端共 40+ route | **不搬**，`/api` 由 axum 提供 |
+| `app/m/` | 手机页面（`force-dynamic`） | **不搬**，`output:export` 会因预渲染失败 |
+| `proxy.ts` / `serverExternalPackages` / `headers()` | pi 的 server 侧特性 | 删掉；安全头改由 `assets.rs` 发 |
+
+> `lib/` 里有少数文件 import 了 node 内置模块（`path` / `fs` / `node:module`）。
+> 它们本来是 pi 的后端工具，但 `lib/paths.ts` 的 `samePath` 同时被浏览器端的
+> `FileExplorer` 用。webpack 会把 `path` polyfill 成前端实现，已实测产物正常；
+> 改动这几个文件时注意不要引入只有 Node 能跑的 API。
 
 ### 验收
 

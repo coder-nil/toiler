@@ -1,15 +1,34 @@
 #!/usr/bin/env bash
-# 把 pi-desktop 的最新前端同步进 toiler 的 release 客户端。
+# ⚠️ 需要先读：本脚本是**旧流程**的工具，日常开发不该用它。
 #
-# 用法：
-#   tools/sync-frontend.sh                 # 构建前端 → 同步 → 重编 → 启动
-#   tools/sync-frontend.sh --no-launch     # 只重编，不启动
-#   tools/sync-frontend.sh --skip-export   # 不重新构建前端，直接同步现有导出
+# 日常开发（前端源码已在本仓库里）：
+#   tools/run-desktop.sh              # 前端增量重建 + 编译 + 启动
+#
+# 本脚本保留下来只为了一个场景：**把上游 pi-desktop 的新版本拉进来看**。
+# 它从 pi-desktop 仓库重新导出产物，并对产物做一堆字符串补丁——**那些补丁
+# 现在已全部搬进源码**（见下方对照表），所以用本脚本搞出来的二进制会跟
+# 源码构建的不一致（补丁跑在压缩后的 chunk 上，属于权宜之计）。
+#
+# 上游文案/结构变了、需要把补丁搬到源码时，可以对照本脚本的补丁清单去改
+# `crates/toiler-desktop/frontend/` 里的对应文件：
+#
+# | 本脚本的补丁 | 源码位置 |
+# |---|---|
+# | 模型配置路径 → `<configs>/models.json` | `components/ModelsConfig.tsx`（已改为不显示路径） |
+# | 品牌名 `Pi Desktop` → `Toiler` | `app/layout.tsx` / `app/manifest.ts` / `AppShell.tsx` / `SessionSidebar.tsx` / `AboutDialog.tsx` / `lib/i18n/messages/*.ts` |
+# | 关于面板去掉 `pi v…` | `components/AboutDialog.tsx` + `lib/i18n/messages/*.ts` |
+# | 设置标题旁去掉路径 | `components/{Plugins,Models,Skills}Config.tsx` |
+# | MCP 全局配置路径文案 | `components/SettingsPanel.tsx` |
+# | 快捷键菜单项移到手机访问之后 | `components/SettingsPanel.tsx` 的 `settingsItems` 数组 |
+#
+# 用法（仅用于外部产物对比）：
+#   tools/sync-frontend.sh                 # 从 pi-desktop 导出 → 打补丁 → 编译 → 启动
+#   tools/sync-frontend.sh --no-launch     # 同上，但不启动
+#   tools/sync-frontend.sh --skip-export   # 不重新导出，直接用现有导出目录
 #
 # 产物落点沿用 pi-desktop 自己的约定：`<pi-desktop>/src-tauri/frontend`
 # （那里被 pi-desktop 的 .gitignore 忽略）。toiler 只是把它当作
-# `TOILER_FRONTEND_DIR` 读进来编译，**不往本仓库写前端产物** ——
-# `crates/toiler-server/frontend/` 是提交在版本库里的占位页，不能覆盖。
+# `TOILER_FRONTEND_DIR` 读进来编译，**不往本仓库写前端产物**。
 #
 # 两个必须记住的坑：
 #
@@ -282,9 +301,13 @@ fi
 # ---------------------------------------------------------------------------
 # 10. 重新编译（+ 启动）
 # ---------------------------------------------------------------------------
+# 注意：不能调 run-desktop.sh —— 它会优先用本仓库的
+# `crates/toiler-desktop/frontend/dist/`，刚打完的 pi 产物根本不会被用上。
+# 所以这里直接用 `TOILER_FRONTEND_DIR` 指定本脚本处理过的那份产物编译。
+export TOILER_FRONTEND_DIR="$target"
+cargo build --release -p toiler-desktop --manifest-path "$root/Cargo.toml"
+
 if (( launch )); then
-  # run-desktop.sh 内部的 build-release.sh 会自动探测到同一个目录
-  exec "$root/tools/run-desktop.sh"
-else
-  exec bash "$root/tools/frontend/build-release.sh" "$target"
+  echo "启动（外壳沿用 run-desktop.sh 的重启逻辑，但不重建前端）"
+  exec "$root/tools/run-desktop.sh" --no-build
 fi

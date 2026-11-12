@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
-# 把前端产物嵌进 toiler 的 release 二进制。
+# 用一个**外部**的前端产物目录构建 release 二进制。
+#
+# 常规路径不需要这个脚本：前端源码就在 `crates/toiler-desktop/frontend/`，
+# 跑 `npm run build` 产出 `dist/` 后直接 `cargo build -p toiler-desktop`，
+# `build.rs` 会自动捡到。本脚本只用于两种场景：
+#
+#   1. 用 pi-desktop 仓库里现成的产物（不在本仓库里编译前端）；
+#   2. 临时验证一份外部产物，不想动 `frontend/dist/`。
 #
 # 用法：
 #   tools/frontend/build-release.sh                      # 自动探测 pi-desktop 的静态导出产物
 #   tools/frontend/build-release.sh /path/to/frontend    # 指定产物目录
 #
-# 产物要求（pi 的 `npm run build:desktop-frontend` 就是这个形状）：
+# 产物要求（Next 的 `output: export` 就是这个形状）：
 #   index.html  index.txt  _next/static/...  icons/...  favicon.ico
 #
-# 产物目录只在这里参与编译：`TOILER_FRONTEND_DIR` 变化会触发 toiler-server
-# 重新编译（见 crates/toiler-server/build.rs），所以换前端只需重跑本脚本。
+# 产物目录通过 `TOILER_FRONTEND_DIR` 传给编译过程，优先级高于 `build.rs`
+# 自动发现的 `frontend/dist/`（见 crates/toiler-server/build.rs）。
 
 set -euo pipefail
 
@@ -40,13 +47,17 @@ fi
 
 if [[ -z "$src" || ! -f "$src/index.html" ]]; then
   cat >&2 <<'MSG'
-找不到前端产物（需要一个含 index.html 的目录）。
+找不到外部前端产物（需要一个含 index.html 的目录）。
 
-两条路：
+常规做法不需要本脚本——前端源码就在本仓库里：
+  cd crates/toiler-desktop/frontend
+  npm install && npm run build
+  cargo build -p toiler-desktop --release
+
+若确实要用外部产物：
   1. 在 pi-desktop 仓库里跑 `npm run build:desktop-frontend`（产物落在
-     src-tauri/frontend/），然后重跑本脚本并把目录作为参数传进来。
-  2. 先不嵌真实前端：直接 `cargo build -p toiler-desktop`，二进制里是
-     crates/toiler-server/frontend/ 的占位页（API 仍然可用）。
+     src-tauri/frontend/），然后把目录作为参数传给本脚本。
+  2. 指定产物目录：tools/frontend/build-release.sh /path/to/frontend
 MSG
   exit 1
 fi

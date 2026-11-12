@@ -179,8 +179,12 @@ pub async fn serve(
 
 /// 打包好的日志（CLI 与桌面壳共用同一套 tracing 过滤规则）。
 pub fn init_tracing() {
+    // 默认过滤器要同时盖住两个 crate：`toiler_server` 是 axum 服务，
+    // `toiler_desktop_lib` 是桌面壳（它的「前端产物 …（已嵌入）」那条日志
+    // 就在后者里）。只写 toiler_server 会让桌面壳启动后日志一片空白，
+    // run-desktop.sh 把日得写进 .toiler-local/desktop.log，排查时看不到东西。
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "toiler_server=info,tower_http=warn".into());
+        .unwrap_or_else(|_| "toiler_server=info,toiler_desktop_lib=info,tower_http=warn".into());
     let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }
 
