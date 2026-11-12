@@ -138,7 +138,9 @@ tree/paging/totalActiveMs 形状与 pi 一致；新会话里 `prompt` 触发的
 | 手机访问 | LAN 代理随机端口 200（Basic Auth）+ 无凭据 401；隧道 `named` 模式起停正常 |
 | 测试 | 151 个全绿（新增 34 个桌面壳 + 9 个静态托管 + 2 个 boot），`cargo build` 0 warning |
 
-**已知差异（阶段 5 已处理，见下节）**：内置终端、`files?type=diff`、手机端开关写入接口。
+**已知差异（阶段 5 已处理，见下节）**：`files?type=diff`、手机端开关写入接口。
+内置终端当初也在这里记着（当时只留了明确报错的命令占位），已在阶段 7 补齐，
+见下节。
 
 ## 阶段 5 — 回归 ✅ 已完成
 
@@ -229,6 +231,36 @@ toiler 不再把状态写进 pi 的 `~/.pi/agent`。
 **验收**：`auth/models/settings/trust/desktop-access` 5 份配置副本与源 sha256 一致、
 权限 0600；562 个会话全数复制；服务启动日志与 `/api/models` 的 `source` 都指向
 `~/.agents/toiler/configs/models.json`；信任读写只落新目录，`~/.pi/agent` 一字未动。
+
+## 阶段 7 — 内置终端 ✅ 已完成
+
+阶段 4 当时把内建终端留成了四个「明确报错」的命令占位（错误文案写的是「阶段 5
+再评估」），前端 `TerminalPanel.tsx` 与 `capabilities/default.json` 一直是完整的——
+也就是说这块只差后端。现在补上。
+
+交付物：`crates/toiler-desktop/src/terminal.rs`（约 500 行，含 6 个测试）
+
+- [x] `terminal_start` / `terminal_write` / `terminal_resize` / `terminal_close` 四个命令
+  - `portable-pty` 0.9（与 pi 同版本）：`openpty` → `spawn_command` → 后台线程读
+  - 输出走 `terminal-output`，读循环结束（shell 退出）发 `terminal-exit` 并摘掉注册表条目
+  - 同时最多 16 个，单次键入上限 1MB，尺寸夹在 2–500
+- [x] shell 与环境：unix 用 `CommandBuilder::new_default_prog()`（即 `$SHELL`），
+      Windows 用 `powershell.exe`；`TERM=xterm-256color`、`COLORTERM=truecolor`
+- [x] UTF-8 locale：继承值不是 UTF-8 时补 `LC_ALL`/`LC_CTYPE`（否则一个从访达
+      拉起的进程没有 `LANG`，中文输入法回显成 `\M-ã<0080><0082>`）
+- [x] cwd 校验多拒一种形状：必须是**绝对路径**且真实存在（从访达启动时进程 cwd
+      是 `/`，相对路径会落到 `Toiler.app/Contents/MacOS/` 里）
+- [x] 回收：`TerminalSession::drop` 杀前台进程组 + shell 自己的组（否则 `npm run dev`
+      这类子进程会留存）；退出应用前 `stop_terminals` 清空注册表
+
+**为什么留在桌面壳里**：它开的是**任意 shell**，而 `toiler-server` 要对局域网与
+隧道暴露 `/api`。把起进程的能力放在只有窗口调得到的 Tauri 命令里，手机链路就
+天然没有这条路径。
+
+**验收**：`cargo test --workspace` **348 个全绿**、`cargo clippy --all-targets` 0 warning。
+其中 `shell_echoes_input_reports_cwd_and_tracks_resize` 真起一个 `/bin/sh`，验证键入
+回显 / `pwd` / `stty size` 反映 resize（`30 100`），`dropping_a_session_kills_the_shell`
+验证关面板会杀进程——这两条守的正是「PTY 接错了」这类只在真实进程里暴露的问题。
 
 ## 明确不做的
 

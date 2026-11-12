@@ -25,3 +25,12 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = "0.1"
 libc = "0.2"
+# 内置终端的跨平台 PTY（与 pi 同一版本）。只在桌面壳里用：服务端不该有起 shell 的能力。
+portable-pty = "0.9"
+
+# macOS 红绿灯（窗口控制按钮）定位：直接摆 NSWindow 的标准按钮。
+# wry 的 traffic_light_position 语义是“拉高 titlebar 容器”，按钮最终落在哪
+# 取决于 AppKit 的默认布局；我们要的是“圆心对到顶栏中线”，只能自己算。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSView"] }

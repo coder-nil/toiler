@@ -348,6 +348,7 @@ cargo build -p toiler-desktop --release
 | `toiler-desktop::server` | 把 `bind(127.0.0.1:0)` → `tauri::async_runtime::spawn(serve)`，顺手预热会话列表 |
 | `toiler-desktop::frontend` | **前端源码**（Next 应用，源自 pi-desktop）；`npm run build` 产出 `dist/` |
 | `toiler-desktop::shell` | Tauri 的资源目录（`frontendDist`）：只有窗口占位页与启动失败页 |
+| `toiler-desktop::terminal` | 内置终端的 PTY（`portable-pty`）：四个 Tauri 命令 + 两个事件，见下面的「内置终端」 |
 | `toiler-desktop::{lan_proxy,tunnel}` | 从 pi 原样移植的手机访问件（局域网反代 + Cloudflare 隧道） |
 
 三处与 pi 的关键差别：
@@ -356,6 +357,26 @@ cargo build -p toiler-desktop --release
    API origin）。`/api` 与前端一个端口，SSE/fetch 不用处理跨域。
 2. **端口由内核分配**（`port = 0`）：不再抢 8787，也不会出现「端口被占用」。
 3. **没有启动探测**：`bind` 完成即可用（pi 是轮询 45s 等 node 起来）。
+
+### 内置终端
+
+`terminal.rs` 给前端的 `TerminalPanel`（xterm）提供真 PTY，与 pi 同版本依赖、
+同一套协议：
+
+| 方向 | 接口 |
+|---|---|
+| 前端 → 后端 | `terminal_start({cwd, cols, rows}) → terminalId`、`terminal_write({terminalId, data: number[]})`、`terminal_resize({terminalId, cols, rows})`、`terminal_close({terminalId})` |
+| 后端 → 前端 | `terminal-output`（`{terminalId, data: number[]}`）、`terminal-exit`（`{terminalId}`） |
+
+几个刻意的选择（改之前先看 `terminal.rs` 的头注释与测试）：
+
+- **只在桌面壳里**：它开的是任意 shell；服务端要对局域网和隧道暴露 `/api`，
+  所以起进程的能力不能放在那边。手机链路天然没有这条路径。
+- **cwd 必须是绝对路径且真实存在**：从访达启动时进程 cwd 是 `/`，相对路径会解析
+  到 `Toiler.app/Contents/MacOS/` 里。
+- **继承的 locale 不是 UTF-8 就补 `LC_ALL`/`LC_CTYPE`**：GUI 启动没有 `LANG`，
+  zsh 会把中文输入法送来的字节按单字节回显（「。」变成 `\M-ã<0080><0082>`）。
+- **关面板 = 杀进程组**：只杀 shell 会留下 `npm run dev` 之类的子进程。
 
 ### 前端
 
@@ -437,6 +458,28 @@ cargo build -p toiler-desktop                       # 自动嵌入 dist/
 | 真实续聊 | 老字节一字不改；pi 自己的 `SessionManager` 复读得 388 条目 / 385 context 消息 |
 | 桌面界面 | 会话/文件/图片/语法高亮/Markdown 预览/手机设置页全部实测 |
 | 手机 | Basic Auth 401/401/200；390×844 视口完整渲染；named 隧道 4 条连接注册 |
+
+## 阶段 7：内置终端（348 个测试全绿）
+
+阶段 4 当时把内建终端留成了四个「明确报错」的命令占位，前端 `TerminalPanel`（xterm）
+与 `capabilities/default.json` 一直是完整的——只差后端。新增 `toiler-desktop::terminal`：
+
+- `portable-pty` 0.9（与 pi 同版本）→ `terminal_start/write/resize/close` 四个命令，
+  `terminal-output` / `terminal-exit` 两个事件
+- unix 用 `$SHELL`，Windows 用 `powershell.exe`；`TERM=xterm-256color`
+- cwd 必须是**绝对路径**且真实存在；同时最多 16 个终端；单次键入上限 1MB
+- 关面板 / 退出应用时杀**前台进程组**，不留 `npm run dev` 这类子进程
+- 继承的 locale 不是 UTF-8 时就补 `LC_ALL`/`LC_CTYPE`（访达拉起的进程没有 `LANG`，
+  中文输入法会回显成 `\M-ã<0080><0082>`）
+
+它**只在桌面壳里**：起的是任意 shell，而 `toiler-server` 还要对局域网与隧道暴露 `/api`。
+细节见 [README.md](./README.md) 阶段 4 的「内置终端」与 [PLAN.md](./PLAN.md) 阶段 7。
+
+| 项 | 结果 |
+|---|---|
+| 测试 | 348 个全绿，0 warning（debug + clippy） |
+| 真实 PTY | 起 `/bin/sh` 验证键入回显 / `pwd` / `stty size` 反映 resize（`30 100`） |
+| 进程回收 | drop 会话后 shell 被 SIGKILL（`kill(pid, 0)` 返回 -1） |
 
 ## 后续阶段
 

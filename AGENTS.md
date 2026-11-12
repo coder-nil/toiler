@@ -33,7 +33,7 @@ crates/
 ├── toiler-session/   会话层：v3 文件读写 + SessionStorage 实现 + 命令行
 ├── toiler-server/    axum 服务：/api 契约、静态托管、业务模块（主力 crate）
 │   └── frontend/     include_dir! 的嵌入目录（内置占位页）
-└── toiler-desktop/   Tauri 壳：同进程启服务、手机访问（LAN 反代 + 隧道）
+└── toiler-desktop/   Tauri 壳：同进程启服务、内置终端、手机访问（LAN 反代 + 隧道）
     ├── frontend/     前端源码（Next 应用，源自 pi-desktop）
     │   └── dist/     npm run build 的产物（不入库）
     └── shell/        Tauri 的 frontendDist（窗口占位页 + 启动失败页）
@@ -58,13 +58,19 @@ tools/
 | `mobile_view.rs` / `mobile_access.rs` | 手机端消息投影与配对地址 |
 | `desktop_tools/` | 桌面自带工具（`system_time` / `task_progress` / `ask_user`），以及 `ask_user` 的 UI 往返桥（SSE `extension_ui_request` ⇄ 命令 `extension_ui_response`） |
 
+`toiler-desktop/src/` 里需要单独知道的一个模块：
+
+| 模块 | 职责 |
+|---|---|
+| `terminal.rs` | 内置终端的 PTY（`portable-pty` 0.9）：`terminal_start/write/resize/close` 四个命令 + `terminal-output` / `terminal-exit` 两个事件。**只在桌面壳里**，服务端没有起 shell 的能力（它对局域网与隧道暴露 `/api`） |
+
 ## 常用命令
 
 ```bash
 # 编译与测试（工作区根目录执行）
 cargo build                                   # 全工作区；debug 版内嵌的是占位前端页
 cargo build --release -p toiler-server       # 纯服务
-cargo test                                    # 265 个测试，应全绿且 0 warning
+cargo test                                    # 348 个测试，应全绿且 0 warning
 cargo clippy --all-targets                    # 提交前跑一遍
 cargo fmt                                     # 提交前跑一遍
 cargo test -p toiler-server --test regression  # 只跑前端契约回归（最常改动的那份）

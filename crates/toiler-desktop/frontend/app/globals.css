@@ -1,5 +1,117 @@
 @import "tailwindcss";
 
+/* ── 窗口外壳（chrome）────────────────────────────────────────
+   这一层是「窗口的一部分」，不是网页内容：
+   · 不吃文本选择、光标保持箭头（原生工具栏都这样，拖选标题会出卖网页感）
+   · 空白处可拖动窗口（data-tauri-drag-region 由组件挂在容器上）
+   · 覆盖式标题栏下红绿灯浮在内容上，左侧要让出 92px
+   只在桌面壳（html.pi-desktop）里生效，网页 / 手机端保持原样。 */
+
+.app-chrome,
+.app-chrome * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* 输入框、可编辑区例外：不能因为浮在 chrome 里就变不可选。 */
+.app-chrome :is(input, textarea, [contenteditable="true"]) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.app-chrome {
+  cursor: default;
+}
+
+/* 工具条按键：26px 高、圆角 6、无分隔线、无下划线指示器。
+   选中态是一个填充块，不靠 accent 描边——之前那套
+   border-right 竖线 + border-top 蓝色指示条就是浏览器标签页的语法。 */
+.app-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 26px;
+  min-width: 26px;
+  padding: 0 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.app-toolbar-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.app-toolbar-btn[data-active="true"] {
+  background: var(--bg-selected);
+  color: var(--text);
+}
+
+.app-toolbar-btn:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.app-toolbar-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 工具条里的会话标题：桌面应用必须有「我现在在哪个文档里」。
+   占据左侧全部剩余宽度，后面所有按键被顶到右边。 */
+.app-topbar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 12px 0 4px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+
+.app-topbar-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-topbar-title-meta {
+  flex: none;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+/* 覆盖式标题栏：红绿灯（约 52px 宽）+ 两侧留白。
+   侧栏展开时顶栏本身就不在窗口最左侧，不需要再让位。 */
+.pi-overlay-chrome {
+  /* 外壳各层左侧让位（红绿灯区）。侧栏标题行的 padding 是内联写的，
+     所以它读这个变量而不是靠 CSS 覆盖。 */
+  --chrome-inset: 92px;
+}
+
+/* 标题行在侧栏已经有 10px 内边距，所以它只需要补差值。 */
+.pi-overlay-chrome .app-sidebar-title-row {
+  padding-left: calc(var(--chrome-inset) - 10px);
+}
+
+.pi-overlay-chrome .app-topbar[data-sidebar-open="false"] {
+  padding-left: 86px;
+}
+
 .chat-composer-shell {
   --composer-padding: 10px;
   position: relative;
@@ -566,35 +678,77 @@ html.dark {
   --shadow-overlay: 0 8px 32px -12px rgba(0, 0, 0, 0.7);
 }
 
-/* ── 设置 → 常规 ───────────────────────────────────────────────
-   分组的设置列表：组内靠留白与 hover 高亮区分行（不用逐行 hairline），
-   组间用分组标题断开。
+/* ── 设置弹窗（标题条 / 分组卡片）──────────────────────────────
+   对话框标题条与顶栏同规则：42px、外壳色、26px 圆角图标键、标题 13px。
+   面板名写在标题条上，所以面板内部不再重复一个 15px 大标题。 */
+.settings-titlebar {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 0 8px 0 10px;
+  background: var(--bg-chrome);
+  border-bottom: 1px solid var(--border);
+}
 
-   圆角一律取 :root 里的 --radius-* 阶（见 token 注释）；
-   图标一律取自 lucide-react（项目唯一图标家族），strokeWidth 统一 1.8。 */
+.settings-titlebar-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.settings-titlebar-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+/* 面板说明：只有一行副文本，没有标题、没有通栏底线。 */
+.settings-pane-head {
+  padding: 12px 18px 2px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
 .settings-general {
   width: min(720px, 100%);
   padding: 10px 10px 20px;
 }
 
 .settings-general-group + .settings-general-group {
-  margin-top: 20px;
+  margin-top: 18px;
+}
+
+/* 分组卡片：内嵌圆角块，行在里面靠 hover 区分，不用逐行分割线。 */
+.settings-group-card {
+  padding: 3px;
+  background: var(--bg-panel);
+  border-radius: var(--radius-lg);
 }
 
 .settings-group-title {
-  padding: 0 10px 4px;
+  padding: 0 10px 6px;
   color: var(--text-muted);
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .settings-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 50px;
-  padding: 9px 10px;
-  border-radius: 8px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
   transition: background-color 120ms ease;
 }
 
@@ -919,14 +1073,18 @@ body {
   flex-direction: column;
 }
 
-::-webkit-scrollbar {
+/* 滚动条：桌面窗口里把样式交给系统。WKWebView 一旦侦测到 ::-webkit-scrollbar
+   自定义样式，就会把原生的覆盖式滚动条（随滚动淡入淡出、不占宽度）换成
+   永远在位的 4px 细条——那才是一个网页在浏览器里的样子。
+   网页态（手机 / 局域网访问）反而必须自己画：那些平台没有覆盖式滚动条。 */
+html:not(.pi-desktop) ::-webkit-scrollbar {
   width: 4px;
   height: 4px;
 }
-::-webkit-scrollbar-track {
+html:not(.pi-desktop) ::-webkit-scrollbar-track {
   background: transparent;
 }
-::-webkit-scrollbar-thumb {
+html:not(.pi-desktop) ::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 2px;
 }
@@ -1194,7 +1352,7 @@ button.extension-widget-trigger:focus-visible {
   margin-right: 6px;
   color: currentColor;
 }
-::-webkit-scrollbar-thumb:hover {
+html:not(.pi-desktop) ::-webkit-scrollbar-thumb:hover {
   background: var(--text-dim);
 }
 

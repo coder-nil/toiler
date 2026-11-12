@@ -299,7 +299,30 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 10. 重新编译（+ 启动）
+# 10. 推理级别下拉：去掉「使用 pi 默认设置」里的 pi
+# ---------------------------------------------------------------------------
+# 输入框下方的推理级别菜单有一项是「auto」，文案写的是「使用 pi 默认设置」/
+# 「Use pi default」。这里的「默认」指模型的 thinking 默认值，跟 pi 无关，
+# 写上去只会让人以为需要去配 pi。
+#
+# 只改这一条 i18n：其它带 `pi` 的文案都是有意义的事实（手机登录的用户名就是
+# `pi`、MCP 靠 pi 插件生态接），不动。
+thinking_fixed=0
+for chunk in "$target"/_next/static/chunks/app/page-*.js; do
+  [[ -f "$chunk" ]] || continue
+  if grep -qF '使用 pi 默认设置' "$chunk"; then
+    perl -pi -e 's/"使用 pi 默认设置"/"使用默认设置"/g; s/"Use pi default"/"Use default"/g' "$chunk"
+    thinking_fixed=$((thinking_fixed + 1))
+  fi
+done
+if (( thinking_fixed > 0 )); then
+  echo "已把 $thinking_fixed 个 chunk 的推理级别文案去掉 pi"
+else
+  echo "推理级别文案无需修正（产物里没有该字面量）"
+fi
+
+# ---------------------------------------------------------------------------
+# 11. 重新编译（+ 启动）
 # ---------------------------------------------------------------------------
 # 注意：不能调 run-desktop.sh —— 它会优先用本仓库的
 # `crates/toiler-desktop/frontend/dist/`，刚打完的 pi 产物根本不会被用上。

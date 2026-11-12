@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { useI18n } from "@/hooks/useI18n";
 import { readApiJson } from "@/lib/api-json";
+import { CHAT_TOP_BAR_HEIGHT } from "@/lib/panel-layout";
 import { revealNext } from "@/lib/typewriter";
 import { BranchPicker } from "./BranchPicker";
 
@@ -274,9 +275,11 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
   return (
     <div role="presentation" className="git-panel-overlay">
       <section role="dialog" aria-label={t("common.git")} className="git-panel-dialog" style={{ position: "relative", width: 460, maxWidth: "100vw", height: "100%", display: "flex", flexDirection: "column", background: "var(--bg)", borderLeft: "1px solid var(--border)", boxShadow: "-14px 0 32px rgba(0,0,0,.16)" }}>
-        <header style={{ height: "calc(36px + env(safe-area-inset-top))", padding: "env(safe-area-inset-top) 14px 0", display: "flex", alignItems: "center", gap: 10, flexShrink: 0, borderBottom: "1px solid var(--border)", background: "var(--bg-panel)" }}>
+        {/* 标题条与对话顶栏同高（CHAT_TOP_BAR_HEIGHT）：它是从右侧抽出来的浮层，
+            两条横线的 y 必须对得上，否则并排看就是错位的。 */}
+        <header style={{ height: `calc(${CHAT_TOP_BAR_HEIGHT}px + env(safe-area-inset-top))`, padding: "env(safe-area-inset-top) 8px 0 14px", display: "flex", alignItems: "center", gap: 10, flexShrink: 0, borderBottom: "1px solid var(--border)", background: "var(--bg-chrome)" }}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="3" /><circle cx="18" cy="18" r="3" /><path d="M6 9v6a3 3 0 0 0 3 3h6" /><path d="M18 15V9a3 3 0 0 0-3-3H9" /></svg>
-          <strong style={{ fontSize: 14 }}>{t("common.git")}</strong>
+          <strong style={{ fontSize: 13 }}>{t("common.git")}</strong>
           <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11 }}>{summary?.repositoryRoot ?? cwd}</span>
           <button type="button" onClick={() => void refresh().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))} disabled={disabled} title={t("git.refreshStatus")} aria-label={t("git.refreshStatus")} style={iconButtonStyle} onMouseEnter={(event) => { if (!disabled) event.currentTarget.style.background = "var(--bg-hover)"; }} onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}><span aria-hidden="true">↻</span></button>
           <button type="button" onClick={onClose} disabled={disabled} title={t("git.close")} aria-label={t("git.close")} style={iconButtonStyle} onMouseEnter={(event) => { if (!disabled) event.currentTarget.style.background = "var(--bg-hover)"; }} onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}><span aria-hidden="true">×</span></button>
@@ -323,7 +326,7 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
   );
 }
 
-const iconButtonStyle: CSSProperties = { width: 28, height: 28, padding: 0, border: "none", borderRadius: 5, background: "transparent", color: "var(--text-muted)", cursor: "pointer", fontSize: 18, lineHeight: 1, transition: "background .12s, color .12s" };
+const iconButtonStyle: CSSProperties = { width: 26, height: 26, padding: 0, border: "none", borderRadius: "var(--radius-sm)", background: "transparent", color: "var(--text-muted)", cursor: "pointer", fontSize: 16, lineHeight: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", transition: "background .12s, color .12s" };
 const sectionStyle: CSSProperties = { marginTop: 18, paddingTop: 14, borderTop: "1px solid var(--border)" };
 const summaryStyle: CSSProperties = { display: "grid", gridTemplateColumns: "58px minmax(0, 1fr)", rowGap: 7, alignItems: "center", padding: "10px", background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 6 };
 

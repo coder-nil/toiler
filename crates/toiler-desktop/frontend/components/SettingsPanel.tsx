@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import McpIcon from "@lobehub/icons/es/MCP/components/Mono";
 import {
   Blocks,
+  ChevronLeft,
   Cpu,
   Flag,
   Info,
@@ -20,6 +21,7 @@ import {
   SunMoon,
   Type as TypeIcon,
   Volume2,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { useI18n } from "@/hooks/useI18n";
@@ -111,7 +113,8 @@ function SettingsGroup({ title, children }: { title?: string; children: ReactNod
   return (
     <section className="settings-general-group">
       {title && <div className="settings-group-title">{title}</div>}
-      {children}
+      {/* 卡片背景只在行上，分组标题留在卡片外——macOS 设置面板就是这个结构。 */}
+      <div className="settings-group-card">{children}</div>
     </section>
   );
 }
@@ -639,6 +642,12 @@ export function SettingsPanel({ cwd, hasProject, projectTrusted, sessionId, onCl
     { id: "shortcuts", label: t("settings.shortcuts"), description: t("settings.shortcutsDescription"), disabled: false },
   ] satisfies Array<{ id: SettingsSection; label: string; description: string; disabled: boolean }>;
 
+  // 标题条上写的是“当前面板名”，不是固定的“设置”。桌面应用的对话框就是这样：
+  // 左边侧栏切换面板，标题条跟着变，面板内部不再重复一个 15px 大标题。
+  const activeLabel = view === "mcp-editor"
+    ? `${t("settings.mcp")} · ${t("settings.mcpEdit")}`
+    : settingsItems.find((item) => item.id === activeSection)?.label ?? t("settings.title");
+  
   return (
     <div
       role="presentation"
@@ -659,30 +668,36 @@ export function SettingsPanel({ cwd, hasProject, projectTrusted, sessionId, onCl
         style={{
           width: isMobile ? "calc(100vw - 16px)" : "min(1080px, calc(100vw - 32px))",
           height: isMobile ? "calc(100dvh - 16px)" : "min(780px, calc(100dvh - 32px))",
-          border: "1px solid var(--border)", borderRadius: isMobile ? 8 : 10,
-          background: "var(--bg)", boxShadow: "0 14px 40px rgba(0,0,0,0.24)", overflow: "hidden",
+          border: "1px solid var(--border)", borderRadius: "var(--radius-xl)",
+          background: "var(--bg)", boxShadow: "var(--shadow-overlay)", overflow: "hidden",
           display: "flex", flexDirection: "column", position: "relative",
         }}
       >
-        <header style={{ height: 48, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 14px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        <header className="app-chrome settings-titlebar">
+          <div className="settings-titlebar-left">
             {(view === "mcp-editor" || (isMobile && visibleView !== "menu")) && (
               <button
                 type="button"
                 onClick={() => setView(view === "mcp-editor" ? "mcp" : "menu")}
                 title={t("settings.back")}
                 aria-label={t("settings.back")}
-                style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, padding: 0, border: "none", borderRadius: 6, background: "none", color: "var(--text-muted)", cursor: "pointer", flexShrink: 0 }}
+                className="app-toolbar-btn"
               >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
+                <ChevronLeft size={15} strokeWidth={2} aria-hidden="true" />
               </button>
             )}
-            <span id="settings-panel-title" style={{ fontSize: 15, fontWeight: 700, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {t("settings.title")}
+            <span id="settings-panel-title" className="settings-titlebar-title">
+              {activeLabel}
             </span>
           </div>
-          <button type="button" onClick={onClose} title={t("settings.close")} aria-label={t("settings.close")} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, padding: 0, border: "none", borderRadius: 6, background: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>
-            ×
+          <button
+            type="button"
+            onClick={onClose}
+            title={t("settings.close")}
+            aria-label={t("settings.close")}
+            className="app-toolbar-btn"
+          >
+            <X size={15} strokeWidth={2} aria-hidden="true" />
           </button>
         </header>
 
@@ -690,10 +705,11 @@ export function SettingsPanel({ cwd, hasProject, projectTrusted, sessionId, onCl
           <aside
             style={{
               display: isMobile && visibleView !== "menu" ? "none" : "flex",
-              width: isMobile ? "100%" : 184,
+              width: isMobile ? "100%" : 200,
               padding: 8,
               borderRight: isMobile ? "none" : "1px solid var(--border)",
-              background: "var(--bg-panel)",
+              // 侧栏和其它区头用同一个外壳色，弹窗才像“带侧栏的面板”而不是两张白卡相叠。
+              background: "var(--bg-chrome)",
               flexDirection: "column",
               flexShrink: 0,
             }}
@@ -736,10 +752,7 @@ export function SettingsPanel({ cwd, hasProject, projectTrusted, sessionId, onCl
           <main style={{ display: isMobile && visibleView === "menu" ? "none" : "block", flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", position: "relative" }}>
             {visitedSections.has("general") && (
               <section hidden={activeSection !== "general"} aria-hidden={activeSection !== "general"} style={{ height: "100%", overflowY: "auto" }}>
-                <div style={{ padding: "15px 18px 12px", borderBottom: "1px solid var(--border)" }}>
-                  <div style={{ color: "var(--text)", fontSize: 15, fontWeight: 700 }}>{t("settings.general")}</div>
-                  <div style={{ marginTop: 3, color: "var(--text-muted)", fontSize: 11 }}>{t("settings.generalDescription")}</div>
-                </div>
+                <div className="settings-pane-head">{t("settings.generalDescription")}</div>
                 <div className="settings-general">
                   <SettingsGroup>
                     {renderThemeRow()}
@@ -773,10 +786,7 @@ export function SettingsPanel({ cwd, hasProject, projectTrusted, sessionId, onCl
 
             {visitedSections.has("shortcuts") && (
               <section hidden={activeSection !== "shortcuts"} aria-hidden={activeSection !== "shortcuts"} style={{ height: "100%", overflowY: "auto" }}>
-                <div style={{ padding: "15px 18px 12px", borderBottom: "1px solid var(--border)" }}>
-                  <div style={{ color: "var(--text)", fontSize: 15, fontWeight: 700 }}>{t("settings.shortcuts")}</div>
-                  <div style={{ marginTop: 3, color: "var(--text-muted)", fontSize: 11 }}>{t("settings.shortcutsDescription")}</div>
-                </div>
+                <div className="settings-pane-head">{t("settings.shortcutsDescription")}</div>
                 <div style={{ width: "min(760px, 100%)", padding: "8px 18px 24px" }}>
                   <div style={{ padding: "8px 0 2px", color: "var(--text-dim)", fontSize: 10, lineHeight: 1.45 }}>
                     {t("settings.shortcutsReadOnly")}
@@ -835,10 +845,9 @@ export function SettingsPanel({ cwd, hasProject, projectTrusted, sessionId, onCl
 
             {visitedSections.has("mcp") && (
               <section hidden={activeSection !== "mcp"} aria-hidden={activeSection !== "mcp"} style={{ height: "100%", overflowY: "auto" }}>
-                <div style={{ padding: "15px 18px 12px", borderBottom: "1px solid var(--border)" }}>
-                  <div style={{ color: "var(--text)", fontSize: 15, fontWeight: 700 }}>{view === "mcp-editor" ? t("settings.mcpEdit") : t("settings.mcp")}</div>
-                  {view !== "mcp-editor" && <div style={{ marginTop: 3, color: "var(--text-muted)", fontSize: 11 }}>{t("settings.mcpDescription")}</div>}
-                </div>
+                {view !== "mcp-editor" && (
+                  <div className="settings-pane-head">{t("settings.mcpDescription")}</div>
+                )}
                 {view === "mcp-editor" ? (
                   <div style={{ padding: "14px 18px 18px" }}>
                     <div style={{ color: "var(--text-muted)", fontSize: 11, lineHeight: 1.5, marginBottom: 9 }}>{t("settings.mcpEditorHint")}</div>
@@ -922,10 +931,7 @@ export function SettingsPanel({ cwd, hasProject, projectTrusted, sessionId, onCl
 
             {visitedSections.has("mobile") && (
               <section hidden={activeSection !== "mobile"} aria-hidden={activeSection !== "mobile"} style={{ height: "100%", overflowY: "auto" }}>
-                <div style={{ padding: "15px 18px 12px", borderBottom: "1px solid var(--border)" }}>
-                  <div style={{ color: "var(--text)", fontSize: 15, fontWeight: 700 }}>{t("settings.mobile")}</div>
-                  <div style={{ marginTop: 3, color: "var(--text-muted)", fontSize: 11 }}>{t("settings.mobileDescription")}</div>
-                </div>
+                <div className="settings-pane-head">{t("settings.mobileDescription")}</div>
                 <div style={{ padding: "14px 18px 18px" }}>
                   <MobileAccessSettings />
                 </div>

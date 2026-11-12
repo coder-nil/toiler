@@ -81,7 +81,7 @@ export default function RootLayout({
         )}
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem("pi-theme");var dark=t==="dark"||((t==null||t===""||t==="auto")&&window.matchMedia("(prefers-color-scheme: dark)").matches);if(dark)document.documentElement.classList.add("dark")}catch(e){}if(window.__PI_WEB_DESKTOP__)document.documentElement.classList.add("pi-desktop")})();`,
+            __html: `(function(){try{var t=localStorage.getItem("pi-theme");var dark=t==="dark"||((t==null||t===""||t==="auto")&&window.matchMedia("(prefers-color-scheme: dark)").matches);if(dark)document.documentElement.classList.add("dark")}catch(e){}if(window.__PI_WEB_DESKTOP__){document.documentElement.classList.add("pi-desktop");/* 覆盖式标题栏：红绿灯浮在内容上，外壳各层左侧要让位 */if(window.__TOILER_OVERLAY_TITLEBAR__)document.documentElement.classList.add("pi-overlay-chrome")}})();`, 
           }}
         />
         <script

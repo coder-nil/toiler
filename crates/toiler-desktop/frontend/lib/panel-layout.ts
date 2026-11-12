@@ -20,8 +20,12 @@ export const CHAT_MINIMAP_WIDTH = 36;
  * Height of the chat top bar / of the minimap rail's file-panel toggle row.
  * Shared so the minimap node layer can inset its first node below the toggle
  * instead of drawing a square on top of the icon.
+ *
+ * 42 而不是 36：这条东西在桌面壳里就是窗口的标题栏（macOS 覆盖式红绿灯就浮在
+ * 它上面），它需要足够的垂直空间去容纳 26px 的工具按键与拖拽区。
+ * 手机上它依旧是一条普通工具条。
  */
-export const CHAT_TOP_BAR_HEIGHT = 36;
+export const CHAT_TOP_BAR_HEIGHT = 42;
 
 const COMPACT_CHAT_MIN_WIDTH = 320;
 const DESKTOP_CHAT_MIN_WIDTH = 420;

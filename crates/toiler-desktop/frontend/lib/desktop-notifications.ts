@@ -3,6 +3,8 @@ import { sendNotification } from "@tauri-apps/plugin-notification";
 declare global {
   interface Window {
     __PI_WEB_DESKTOP__?: boolean;
+    /** Rust 侧注入：本窗口用的是覆盖式系统标题栏（目前只有 macOS）。 */
+    __TOILER_OVERLAY_TITLEBAR__?: boolean;
   }
 }
 

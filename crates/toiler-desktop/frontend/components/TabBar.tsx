@@ -39,10 +39,12 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
         // 用 stretch（而不是固定标签高度）让标签适应「去掉滚动条后」的可用高度，
         // 文字才能始终落在自己那一行的垂直中线上。
         alignItems: "stretch",
-        background: "var(--bg-panel)",
+        // 背景和高度都交给上层的标题条：面板头部与对话顶栏同高（42px），
+        // 这里再钉 36 + 自己一层底色，就会在条里留出一道色差缝。
+        background: "transparent",
         overflowX: "auto",
         flexShrink: 0,
-        height: 36,
+        height: "100%",
       }}
     >
       {tabs.map((tab) => {

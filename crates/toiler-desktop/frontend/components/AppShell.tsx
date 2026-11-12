@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect, useLayoutEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
@@ -55,6 +55,7 @@ import type { AppUpdateResponse, ProjectTrustStatus } from "@/lib/api-types";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import { chatLinkModeHint, type FileViewerState } from "@/lib/file-viewer-state";
+import { skillExpansionToCommand } from "@/lib/slash-display";
 import { FileViewer } from "./FileViewer";
 
 const TerminalPanel = dynamic(() => import("./TerminalPanel").then((module) => module.TerminalPanel), { ssr: false });
@@ -65,7 +66,10 @@ type AutoNameStatus =
   | { kind: "naming"; sessionId: string }
   | { kind: "success"; sessionId: string }
   | { kind: "error"; sessionId: string; message: string };
-const TOP_BAR_ICON_BUTTON_SIZE = CHAT_TOP_BAR_HEIGHT;
+// 方图标键的命中区。以前它等于工具条高度，工具条从 36 提到 42 后就会跟着变成
+// 42×42——手机上那是好处，桌面上会把 26px 的按键静默放大到 42。所以这里解耦：
+// 固定 34，工具条高度另外算。
+const TOP_BAR_ICON_BUTTON_SIZE = 34;
 const NOTIFICATION_ICON = "/icons/icon-192.png";
 const NOTIFICATION_PROMPT_MAX_LENGTH = 100;
 const RIGHT_PANEL_TRANSITION_MS = 200;
@@ -1103,6 +1107,16 @@ export function AppShell() {
     activeNewSessionDraftKeyRef.current = newSessionDraftKey;
   }, [newSessionDraftKey]);
   const showChat = selectedSession !== null || effectiveNewSessionCwd !== null;
+
+  /** 顶栏左侧的会话标题：手改过就用名字，否则用首条消息（与侧栏同一套回退顺序），
+      再否则用 id 前 12 位。未保存的新会话没有标题，用「新会话」。 */
+  const topBarTitle = useMemo(() => {
+    if (!selectedSession) return translate("i18n.newSession");
+    if (selectedSession.name) return selectedSession.name;
+    const first = skillExpansionToCommand(selectedSession.firstMessage) ?? selectedSession.firstMessage;
+    return (first || "").slice(0, 80) || selectedSession.id.slice(0, 12);
+  }, [selectedSession, translate]);
+
   const projectTrustCwd = selectedSession?.cwd ?? effectiveNewSessionCwd;
   // While restoring initial session from URL, don't show the placeholder
   const showPlaceholder = initialSessionRestored && !showChat;
@@ -1467,7 +1481,7 @@ export function AppShell() {
   const renderChatToolbarActions = (mobile: boolean) => {
     if (!mobile && !showChat) return null;
     return (
-      <div style={{ display: "flex", alignItems: "stretch", height: "100%" }}>
+      <div className="app-chrome" style={{ display: "flex", alignItems: "center", height: "100%", gap: 2, paddingRight: mobile ? 0 : 8 }}>
         <button
           type="button"
           onClick={() => {
@@ -1477,57 +1491,43 @@ export function AppShell() {
           disabled={!selectedSession}
           title={selectedSession ? translate("history.full") : translate("history.unsaved")}
           aria-label={translate("history.full")}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 6,
-            width: mobile ? TOP_BAR_ICON_BUTTON_SIZE : undefined,
-            height: "100%",
-            padding: mobile ? 0 : "0 12px",
-            background: "none",
-            border: "none",
-            borderTop: "2px solid transparent",
-            borderRight: "1px solid var(--border)",
+          className={mobile ? undefined : "app-toolbar-btn"}
+          style={mobile ? {
+            display: "flex", alignItems: "center", justifyContent: "center",
+            width: TOP_BAR_ICON_BUTTON_SIZE, height: "100%", padding: 0,
+            background: "none", border: "none", borderRight: "1px solid var(--border)",
             color: selectedSession ? "var(--text-muted)" : "var(--text-dim)",
             cursor: selectedSession ? "pointer" : "not-allowed",
-            opacity: selectedSession ? 1 : 0.45,
-            flexShrink: 0,
-            fontSize: 11,
-            whiteSpace: "nowrap",
-            transition: "color 0.1s, background 0.1s, opacity 0.1s",
-          }}
+            opacity: selectedSession ? 1 : 0.45, flexShrink: 0,
+          } : undefined}
           onMouseEnter={(event) => {
-            if (!selectedSession) return;
+            if (!mobile || !selectedSession) return;
             event.currentTarget.style.color = "var(--text)";
             event.currentTarget.style.background = "var(--bg-hover)";
           }}
           onMouseLeave={(event) => {
+            if (!mobile) return;
             event.currentTarget.style.color = selectedSession ? "var(--text-muted)" : "var(--text-dim)";
             event.currentTarget.style.background = "none";
           }}
           data-mobile-toolbar-action={mobile ? "history" : undefined}
         >
           <svg
-            width="12"
-            height="12"
+            width={mobile ? 12 : 14}
+            height={mobile ? 12 : 14}
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
-            style={{
-              color: selectedSession ? "var(--text-muted)" : "var(--text-dim)",
-              flexShrink: 0,
-            }}
+            style={{ flexShrink: 0 }}
             aria-hidden="true"
           >
             <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
             <path d="M3 3v5h5" />
             <path d="M12 7v5l3 2" />
           </svg>
-          {!mobile && <span>{translate("history.label")}</span>}
         </button>
         {mobile ? (
           <button
@@ -1556,6 +1556,7 @@ export function AppShell() {
             activeLeafId={branchActiveLeafId}
             onLeafChange={handleBranchLeafChange}
             inline
+            compact
             containerRef={topBarRef}
             open={activeTopPanel === "branches"}
             onToggle={() => toggleTopPanel("branches")}
@@ -1570,35 +1571,33 @@ export function AppShell() {
           title={translate("system.prompt")}
           aria-label={translate("system.prompt")}
           aria-pressed={activeTopPanel === "system"}
-          style={{
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-            width: mobile ? TOP_BAR_ICON_BUTTON_SIZE : undefined,
-            height: "100%", padding: mobile ? 0 : "0 12px",
+          className={mobile ? undefined : "app-toolbar-btn"}
+          data-active={!mobile && activeTopPanel === "system" ? "true" : undefined}
+          style={mobile ? {
+            display: "flex", alignItems: "center", justifyContent: "center",
+            width: TOP_BAR_ICON_BUTTON_SIZE, height: "100%", padding: 0,
             background: activeTopPanel === "system" ? "var(--bg-selected)" : "none",
-            border: "none",
-            borderTop: activeTopPanel === "system" ? "2px solid var(--accent)" : "2px solid transparent",
-            borderRight: "1px solid var(--border)",
-            cursor: mobile && !showChat ? "not-allowed" : "pointer",
+            border: "none", borderRight: "1px solid var(--border)",
             color: activeTopPanel === "system" ? "var(--text)" : "var(--text-muted)",
-            opacity: mobile && !showChat ? 0.45 : 1,
-            fontSize: 11, whiteSpace: "nowrap", transition: "color 0.1s, background 0.1s",
-          }}
+            opacity: !showChat ? 0.45 : 1, flexShrink: 0,
+          } : undefined}
           onMouseEnter={(event) => {
-            if (mobile && !showChat) return;
+            if (!mobile || !showChat) return;
             event.currentTarget.style.color = "var(--text)";
           }}
           onMouseLeave={(event) => {
+            if (!mobile) return;
             event.currentTarget.style.color = activeTopPanel === "system" ? "var(--text)" : "var(--text-muted)";
           }}
           data-mobile-toolbar-action={mobile ? "system" : undefined}
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: systemPrompt ? "var(--accent)" : "var(--text-dim)", flexShrink: 0 }} aria-hidden="true">
+          <svg width={mobile ? 12 : 14} height={mobile ? 12 : 14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: systemPrompt ? "var(--accent)" : "currentColor", flexShrink: 0 }} aria-hidden="true">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
             <polyline points="14 2 14 8 20 8" />
             <line x1="8" y1="13" x2="16" y2="13" />
             <line x1="8" y1="17" x2="13" y2="17" />
           </svg>
-          {!mobile && <span>{translate("system.label")}</span>}
+          {mobile && <span>{translate("system.label")}</span>}
         </button>
       </div>
     );
@@ -1665,24 +1664,26 @@ export function AppShell() {
         className={mobile ? "mobile-session-stats" : undefined}
         data-mobile-toolbar-stats={mobile ? "true" : undefined}
         style={{
-          marginLeft: mobile ? 0 : "auto",
+          marginLeft: mobile ? 0 : 4,
           display: "flex", alignItems: "center", justifyContent: "flex-end",
           flex: mobile ? 1 : undefined,
           minWidth: 0,
           gap: mobile ? 7 : 10,
-          paddingLeft: mobile ? 6 : 12,
-          paddingRight: mobile ? 6 : 12,
-          height: "100%",
+          padding: mobile ? 0 : "0 8px",
+          paddingLeft: mobile ? 6 : 8,
+          paddingRight: mobile ? 6 : 8,
+          height: mobile ? "100%" : 26,
+          borderRadius: mobile ? undefined : "var(--radius-sm)",
           overflow: "hidden",
           visibility: covered ? "hidden" : "visible",
           pointerEvents: covered ? "none" : "auto",
           background: activeTopPanel === "session" ? "var(--bg-selected)" : "none",
           border: "none",
-          borderTop: activeTopPanel === "session" ? "2px solid var(--accent)" : "2px solid transparent",
-          fontSize: 11, color: "var(--text-muted)",
+          fontSize: mobile ? 11 : 10.5,
+          color: activeTopPanel === "session" ? "var(--text)" : "var(--text-muted)",
           whiteSpace: "nowrap", cursor: showChat ? "pointer" : "default",
           fontVariantNumeric: "tabular-nums",
-          transition: "color 0.1s, background 0.1s",
+          transition: "background 120ms, color 120ms",
         }}
         onMouseEnter={(event) => {
           if (showChat && !covered) event.currentTarget.style.color = "var(--text)";
@@ -1788,8 +1789,9 @@ export function AppShell() {
         title={rightPanelOpen ? translate("files.hidePanel") : translate("files.showPanel")}
         aria-label={rightPanelOpen ? translate("files.hidePanel") : translate("files.showPanel")}
         data-mobile-toolbar-file={mobile ? "true" : undefined}
-        style={{
-          marginLeft: !mobile && !sessionStats && !contextUsage ? "auto" : 0,
+        className={mobile ? undefined : "app-toolbar-btn"}
+        data-active={!mobile && rightPanelOpen ? "true" : undefined}
+        style={mobile ? {
           display: "flex", alignItems: "center", justifyContent: "center",
           width: TOP_BAR_ICON_BUTTON_SIZE, height: TOP_BAR_ICON_BUTTON_SIZE, padding: 0,
           visibility: covered ? "hidden" : "visible",
@@ -1797,12 +1799,12 @@ export function AppShell() {
           background: rightPanelOpen ? "var(--bg-selected)" : "none",
           border: "none", borderLeft: "1px solid var(--border)",
           color: rightPanelOpen ? "var(--text)" : "var(--text-muted)",
-          cursor: "pointer", flexShrink: 0, transition: "color 0.12s, background 0.12s",
-        }}
-        onMouseEnter={(event) => { if (!covered) event.currentTarget.style.color = "var(--text)"; }}
-        onMouseLeave={(event) => { event.currentTarget.style.color = rightPanelOpen ? "var(--text)" : "var(--text-muted)"; }}
+          cursor: "pointer", flexShrink: 0,
+        } : { flexShrink: 0 }}
+        onMouseEnter={(event) => { if (!mobile && !covered) event.currentTarget.style.color = "var(--text)"; }}
+        onMouseLeave={(event) => { if (!mobile) event.currentTarget.style.color = rightPanelOpen ? "var(--text)" : "var(--text-muted)"; }}
       >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <svg width={mobile ? 16 : 15} height={mobile ? 16 : 15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="15" y1="3" x2="15" y2="21" />
         </svg>
       </button>
@@ -1814,34 +1816,36 @@ export function AppShell() {
    * 与 minimap 节点同列。列收起（没有可跳转的节点）时它回到 chat 顶栏。
    */
   const renderMinimapFileToggle = () => (
-    <button
-      type="button"
-      onClick={handleRightPanelToggle}
-      aria-controls="file-panel"
-      aria-expanded={rightPanelOpen}
-      title={rightPanelOpen ? translate("files.hidePanel") : translate("files.showPanel")}
-      aria-label={rightPanelOpen ? translate("files.hidePanel") : translate("files.showPanel")}
-      data-minimap-file-toggle=""
+    <div
       style={{
         position: "relative",
         zIndex: 3,
         display: "flex", alignItems: "center", justifyContent: "center",
-        width: "100%", height: TOP_BAR_ICON_BUTTON_SIZE, padding: 0, flexShrink: 0,
-        // 列收起时（宽度动画到 0）连带图标一起裁掉，避免它溢出到 chat 内容上。
+        // 与对话顶栏同高：这条 rail 的顶部格与顶栏在同一条基线上，
+        // 图标因此与工具条里的图标共中心（之前是 34px 格 + 34px 键，低了 4px）。
+        width: "100%", height: CHAT_TOP_BAR_HEIGHT, flexShrink: 0,
+        // rail 宽度动画到 0 时连带图标一起裁掉，避免它溢出到 chat 内容上。
         overflow: "hidden",
-        background: rightPanelOpen ? "var(--bg-selected)" : "none",
-        border: "none",
-        boxShadow: "inset 0 -1px 0 var(--border)",
-        color: rightPanelOpen ? "var(--text)" : "var(--text-muted)",
-        cursor: "pointer", transition: "color 0.12s, background 0.12s",
+        borderBottom: "1px solid var(--border)",
       }}
-      onMouseEnter={(event) => { event.currentTarget.style.color = "var(--text)"; }}
-      onMouseLeave={(event) => { event.currentTarget.style.color = rightPanelOpen ? "var(--text)" : "var(--text-muted)"; }}
     >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="15" y1="3" x2="15" y2="21" />
-      </svg>
-    </button>
+      <button
+        type="button"
+        onClick={handleRightPanelToggle}
+        aria-controls="file-panel"
+        aria-expanded={rightPanelOpen}
+        title={rightPanelOpen ? translate("files.hidePanel") : translate("files.showPanel")}
+        aria-label={rightPanelOpen ? translate("files.hidePanel") : translate("files.showPanel")}
+        data-minimap-file-toggle=""
+        className="app-toolbar-btn"
+        data-active={rightPanelOpen ? "true" : undefined}
+        style={{ flexShrink: 0 }}
+      >
+        <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="15" y1="3" x2="15" y2="21" />
+        </svg>
+      </button>
+    </div>
   );
 
   return (
@@ -1987,20 +1991,30 @@ export function AppShell() {
       {/* Center: chat */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         {/* Top bar keeps the sidebar opener available after the sidebar is hidden. */}
-        <div ref={topBarRef} style={{ flexShrink: 0, background: "var(--bg-chrome)" }}>
-        <div style={{ display: "flex", alignItems: "center", position: "relative", borderBottom: "1px solid var(--border)", height: "calc(36px + env(safe-area-inset-top))", paddingTop: "env(safe-area-inset-top)" }}>
+        <div
+          ref={topBarRef}
+          className="app-chrome app-topbar"
+          data-sidebar-open={sidebarOpen ? "true" : "false"}
+          // drag-region="deep"：Tauri 的裸属性只在直接点中这个元素时生效，
+          // 而这条带子里铺满了子节点（标题、间距），鼠标几乎不可能点中它本身。
+          // deep 让子树里的空白区域也能拖，按钮/链接/输入框依旧会拦住拖拽。
+          data-tauri-drag-region="deep"
+          style={{ flexShrink: 0, background: "var(--bg-chrome)" }}
+        >
+        <div
+          style={{ display: "flex", alignItems: "center", position: "relative", borderBottom: "1px solid var(--border)", height: `calc(${CHAT_TOP_BAR_HEIGHT}px + env(safe-area-inset-top))`, paddingTop: "env(safe-area-inset-top)" }}
+        >
           {!sidebarOpen && <button
             onClick={handleSidebarToggle}
              title={sidebarOpen ? translate("sidebar.hide") : translate("sidebar.show")}
              aria-label={sidebarOpen ? translate("sidebar.hide") : translate("sidebar.show")}
-            style={{
+            className={isMobile ? undefined : "app-toolbar-btn"}
+            style={isMobile ? {
               display: "flex", alignItems: "center", justifyContent: "center",
               width: TOP_BAR_ICON_BUTTON_SIZE, height: TOP_BAR_ICON_BUTTON_SIZE, padding: 0,
               background: "none", border: "none", borderRight: "1px solid var(--border)",
-              color: "var(--text-muted)", cursor: "pointer", flexShrink: 0, transition: "color 0.12s",
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; }}
+              color: "var(--text-muted)", cursor: "pointer", flexShrink: 0,
+            } : { marginLeft: 8, flexShrink: 0 }}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" />
@@ -2079,6 +2093,11 @@ export function AppShell() {
           {!isMobile && (
             <>
               {renderProjectTrustWarning(false)}
+              {showChat && (
+                <div className="app-topbar-title" title={topBarTitle}>
+                  <span className="app-topbar-title-text">{topBarTitle}</span>
+                </div>
+              )}
               {renderChatToolbarActions(false)}
               {renderSessionStatsButton(false)}
             </>
@@ -2100,7 +2119,11 @@ export function AppShell() {
           )}
           {/* Top panel dropdown — shared, only one active at a time */}
           {activeTopPanel && topPanelPos && (
-            <div style={{
+            <div
+              // 下拉面板在标题栏的 drag-region 子树里（它挂在 topBarRef 下），
+              // 不显式关掉的话，在面板里点一下按钮/拖动选择都会变成拖窗口。
+              data-tauri-drag-region="false"
+              style={{
               position: "fixed",
               top: topPanelPos.top,
               left: topPanelPos.left,
@@ -2502,9 +2525,11 @@ export function AppShell() {
           display: "flex",
           alignItems: "center",
           flexShrink: 0,
-          height: "calc(36px + env(safe-area-inset-top))",
+          /* 与对话顶栏同高：三条竖区（侧栏 / 对话 / 文件面板）的横向分隔线
+             必须在同一条 y 上，否则一眼就能看出是拼起来的。 */
+          height: `calc(${CHAT_TOP_BAR_HEIGHT}px + env(safe-area-inset-top))`,
           paddingTop: "env(safe-area-inset-top)",
-          background: "var(--bg-panel)",
+          background: "var(--bg-chrome)",
           borderBottom: "1px solid var(--border)",
         }}>
           <div style={{ flex: 1, overflow: "hidden" }}>
@@ -2522,16 +2547,14 @@ export function AppShell() {
             aria-expanded={rightPanelOpen}
             title={translate("files.hidePanel")}
             aria-label={translate("files.hidePanel")}
+            className="app-toolbar-btn"
             style={{
-              display: "flex", alignItems: "center", justifyContent: "center",
-              width: TOP_BAR_ICON_BUTTON_SIZE, height: TOP_BAR_ICON_BUTTON_SIZE, padding: 0,
-              background: "var(--bg-selected)", border: "none", borderLeft: "1px solid var(--border)",
-              color: "var(--text)", cursor: "pointer", flexShrink: 0, transition: "color 0.12s",
+              marginRight: 8, flexShrink: 0,
             }}
             onMouseEnter={(event) => { event.currentTarget.style.color = "var(--accent)"; }}
-            onMouseLeave={(event) => { event.currentTarget.style.color = "var(--text)"; }}
+            onMouseLeave={(event) => { event.currentTarget.style.color = ""; }}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="15" y1="3" x2="15" y2="21" />
             </svg>
           </button>

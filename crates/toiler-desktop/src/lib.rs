@@ -20,6 +20,7 @@ use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 mod lan_proxy;
 mod mobile;
 pub mod server;
+mod terminal;
 mod tunnel;
 
 use mobile::MobileAccess;
@@ -91,27 +92,89 @@ fn open_url(url: &str) -> Result<(), String> {
         .map_err(|error| format!("打开链接失败：{error}"))
 }
 
-// 终端面板（PTY）是 pi 桌面独有的功能，阶段 4 没有移植：命令存在但明确报错，
-// 前端的 TerminalPanel 会把原因显示出来，而不是静默失效。
-#[tauri::command]
-fn terminal_start() -> Result<(), String> {
-    Err("toiler 尚未提供内置终端（阶段 5 再评估）".to_string())
+/// 顶栏高度（逻辑点）。与前端 `CHAT_TOP_BAR_HEIGHT` 是同一个值，
+/// 红绿灯的圆心要对到它的中线，所以只能在这里也写一份并注明出处。
+#[cfg(target_os = "macos")]
+const TITLEBAR_HEIGHT: f64 = 42.0;
+
+/// macOS：把三个红绿灯的**圆心**放到距窗口顶边 `center_from_top` 的位置。
+///
+/// 为什么不用 `traffic_light_position`：wry 的实现是“拉高 titlebar 容器”，
+/// 按钮在容器内仍然走 AppKit 的默认布局，最终圆心落在哪要反推，而且建窗之后
+/// 系统还会再布一次局。这里直接把标准按钮的 frame 算出来摆，结果可预期，
+/// 并且把摆完的真实坐标打出来，不用再猜。
+#[cfg(target_os = "macos")]
+fn place_traffic_lights(
+    window: &tauri::WebviewWindow,
+    center_from_top: f64,
+) -> Result<String, String> {
+    use objc2_app_kit::{NSWindow, NSWindowButton};
+
+    let raw = window.ns_window().map_err(|error| error.to_string())?;
+    // SAFETY: `ns_window` 返回的就是这个窗口的 NSWindow 指针；调用方保证在主线程。
+    let ns_window: &NSWindow = unsafe { &*(raw as *mut NSWindow) };
+    let window_height = ns_window.frame().size.height;
+    let content_view = ns_window
+        .contentView()
+        .ok_or_else(|| "窗口没有 contentView".to_string())?;
+
+    // 目标圆心距窗口底（contentView 左下原点）的距离。
+    let target_from_bottom = window_height - center_from_top;
+
+    let mut report = format!("窗口高 {window_height:.1}，目标圆心距顶 {center_from_top:.1}：");
+    for (index, kind) in [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let Some(button) = ns_window.standardWindowButton(kind) else {
+            report.push_str(&format!(" [{index}] 缺失"));
+            continue;
+        };
+        // 关键：frame 是相对**父视图**（titlebar 容器）的，不能拿窗口高度直接赋值。
+        // 先把按钮的实际位置换算到窗口坐标，再按差值平移。
+        let in_window = button.convertRect_toView(button.bounds(), Some(&content_view));
+        let current_center = in_window.origin.y + in_window.size.height / 2.0;
+        let mut frame = button.frame();
+        frame.origin.y += target_from_bottom - current_center;
+        button.setFrameOrigin(frame.origin);
+
+        let after = button.convertRect_toView(button.bounds(), Some(&content_view));
+        let after_center = after.origin.y + after.size.height / 2.0;
+        report.push_str(&format!(
+            " [{index}] 高{:.1} 圆心距顶 {:.1}->{:.1}",
+            in_window.size.height,
+            window_height - current_center,
+            window_height - after_center
+        ));
+    }
+    Ok(report)
 }
 
-#[tauri::command]
-fn terminal_write() -> Result<(), String> {
-    Err("toiler 尚未提供内置终端（阶段 5 再评估）".to_string())
-}
-
-#[tauri::command]
-fn terminal_resize() -> Result<(), String> {
-    Err("toiler 尚未提供内置终端（阶段 5 再评估）".to_string())
-}
-
-#[tauri::command]
-fn terminal_close() -> Result<(), String> {
-    // 关闭是幂等的：没开过终端时也当成功。
-    Ok(())
+/// 建窗之后再摆一次：AppKit 会在窗口上屏时重排标题栏，建窗那一下设的会被盖掉。
+/// 两次都写日志，方便在 `/tmp/toiler-desktop.log` 里对票。
+#[cfg(target_os = "macos")]
+fn schedule_traffic_lights(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        for (attempt, delay) in [(1, 0u64), (2, 300)] {
+            if delay > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+            }
+            let inner = handle.clone();
+            let _ = handle.run_on_main_thread(move || {
+                if let Some(window) = inner.get_webview_window("main") {
+                    match place_traffic_lights(&window, TITLEBAR_HEIGHT / 2.0) {
+                        Ok(report) => tracing::info!("红绿灯（第 {attempt} 次）：{report}"),
+                        Err(error) => tracing::warn!("红绿灯（第 {attempt} 次）失败：{error}"),
+                    }
+                }
+            });
+        }
+    });
 }
 
 /// 创建主窗口：直接加载内嵌服务的地址（同源，`/api` 与前端一个端口）。
@@ -124,10 +187,16 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
 
     // pi 前端靠 `__PI_WEB_API_ORIGIN__` 把 `/api/...` 改写成绝对地址；
     // 同源部署下它就是自己的 origin，语义与 pi 桌面态一致。
+    //
+    // `__TOILER_OVERLAY_TITLEBAR__` 告诉前端：这条进程的系统标题栏是覆盖式的，
+    // 红绿灯浮在网页内容上，所以页内那条顶栏的左边要让出约 86px，
+    // 否则侧栏标题会压在红绿灯底下。非 macOS 平台菜单里没有这个值（false）。
+    let overlay_titlebar = cfg!(target_os = "macos");
     let script = format!(
         "window.__PI_WEB_API_ORIGIN__ = {origin};\
          window.__PI_WEB_DESKTOP__ = true;\
          window.__TOILER_DESKTOP__ = true;\
+         window.__TOILER_OVERLAY_TITLEBAR__ = {overlay_titlebar};\
          window.addEventListener('pi-app-ready', function () {{\
            if (window.__TAURI_INTERNALS__) {{\
              window.__TAURI_INTERNALS__.invoke('hide_startup_overlay').catch(function () {{}});\
@@ -135,17 +204,33 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
          }}, {{ once: true }});"
     );
 
-    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+    let mut builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
         .title("Toiler")
         .inner_size(1280.0, 820.0)
         .min_inner_size(720.0, 520.0)
-        .initialization_script(script)
+        .initialization_script(script);
+
+    // macOS：把系统标题栏换成覆盖式，红绿灯浮在内容上。
+    // 不这么做窗口里会有两层标题——系统那层写 "Toiler"，页内顶栏又写一遍，
+    // 而“里面套着一个网页”正是最明显的网页感来源。
+    #[cfg(target_os = "macos")]
+    {
+        // 红绿灯位置在 place_traffic_lights 里算（不走 wry 的 inset）。
+        builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true);
+    }
+
+    builder
         .build()
         .map(|_| ())
         .map_err(|error| format!("创建窗口失败：{error}"))
 }
 
 fn shutdown(app: &tauri::AppHandle) {
+    // 终端先收：每个 PTY 后面是一个真实 shell（可能还挂着 `npm run dev`），
+    // 服务关掉之后它们就不该继续跑。
+    terminal::stop_terminals(app);
     if let Some(state) = app.try_state::<ServerState>() {
         if let Ok(mut guard) = state.0.lock() {
             if let Some(mut server) = guard.take() {
@@ -190,14 +275,15 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(ServerState(Mutex::new(None)))
         .manage(MobileAccess::default())
+        .manage(terminal::TerminalState::default())
         .invoke_handler(tauri::generate_handler![
             hide_startup_overlay,
             open_release_url,
             open_external_url,
-            terminal_start,
-            terminal_write,
-            terminal_resize,
-            terminal_close,
+            terminal::terminal_start,
+            terminal::terminal_write,
+            terminal::terminal_resize,
+            terminal::terminal_close,
         ])
         .setup(|app| {
             // 把自己标记成「桌面壳」，并把 pid 交给服务层。两个变量都在 pi 里由
@@ -239,6 +325,8 @@ pub fn run() {
 
             mobile::start(&handle, port);
             spawn_signal_watcher(handle.clone());
+            #[cfg(target_os = "macos")]
+            schedule_traffic_lights(&handle);
             tracing::info!("toiler 桌面窗口已创建（端口 {port}）");
             Ok(())
         })
@@ -334,7 +422,7 @@ fn force_kill(child: &mut Child) {
 }
 
 #[cfg(windows)]
-fn hidden_command(program: &str) -> Command {
+pub(crate) fn hidden_command(program: &str) -> Command {
     use std::os::windows::process::CommandExt;
     let mut command = Command::new(program);
     command.creation_flags(CREATE_NO_WINDOW);

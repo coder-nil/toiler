@@ -320,28 +320,17 @@ export function BranchNavigator({ tree, activeLeafId, onLeafChange, inline, cont
 
   if (inline) {
     return (
-      <div style={{ height: "100%", display: "flex", alignItems: "stretch" }}>
+      // 对齐方式必须是 center：按键自身只有 26px，靠 stretch 会把它顶在条带顶部
+      // （之前这一颗图标比旁边两颗高 8px，看上去就是“没对齐”）。
+      <div style={{ height: "100%", display: "flex", alignItems: "center" }}>
         <button
           ref={btnRef}
           onClick={() => onToggle ? onToggle() : setOpenInternal((v) => !v)}
-          style={{
-            display: hideInlineButton ? "none" : "flex",
-            alignItems: "center",
-            gap: 6,
-            height: "100%",
-            padding: "0 12px",
-            background: open ? "var(--bg-selected)" : "none",
-            border: "none",
-            borderTop: open ? "2px solid var(--accent)" : "2px solid transparent",
-            borderRight: "1px solid var(--border)",
-            cursor: "pointer",
-            color: open ? "var(--text)" : "var(--text-muted)",
-            fontSize: 11,
-            whiteSpace: "nowrap",
-            transition: "color 0.1s, background 0.1s",
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.color = open ? "var(--text)" : "var(--text-muted)"; }}
+          // 顶栏按键统一走 .app-toolbar-btn：圆角小块 + 填充式选中，
+          // 不再是“带右侧分隔线与顶部指示条”的浏览器标签页。
+          className="app-toolbar-btn"
+          data-active={open ? "true" : undefined}
+          style={{ display: hideInlineButton ? "none" : undefined }}
            title={t("i18n.branches")}
            aria-label={t("i18n.branches")}
           aria-pressed={open}
@@ -350,7 +339,10 @@ export function BranchNavigator({ tree, activeLeafId, onLeafChange, inline, cont
            {!compact && <span>{t("i18n.branches")}</span>}
         </button>
         {open && dropdownPos && (
-          <div style={{
+          <div
+            // 下拉在标题栏拖拽子树里，不关掉就会把在面板里的点击当成拖窗口。
+            data-tauri-drag-region="false"
+            style={{
             position: "fixed",
             top: dropdownPos.top,
             left: dropdownPos.left,

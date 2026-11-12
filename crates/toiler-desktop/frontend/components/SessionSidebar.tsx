@@ -457,7 +457,9 @@ function PiWebTitle({ onAboutClick }: { onAboutClick?: () => void }) {
         onClick={handleClick}
         style={{
           background: "none", border: "none", padding: 0, cursor: "default",
-          fontWeight: 700, fontSize: 15, letterSpacing: "-0.01em",
+          /* 13px/600：窗口本身已经有标题了（macOS 菜单栏），这里不再是
+             “网站 logo”，只是应用身份 + 关于入口。 */
+          fontWeight: 600, fontSize: 13, letterSpacing: "-0.01em",
           color: showVersion ? "var(--accent)" : "var(--text)",
           fontFamily: "var(--font-mono)",
           minWidth: "6ch",
@@ -1392,6 +1394,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       )}
       {/* Header */}
       <div
+        className="app-chrome app-sidebar-header"
         style={{
           // 标题行的上边距改由标题行自身高度承担：它的垂直中心要落在对话顶栏
           // （完整历史 / 对话分支 / 系统）的中线上。
@@ -1401,6 +1404,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         }}
       >
         <div
+          // 只有标题行可以拖窗口（红绿灯就在这一行）：deep 让行内空白处都能拖，
+          // 而“Toiler”本身是个按钮（关于弹窗），它会拦住拖拽——这是对的。
+          data-tauri-drag-region="deep"
+          className="app-sidebar-title-row"
           style={{
             display: "flex",
             alignItems: "center",
@@ -1464,9 +1471,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               padding: "6px 10px",
               height: 32,
               boxSizing: "border-box",
-              background: selectedCwd ? "var(--bg-hover)" : "rgba(37,99,235,0.06)",
+              background: selectedCwd ? "var(--bg-hover)" : "transparent",
               border: "none",
-              borderRadius: "6px 0 0 6px",
+              borderRadius: "var(--radius-sm) 0 0 var(--radius-sm)",
               cursor: "pointer",
               fontSize: 12,
               color: "var(--text)",
@@ -1477,7 +1484,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               event.currentTarget.style.background = "var(--bg-selected)";
             }}
             onMouseLeave={(event) => {
-              event.currentTarget.style.background = selectedCwd ? "var(--bg-hover)" : "rgba(37,99,235,0.06)";
+              event.currentTarget.style.background = selectedCwd ? "var(--bg-hover)" : "transparent";
             }}
           >
             {selectedCwd ? (
