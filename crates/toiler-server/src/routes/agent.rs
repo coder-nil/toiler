@@ -260,6 +260,14 @@ pub async fn new_session(
         }
     };
 
+    // pi 的 `/api/agent/new` 会带上界面语言（`uiLocale`），新会话第一轮就该用对文案。
+    // 前端的 `set_ui_locale` 也会随后到达，这里先应用一次不会冲突。
+    if let Some(locale) = payload.get("uiLocale").and_then(Value::as_str) {
+        let _ = agent
+            .send(&json!({ "type": "set_ui_locale", "locale": locale }))
+            .await;
+    }
+
     let state_snapshot = agent.state_json().await.unwrap_or(Value::Null);
     let model = state_snapshot
         .get("model")

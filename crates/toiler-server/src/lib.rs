@@ -20,6 +20,7 @@ pub mod session_view;
 pub mod sessions_store;
 pub mod settings;
 pub mod state;
+pub mod system_prompt;
 pub mod tools;
 pub mod trust;
 

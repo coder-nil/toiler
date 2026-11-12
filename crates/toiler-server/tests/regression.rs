@@ -2005,7 +2005,7 @@ async fn navigate_tree_moves_leaf_and_truncates_context() {
     .await;
     assert_eq!(switched.status, StatusCode::OK, "{}", switched.text());
     let text =
-        std::fs::read_to_string(&root.join("--tmp-demo--/2026-11-10T06-41-44-431Z_sess-a.jsonl"))
+        std::fs::read_to_string(root.join("--tmp-demo--/2026-11-10T06-41-44-431Z_sess-a.jsonl"))
             .unwrap();
     let last: Value = serde_json::from_str(text.lines().next_back().unwrap()).unwrap();
     assert_eq!(last["type"], "model_change", "{last}");
@@ -3244,6 +3244,124 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
     );
 
     std::env::remove_var("WORKMAN_NPM");
+}
+
+/// 系统提示词：pi 的分节结构 + `get_state.systemPrompt`。
+///
+/// 前端「系统提示词」面板读的就是 `state.systemPrompt`
+/// （`hooks/useAgentSession.ts` 的 `setSystemPrompt(state.systemPrompt)`，
+/// `AppShell.tsx` 里 `systemPrompt === null` 时渲染「系统提示词尚未加载」）。
+/// 这一项以前没返回，面板永远停在未加载；提示词本身也只有一句话，
+/// 模型既看不到工具清单与行为准则，也读不到项目的 AGENTS.md。
+#[tokio::test]
+async fn system_prompt_has_pi_sections_and_get_state_exposes_it() {
+    let root = fixture_root("prompt");
+    let agent_dir = fixture_root("prompt-agent");
+    let project = fixture_root("prompt-project");
+    std::fs::write(
+        project.join("AGENTS.md"),
+        "# 项目约定\n\n改代码前先跑 cargo test。\n",
+    )
+    .unwrap();
+
+    // 全局 AGENTS.md 从 workman 自己的 agent 目录发现，这里指到临时目录，
+    // 免得用户的 `~/.agents/workman/AGENTS.md` 混进断言。
+    let previous = std::env::var("WORKMAN_AGENT_DIR").ok();
+    std::env::set_var("WORKMAN_AGENT_DIR", &agent_dir);
+
+    let cwd = project.to_string_lossy().to_string();
+    let dir = root.join(workman_session::session_directory_name(&cwd));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(workman_session::session_file_name(1794292904431, "sess-a")),
+        format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"sess-a\",\"timestamp\":\"2026-11-10T06:41:44.431Z\",\"cwd\":{}}}\n",
+            serde_json::to_string(&cwd).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let router = app_with_two_models(&root, &project, &agent_dir);
+
+    // 中文界面：前端打开会话就发这一条，并用返回值刷新面板
+    let zh = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"set_ui_locale","locale":"zh-CN"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(zh.status, StatusCode::OK, "{}", zh.text());
+    let prompt = zh.json()["data"]["systemPrompt"]
+        .as_str()
+        .expect("set_ui_locale 必须返回 systemPrompt")
+        .to_string();
+    assert!(
+        prompt.starts_with("你是运行在 pi 编程代理框架中的专业编程助手"),
+        "preamble 不对：{prompt}"
+    );
+    assert!(prompt.contains("<tools>\n- read: 读取文件内容"), "{prompt}");
+    assert!(prompt.contains("- bash: 执行 bash 命令"), "{prompt}");
+    assert!(prompt.contains("<rules>\n- 使用 read 查看文件"), "{prompt}");
+    assert!(prompt.contains("- 回答应简洁明了"), "{prompt}");
+    assert!(
+        prompt.contains(&format!("<cwd>\n{cwd}\n</cwd>")),
+        "{prompt}"
+    );
+    assert!(prompt.contains("输出语言规则（不可违背）"), "{prompt}");
+    // AGENTS.md：有 read 工具时只给路径，不内联正文
+    assert!(prompt.contains("<project_context>"), "{prompt}");
+    assert!(prompt.contains(&format!("- {cwd}/AGENTS.md")), "{prompt}");
+    assert!(
+        !prompt.contains("改代码前先跑 cargo test"),
+        "有 read 时应压成路径：{prompt}"
+    );
+
+    // `get_state` 必须是同一份：面板显示得等于真正发出去的那份
+    let state = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"get_state"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(state.status, StatusCode::OK, "{}", state.text());
+    let reported = state.json()["data"]["systemPrompt"].clone();
+    assert_eq!(reported, Value::String(prompt.clone()), "{}", state.text());
+
+    // 切回英文：同一套结构，文案换成英文，语言指令也跟着换
+    let en = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"set_ui_locale","locale":"en"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(en.status, StatusCode::OK, "{}", en.text());
+    let english = en.json()["data"]["systemPrompt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        english.starts_with("You are an expert coding assistant"),
+        "{english}"
+    );
+    assert!(english.contains("- read: Read file contents"), "{english}");
+    assert!(
+        english.contains("OUTPUT LANGUAGE — NON-NEGOTIABLE"),
+        "{english}"
+    );
+
+    match previous {
+        Some(value) => std::env::set_var("WORKMAN_AGENT_DIR", value),
+        None => std::env::remove_var("WORKMAN_AGENT_DIR"),
+    }
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+    std::fs::remove_dir_all(&project).ok();
 }
 
 /// 读一个 settings.json 文件（测试用；文件必须是合法 JSON 对象）。

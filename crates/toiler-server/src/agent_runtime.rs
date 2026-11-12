@@ -33,14 +33,10 @@ use workman_session::V3SessionStorage;
 
 use crate::catalog::ModelCatalog;
 use crate::settings::{QueueMode, QueueModePatch, SettingsFile};
+use crate::system_prompt::{Locale, PromptInputs};
 
 /// 广播缓冲：足够一次长回答的 delta 不被丢弃。
 const EVENT_BUFFER: usize = 8192;
-
-/// 系统提示：与 pi 的默认 preamble 对齐。
-const SYSTEM_PROMPT: &str = "\
-You are a coding assistant running inside pi, a coding agent harness. \
-Help users inspect files, run commands, and modify code.";
 
 /// 一个活着的 agent 会话。
 pub struct LiveAgent {
@@ -63,6 +59,18 @@ pub struct LiveAgent {
     ///
     /// 不能借用 `AppState`（活会话比一次请求活得久），所以拿一份落定的路径句柄。
     settings: SettingsFile,
+    /// 系统提示词的原料（cwd / 工具清单 / AGENTS.md）。
+    ///
+    /// `set_ui_locale` / `set_tools` 都要按新状态重新组装，所以留下原料而不是只留成品：
+    /// `<project_context>` 的形态（路径列表还是全文）与 `<tools>` 段都取决于这些原料。
+    prompt_inputs: Mutex<PromptInputs>,
+    /// 界面语言：决定提示词文案与末尾的语言指令。
+    locale: Mutex<Locale>,
+    /// 当前生效的系统提示词。
+    /// `get_state.systemPrompt` 必须与实际请求逐字相同（pi 的 `effectiveSystemPrompt()`
+    /// 注释里写得很清楚：面板显示得等于真正发出去的那份），所以放在这里由
+    /// [`Self::set_ui_locale`] 和组装点统一维护。
+    system_prompt: Mutex<String>,
 }
 
 impl LiveAgent {
@@ -105,7 +113,18 @@ impl LiveAgent {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("models.json 里没有可用模型"))?;
         let tools = crate::tools::build_tools(cwd, &model);
+        let tool_names: Vec<String> = tools.iter().map(|(name, _)| name.clone()).collect();
         let queue_modes = settings.queue_modes();
+
+        // 系统提示词：preamble / tools / rules / project_context / cwd + 语言指令。
+        //
+        // AGENTS.md 在这里读一次：它是会话级常量，不必每轮重新发现。全局那一份
+        // 从 workman 自己的 agent 目录取（对应 pi 的 `~/.pi/agent`）。
+        let prompt_inputs =
+            PromptInputs::load(cwd, &tool_names, &crate::paths::workman_home()).await;        // 默认英文：pi 的 `normalizeUiLocale` 对未知值也给 en。桌面前端打开会话后
+        // 会发 `set_ui_locale`（它记得用户选的界面语言），这里随即换成中文文案。
+        let locale = Locale::En;
+        let system_prompt = prompt_inputs.compose(locale);
 
         let (events, _rx) = broadcast::channel(EVENT_BUFFER);
         let tap = Arc::new(EventTap {
@@ -115,9 +134,9 @@ impl LiveAgent {
         let options = AgentHarnessOptions {
             model: model.clone(),
             thinking_level: rpi_ai::types::ThinkingLevel::Off,
-            active_tool_names: tools.iter().map(|(name, _)| name.clone()).collect(),
+            active_tool_names: tool_names,
             tools: tools.into_iter().map(|(_, tool)| tool).collect(),
-            system_prompt: Some(SYSTEM_PROMPT.to_string()),
+            system_prompt: Some(system_prompt.clone()),
             session,
             allow_existing_session: true,
             models: catalog.providers.clone(),
@@ -145,6 +164,9 @@ impl LiveAgent {
             catalog: catalog.clone(),
             changes: Mutex::new(None),
             settings: settings.clone(),
+            prompt_inputs: Mutex::new(prompt_inputs),
+            locale: Mutex::new(locale),
+            system_prompt: Mutex::new(system_prompt),
         }))
     }
 
@@ -230,6 +252,13 @@ impl LiveAgent {
                 Ok(json!({ "accepted": true }))
             }
             "set_model" => self.set_model(command).await,
+            // 前端每次打开会话、切换界面语言都会发它，并直接用返回值刷新
+            // 「系统提示词」面板；不实现的话面板永远停在「尚未加载」。
+            "set_ui_locale" => self.set_ui_locale(command).await,
+            // 工具预设（参数面板 / 设置页）读 `get_tools`、改 `set_tools`。
+            // 少了前者，`getPresetFromTools` 拿不到东西，工具列表就是空的。
+            "get_tools" => self.tool_infos().await,
+            "set_tools" => self.set_tools(command).await,
             "set_steering_mode" => self.set_queue_mode(command, true).await,
             "set_follow_up_mode" => self.set_queue_mode(command, false).await,
             "navigate_tree" => self.navigate_tree(command).await,
@@ -375,7 +404,107 @@ impl LiveAgent {
                 "name": model.name,
             },
             "thinkingLevel": "off",
+            // pi 的面板读的就是这一项；缺了它会显示「系统提示词尚未加载」。
+            "systemPrompt": self.current_system_prompt(),
         }))
+    }
+
+    /// 当前生效的系统提示词。
+    fn current_system_prompt(&self) -> String {
+        self.system_prompt.lock().expect("system prompt").clone()
+    }
+
+    /// 按当前原料与界面语言重算提示词并缓存，返回新文本。
+    ///
+    /// 锁顺序固定为 locale → prompt_inputs → system_prompt，所有调用点共用这一个
+    /// 函数就不会互相等到对方手里的锁。
+    fn recompose(&self) -> String {
+        let locale = *self.locale.lock().expect("locale");
+        let prompt = self
+            .prompt_inputs
+            .lock()
+            .expect("prompt inputs")
+            .compose(locale);
+        *self.system_prompt.lock().expect("system prompt") = prompt.clone();
+        prompt
+    }
+
+    /// `{"type":"get_tools"}` → `[{name, description, active}]`。
+    ///
+    /// pi 的面板用它反推工具预设（`getPresetFromTools`）；`active` 必须跟着
+    /// `set_tools` 变，否则切换预设后界面又跳回旧值。
+    async fn tool_infos(&self) -> Result<Value> {
+        let tools = self.harness.get_tools().await?;
+        let active = self
+            .prompt_inputs
+            .lock()
+            .expect("prompt inputs")
+            .tool_names()
+            .to_vec();
+        Ok(Value::Array(
+            tools
+                .iter()
+                .map(|tool| {
+                    let schema = tool.tool.schema();
+                    json!({
+                        "name": schema.name,
+                        "description": schema.description,
+                        "active": active.contains(&schema.name),
+                    })
+                })
+                .collect(),
+        ))
+    }
+
+    /// `{"type":"set_tools","toolNames":[…]}` → `null`（与 pi 同形）。
+    ///
+    /// 空数组就是「全关」（pi 的工具预设 `none` / 普通对话模式）：此时提示词只剩
+    /// preamble、通用准则与 cwd。注册表本身不删工具 —— rpi 的 `set_tools` 会整张
+    /// 替换，所以把原有工具原样传回去，只换 active 集合。
+    async fn set_tools(&self, command: &Value) -> Result<Value> {
+        let requested: Vec<String> = command
+            .get("toolNames")
+            .and_then(Value::as_array)
+            .map(|names| {
+                names
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let tools = self.harness.get_tools().await?;
+        // 顺序沿用注册表（即 pi 的默认工具顺序），前端传的顺序不影响提示词。
+        let ordered: Vec<String> = tools
+            .iter()
+            .map(|tool| tool.tool.schema().name.clone())
+            .filter(|name| requested.contains(name))
+            .collect();
+        self.harness
+            .set_tools(tools, Some(ordered.clone()))
+            .await?;
+
+        self.prompt_inputs
+            .lock()
+            .expect("prompt inputs")
+            .set_tool_names(ordered);
+        let prompt = self.recompose();
+        self.harness.set_system_prompt(Some(prompt)).await?;
+        Ok(Value::Null)
+    }
+
+    /// `{"type":"set_ui_locale","locale":"zh-CN"}` → `{systemPrompt}`。
+    ///
+    /// 界面语言决定提示词的中英文文案，所以换语言要重新组装整段提示词并把
+    /// 它推回 harness。rpi 的 `set_system_prompt` 在下一轮 run 的快照里生效
+    /// （进行中的一轮仍用旧文案），这与 pi 的 `before_agent_start` 时机一致。
+    async fn set_ui_locale(&self, command: &Value) -> Result<Value> {
+        let locale = Locale::parse(command.get("locale").and_then(Value::as_str));
+        *self.locale.lock().expect("locale") = locale;
+        let prompt = self.recompose();
+        self.harness.set_system_prompt(Some(prompt.clone())).await?;
+        Ok(json!({ "systemPrompt": prompt }))
     }
 
     pub async fn shutdown(&self) {

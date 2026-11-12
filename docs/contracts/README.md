@@ -95,6 +95,15 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 到 v3 会话文件（前端切完的 `loadSession` 靠它回显模型），返回 `{id, provider}`；
 查不到时 `500 {"error":"Model not found: <provider>/<modelId>"}`。
 
+`set_ui_locale`（`{"type":"set_ui_locale","locale":"zh-CN"|"en"}`）返回
+`{systemPrompt}`。前端打开会话、切换界面语言都会发它，返回值直接刷新「系统提示词」
+面板；它同时把提示词换成对应语言（preamble / 工具说明 / 行为准则 / 语言指令）。
+
+`get_state` 的响应里含 `systemPrompt`，值是**实际发给模型的那一份**提示词：
+`preamble → <tools> → <rules> → <project_context> → <cwd>` 分节
+（`system_prompt.rs`），与 pi 的 `effectiveSystemPrompt()` 同义。缺了它前端面板
+会一直显示「系统提示词尚未加载」，所以它是契约的一部分，不是可选字段。
+
 `navigate_tree`（`{"type":"navigate_tree","targetId":"<entryId>"}`）把 main lane 的叶子
 **移到**目标条目上（不是它的父节点），返回 `{cancelled, leafId}`。前端三个入口都发它：
 消息上的「从此处编辑」、消息树点节点、分支下拉切换叶子。拿到 `leafId` 后前端一定跟一次
