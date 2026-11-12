@@ -42,7 +42,7 @@ pub fn create_system_time_tool() -> Arc<dyn AgentTool> {
     Arc::new(SystemTimeTool {
         schema: Tool {
             name: "system_time".to_string(),
-            description: "Get the current date and time from the Toiler host system. \
+            description: "Get the current date and time from the toiler host system. \
                           Use this before answering questions involving today, tomorrow, \
                           yesterday, relative dates, weekdays, deadlines, or the current time."
                 .to_string(),

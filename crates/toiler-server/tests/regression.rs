@@ -3327,7 +3327,7 @@ async fn system_prompt_has_pi_sections_and_get_state_exposes_it() {
         .expect("set_ui_locale 必须返回 systemPrompt")
         .to_string();
     assert!(
-        prompt.starts_with("你是运行在 pi 编程代理框架中的专业编程助手"),
+        prompt.starts_with("你是运行在 toiler 编程代理框架中的专业编程助手"),
         "preamble 不对：{prompt}"
     );
     assert!(prompt.contains("<tools>\n- read: 读取文件内容"), "{prompt}");

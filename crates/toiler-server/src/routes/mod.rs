@@ -7,6 +7,7 @@ pub mod agent_extra;
 pub mod auth;
 pub mod files;
 pub mod git;
+pub mod mcp;
 pub mod misc;
 pub mod mobile;
 pub mod models_config;
@@ -114,6 +115,16 @@ pub fn router(state: AppState) -> Router {
             "/api/plugins/catalog/translate",
             post(crate::routes::plugins::catalog_translate),
         )
+        // ---- mcp ----
+        // MCP 配置文件的读写与探活（见 routes/mcp.rs）。缺了它，设置面板的 MCP
+        // 页会落到静态兜底的 404 `{"error":"Not found"}`，页面上显示成红字。
+        .route(
+            "/api/mcp",
+            get(crate::routes::mcp::get)
+                .put(crate::routes::mcp::put)
+                .post(crate::routes::mcp::add),
+        )
+        .route("/api/mcp/test", post(crate::routes::mcp::test))
         .route("/api/models", get(crate::routes::misc::models))
         .route(
             "/api/models-config",

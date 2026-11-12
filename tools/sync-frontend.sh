@@ -201,7 +201,86 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. 重新编译（+ 启动）
+# 7. 设置各分区标题：去掉旁边的路径
+# ---------------------------------------------------------------------------
+# 插件 / 模型 / 技能三个面板的标题行都是「标题 + <code>路径</code>」：
+#
+# - 插件、模型：紧跟标题的 `<code>`（项目 cwd / 模型配置文件路径）；
+# - 技能：标题后还有一个 loading 图标，`<code>` 排在它后面。
+#
+# 左侧栏本来就常驻显示当前项目，标题旁再挂一条绝对路径只是噪声；模型页那条
+# 写的是本机配置文件路径，也没必要占位。三处都删 `<code>`，保留标题与其它元素。
+#
+# 压缩后变量名随构建变，所以用 `children:x("common.<key>")` 作锚点；技能页那条
+# 依赖它独有的样式（`maxWidth:320`）定位。详情面板里带标签的 `CWD` / 安装路径不动。
+header_path_fixed=0
+for chunk in "$target"/_next/static/chunks/app/page-*.js; do
+  [[ -f "$chunk" ]] || continue
+  if grep -qE '"common\.(plugins|models|skills)"' "$chunk"; then
+    perl -0pi -e '
+      my $obj  = qr/\{(?:[^{}]|\{[^{}]*\})*\}/;
+      my $id   = qr/[A-Za-z_\$][\w\$]*/;
+      my $tail = qr/\}\s*\)/;
+      # 插件 / 模型：`<code>` 紧跟在标题 span 后面
+      s/(children:$id\("common\.(?:plugins|models)"\)$tail),\(\s*0,$id\.jsx\)\("code",$obj\)/$1/g;
+      # 技能：标题与 `<code>` 之间还隔着 loading 图标（条件渲染）
+      s/,\s*\(\s*0,$id\.jsx\)\("code",\{style:\{fontSize:11,color:"var\(--text-muted\)",fontFamily:"var\(--font-mono\)",maxWidth:320,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"\},children:$id\(e\)\}\)//g;
+    ' "$chunk"
+    header_path_fixed=$((header_path_fixed + 1))
+  fi
+done
+if (( header_path_fixed > 0 )); then
+  echo "已从 $header_path_fixed 个 chunk 去掉插件/模型/技能标题旁的路径"
+else
+  echo "设置标题无需修正（产物里没有标题旁路径）"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. MCP 页：全局配置文件的路径文案
+# ---------------------------------------------------------------------------
+# 前端把 global 那份写死成 pi 的 `~/.pi/agent/mcp.json`，而后端（`routes/mcp.rs`）
+# 读写的是 `<configs>/mcp.json`（与 models.json 同一个目录）。不统一的话，页面上
+# 写的路径与实际落的文件对不上。
+mcp_patched=0
+for chunk in "$target"/_next/static/chunks/app/page-*.js; do
+  [[ -f "$chunk" ]] || continue
+  if grep -qF '~/.pi/agent/mcp.json' "$chunk"; then
+    perl -pi -e 's|~/\\.pi/agent/mcp\\.json|~/.agents/toiler/configs/mcp.json|g' "$chunk"
+    mcp_patched=$((mcp_patched + 1))
+  fi
+done
+if (( mcp_patched > 0 )); then
+  echo "已把 $mcp_patched 个 chunk 里的全局 MCP 配置路径改为 toiler 的 configs/"
+else
+  echo "MCP 配置路径无需修正（产物里没有该字面量）"
+fi
+
+# ---------------------------------------------------------------------------
+# 9. 设置侧边栏：把「快捷键」挪到「手机访问」下面
+# ---------------------------------------------------------------------------
+# 导航是写死的静态数组（`eP`）：general / shortcuts / plugins / models / skills /
+# mcp / mobile。快捷键是低频入口，排到最后更顺手：把 shortcuts 那一项摘下来，
+# 接到 mobile 后面（它原本是最后一项，所以不加尾逗号）。
+setting_nav_fixed=0
+for chunk in "$target"/_next/static/chunks/app/page-*.js; do
+  [[ -f "$chunk" ]] || continue
+  if grep -qF 'id:"shortcuts"' "$chunk"; then
+    perl -0pi -e '
+      my $sc;
+      s/(\{id:"shortcuts",[^{}]*\}),/do { $sc = $1; "" }/e;
+      s/(\{id:"mobile",[^{}]*\})(?!\s*,)/$1 . "," . $sc/e if $sc;
+    ' "$chunk"
+    setting_nav_fixed=$((setting_nav_fixed + 1))
+  fi
+done
+if (( setting_nav_fixed > 0 )); then
+  echo "已把 $setting_nav_fixed 个 chunk 的快捷键菜单项挪到手机访问之后"
+else
+  echo "设置导航无需修正（产物里没有该结构）"
+fi
+
+# ---------------------------------------------------------------------------
+# 10. 重新编译（+ 启动）
 # ---------------------------------------------------------------------------
 if (( launch )); then
   # run-desktop.sh 内部的 build-release.sh 会自动探测到同一个目录

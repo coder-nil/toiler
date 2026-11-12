@@ -369,6 +369,10 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 | `POST /api/plugins` | ⚠️ | `install`/`remove`/`update`/`disable`/`enable` 全支持：npm 走本机 npm（`--legacy-peer-deps`，安装根 `<toilerHome>/plugins/npm`），启停改 `settings.json`；**git: 来源不支持**；找不到 npm → 500 + 中文提示。注意：装上的 TS 扩展 rpi 不会加载，功能不生效 |
 | `GET /api/plugins/catalog` | ⚠️ | 恒为空页（`{plugins:[],hasMore:false}`）：插件市场同技能市场，PLAN 明确不做 |
 | `POST /api/plugins/catalog/translate` | ⚠️ | 恒为 `{translations:{}}`：没有目录可翻 |
+| `GET /api/mcp?cwd=&scope=&includeContent=` | ⚠️ | 读配置文件 → `{path,servers}`；`includeContent=1` 再带 `content` 原文（文件不存在时是 `{\n  "mcpServers": {}\n}\n`）。global 落在 `<configs>/mcp.json`（见差异 20） |
+| `PUT /api/mcp` | ⚠️ | `{cwd,scope,content}` → 校验 `mcpServers` 是对象后原子写回 → `{path,servers}`；项目作用域未信任 403 |
+| `POST /api/mcp` | ⚠️ | `{cwd,scope,presetId}` → 把内置 preset 的 `entry` 写进 `mcpServers` → `{path,serverName,added,servers}`；未知 preset 404 |
+| `POST /api/mcp/test` | ⚠️ | 探活：`url` 发一次 `initialize`（10s）→ `passed`/`auth-required`/`failed`/`unknown`；`command` 跑 `--version` → `configured`/`failed`。**不建真实 MCP 会话** |
 | `GET/PUT /api/tools/settings` | ⚠️ | `{isWindows:false,powerShellEnabled:false}`；PUT 501（shell 工具是 bash，没有 PowerShell 通道） |
 | `GET/PUT /api/queue-modes` | ⚠️ | `{steeringMode, followUpMode}`（`all` / `one-at-a-time`，缺省 `one-at-a-time`），读写 `settings.json` 同名键；非法值 / 空 body 400。差异：pi 的 `AgentSession` 能改内存里的队列模式，rpi 的在 `AgentHarness::create` 时就定下来（`AgentHarnessOptions::steering_mode` / `follow_up_mode`），没有运行期 setter，所以 `PUT` 与 `set_steering_mode` / `set_follow_up_mode` 命令只对**新会话**生效；`GET` 必须实现，否则常规页在「完成提示音」下面常驻一行 `Not found` |
 
@@ -484,6 +488,14 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
     全禁用」。`totals` 只统计包内资源（不含 `settings.json` 顶层条目与自动发现目录）。
     少这条路由时插件页会拿到静态兜底的 404 `{"error":"Not found"}`，并把它当成
     一条插件画出来——这就是「不显示已安装插件」的直接原因。
+20. **`/api/mcp` 只读写配置，不加载服务器**：pi 的 MCP 面板背后是
+    `pi-mcp-adapter` 扩展（按配置起 stdio 进程或连 SSE，工具进会话）；toiler 只做
+    文件那一半——`GET`/`PUT`/`POST` 都是读写 `mcp.json`，`/api/mcp/test` 只探端点
+    （有 `url` 发一次 `initialize`，有 `command` 跑 `--version`）。**rpi 没有 MCP 客户端，
+    服务器不会真的连上，工具也不会出现在会话里**。另外 global 那份配置文件落在
+    `<configs>/mcp.json`（`~/.agents/toiler/configs/mcp.json`，与 `models.json` 同目录），
+    而不是 pi 的 `~/.pi/agent/mcp.json`。缺这组路由时 MCP 页会落到静态兜底拿
+    404 `{"error":"Not found"}`，页面上直接显示成红字。
 
 ### 目录与文件
 

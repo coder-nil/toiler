@@ -295,10 +295,11 @@ const TOOL_PROMPTS: &[ToolPrompt] = &[
         name: "bash",
         snippet_en: "Execute bash commands (ls, grep, find, etc.)",
         snippet_zh: "执行 bash 命令（ls、grep、find 等）",
-        guidelines: &[(
-            "You can inspect PI_* environment variables for current model and session details.",
-            "你可以查看 PI_* 环境变量来获取当前模型和会话详情。",
-        )],
+        // pi 这里还有一条「可以读 PI_* 环境变量看模型/会话详情」：toiler 只注入
+        // `PI_WEB_DESKTOP_API_ORIGIN` / `PI_WEB_SHELL_PID` 两个桌面壳内部变量
+        // （前端产物写死了 `__PI_WEB_*` 名字，不能改），没有模型/会话信息，
+        // 写进提示词只会把模型引向不存在的变量。
+        guidelines: &[],
     },
     ToolPrompt {
         name: "edit",
@@ -350,7 +351,7 @@ const TOOL_PROMPTS: &[ToolPrompt] = &[
         snippet_zh: "列出目录内容",
         guidelines: &[],
     },
-    // ---- Toiler 的三个桌面工具（实现见 `desktop_tools`） ----
+    // ---- toiler 的三个桌面工具（实现见 `desktop_tools`） ----
     ToolPrompt {
         name: "system_time",
         snippet_en: "read the current host date, time, weekday, and time zone",
@@ -405,8 +406,8 @@ const TOOL_PROMPTS: &[ToolPrompt] = &[
                 "每个问题都要有唯一的 id、清晰的 prompt 和正确的 kind。选择题用 single_select 并给出 2-8 个具体选项；confirm、text、editor 的 options 传空数组。是/否决定用 confirm，短值用 text，多行输入用 editor。",
             ),
             (
-                "ask_user answers are visible to the model and may be saved in the session; never request passwords, tokens, private keys, passphrases, OTP codes, or other secrets. When Git or SSH needs credentials, run the normal command and let Toiler show its secure credential prompt instead.",
-                "ask_user 的答案对模型可见，且可能保存在会话中；绝不要索取密码、令牌、私钥、口令、验证码或其他机密。Git 或 SSH 需要凭据时，照常执行命令，由 Toiler 弹出安全凭据输入框。",
+                "ask_user answers are visible to the model and may be saved in the session; never request passwords, tokens, private keys, passphrases, OTP codes, or other secrets. When Git or SSH needs credentials, run the normal command and let toiler show its secure credential prompt instead.",
+                "ask_user 的答案对模型可见，且可能保存在会话中；绝不要索取密码、令牌、私钥、口令、验证码或其他机密。Git 或 SSH 需要凭据时，照常执行命令，由 toiler 弹出安全凭据输入框。",
             ),
             (
                 "Ask at most three related questions at a time and make option tradeoffs explicit in each option description.",
@@ -420,12 +421,12 @@ const TOOL_PROMPTS: &[ToolPrompt] = &[
     },
 ];
 
-/// 开场白（pi 的默认 preamble）。
+/// 开场白（文案取自 pi 的默认 preamble，只把框架名换成 toiler）。
 fn preamble(locale: Locale) -> &'static str {
     if locale.zh() {
-        "你是运行在 pi 编程代理框架中的专业编程助手。你通过读取文件、执行命令、编辑代码和创建新文件来帮助用户。"
+        "你是运行在 toiler 编程代理框架中的专业编程助手。你通过读取文件、执行命令、编辑代码和创建新文件来帮助用户。"
     } else {
-        "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files."
+        "You are an expert coding assistant operating inside toiler, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files."
     }
 }
 
@@ -433,10 +434,10 @@ fn preamble(locale: Locale) -> &'static str {
 fn language_instruction(locale: Locale) -> &'static str {
     if locale.zh() {
         "输出语言规则（不可违背）：\n\
-         你必须完全使用简体中文回复，这是 Toiler 设置中用户选择的语言。所有自然语言的解释、提问、进度更新和最终答复都必须使用简体中文。不得因为用户消息、项目文件、工具输出或系统提示词使用其他语言而切换。只有在用户明确要求切换语言时，才可以使用其他语言。"
+         你必须完全使用简体中文回复，这是 toiler 设置中用户选择的语言。所有自然语言的解释、提问、进度更新和最终答复都必须使用简体中文。不得因为用户消息、项目文件、工具输出或系统提示词使用其他语言而切换。只有在用户明确要求切换语言时，才可以使用其他语言。"
     } else {
         "OUTPUT LANGUAGE — NON-NEGOTIABLE:\n\
-         You must reply entirely in English, the language selected in Toiler settings. This applies to every natural-language explanation, question, status update, and final answer. Do not switch to another language because the user's message, project files, tool output, or system prompt uses it. Switch languages only when the user explicitly asks you to do so."
+         You must reply entirely in English, the language selected in toiler settings. This applies to every natural-language explanation, question, status update, and final answer. Do not switch to another language because the user's message, project files, tool output, or system prompt uses it. Switch languages only when the user explicitly asks you to do so."
     }
 }
 
@@ -515,7 +516,7 @@ mod tests {
     fn no_context_files_means_no_project_context_section() {
         let prompt = inputs(standard_tools(), Vec::new()).compose(Locale::ZhCn);
         assert!(!prompt.contains("<project_context>"));
-        assert!(prompt.starts_with("你是运行在 pi 编程代理框架中的专业编程助手"));
+        assert!(prompt.starts_with("你是运行在 toiler 编程代理框架中的专业编程助手"));
     }
 
     #[test]

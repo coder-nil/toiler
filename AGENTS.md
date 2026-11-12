@@ -165,7 +165,7 @@ scope 用 crate 短名：`server` / `session` / `desktop` / `poc` / `docs` / `to
 
 | 项 | 原因 |
 |---|---|
-| MCP 服务器管理 | rpi 无对应能力，成本高于收益 |
+| MCP 服务器的**加载**（不是配置） | rpi 无 MCP 客户端。面板可以读写 `mcp.json` 并探活（`/api/mcp`，见 `docs/contracts/README.md` 差异 20），但配置里的服务器不会被连上，工具也不会出现在会话里 |
 | TS 扩展的**加载**（不是安装）/ 技能市场 | rpi 是 cdylib ABI，生态不兼容。插件面板可以装/卸 npm 包并展示，但包里的 TS 扩展不会被加载 |
 | OAuth 登录（`qoder-cn` 例外，已实现） | 其它家当前配置不需要 |
 | models.dev 定价目录 | 可选，后补 |

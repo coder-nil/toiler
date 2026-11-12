@@ -220,7 +220,7 @@ pub fn create_task_progress_tool(store: Arc<TaskProgressStore>) -> Arc<dyn Agent
     Arc::new(TaskProgressTool {
         schema: Tool {
             name: "task_progress".to_string(),
-            description: "Create and update the structured task list shown in the Toiler \
+            description: "Create and update the structured task list shown in the toiler \
                           interface. Use it for substantial multi-step work so the user can see \
                           each task's live state."
                 .to_string(),
