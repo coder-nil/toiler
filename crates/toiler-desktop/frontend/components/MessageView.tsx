@@ -374,9 +374,10 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
             flex: 1,
             minWidth: 0,
             background: "var(--user-bg)",
-            border: "1px solid rgba(59,130,246,0.2)",
-            borderRadius: 12,
-            padding: "8px 12px",
+            /* 用户气泡不加描边、不加底色色相：克制靠亮度分层（灰底 vs 白阅读面）。
+               原来的蓝边把每条用户消息变成一个小警报。 */
+            borderRadius: "var(--radius-xl)",
+            padding: "10px 14px",
             fontSize: "calc(14px + var(--chat-font-size-offset, 0px))",
             lineHeight: 1.6,
             color: "var(--text)",

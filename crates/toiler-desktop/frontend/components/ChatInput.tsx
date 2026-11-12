@@ -7,7 +7,7 @@ import type {TextContent, UserMessage} from "@/lib/types";
 import {type ChatDraftCommand, type ChatDraftCommandKind, type ChatDraftImage, type ChatDraftMention, clearDraft, getDraft, mergeRestoredSubmissionDraft, mergeRestoredSubmissionText, rekeyDraft as rekeyStoredDraft, setDraft,} from "@/lib/draft-store";
 import {isBase64ImageWithinLimits, MAX_ATTACHED_IMAGE_BYTES, MAX_ATTACHED_IMAGES,} from "@/lib/image-attachments";
 import {type AtQueryMatch, buildAtInsertText, buildEntriesFromFiles, extractAtQuery, type FileIndexEntry, filterFileEntries,} from "@/lib/file-fuzzy";
-import {ChevronDown} from "lucide-react";
+import {ArrowUp, ChevronDown} from "lucide-react";
 import {FolderIcon, getFileIcon} from "./FileIcons";
 import {useIsMobile} from "@/hooks/useIsMobile";
 import {useI18n} from "@/hooks/useI18n";
@@ -2738,30 +2738,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               title={t("chat.send")}
               aria-label={t("chat.send")}
               className="chat-composer-send"
-              style={{
-                flexShrink: 0,
-                alignSelf: "flex-end",
-                display: "flex", alignItems: "center", justifyContent: "center", gap: isMobile ? 0 : 6,
-                width: isMobile ? 36 : undefined,
-                height: isMobile ? 36 : undefined,
-                padding: isMobile ? 0 : "7px 14px",
-                background: (value.trim() || attachedImages.length) ? "var(--accent)" : "var(--bg-panel)",
-                border: "none",
-                borderRadius: 8,
-                color: (value.trim() || attachedImages.length) ? "#fff" : "var(--text-dim)",
-                cursor: (value.trim() || attachedImages.length) ? "pointer" : "not-allowed",
-                fontSize: 13,
-                fontWeight: 600,
-                letterSpacing: "-0.01em",
-                boxShadow: (value.trim() || attachedImages.length) ? "0 1px 3px rgba(37,99,235,0.25)" : "none",
-                transition: "background 0.15s, box-shadow 0.15s",
-              }}
+              // 样式全在 globals.css 的 .chat-composer-send 里：工具类只能表达
+              // “有内容 / 没内容”这两个态，内联 style 会把圆角与配色再写一遍。
+              data-ready={value.trim() || attachedImages.length ? "true" : "false"}
             >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="2" y1="7" x2="11" y2="7" />
-                <polyline points="7.5 3 12 7 7.5 11" />
-              </svg>
-              {!isMobile && t("chat.send")}
+              <ArrowUp size={16} strokeWidth={2.25} aria-hidden="true" />
             </button>
           )}
           </div>

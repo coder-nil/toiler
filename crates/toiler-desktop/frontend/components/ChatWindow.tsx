@@ -655,6 +655,13 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
       {isEmptyNew ? (
         <div className="flex flex-1 flex-col items-center justify-center overflow-y-auto px-4 py-8">
           <div className="w-full" style={{ maxWidth: "var(--chat-content-max-width, 820px)" }}>
+            {/* 空会话只给一个标记 + 一句问候，之后直接接输入框。
+                不列建议卡片、不堆快捷键速查：那两者要么是编造的，要么已经在
+                占位文字与按钮 tooltip 里。 */}
+            <div className="chat-empty">
+              <span className="chat-empty-mark" aria-hidden="true" />
+              <p className="chat-empty-title">{t("chat.emptyTitle")}</p>
+            </div>
             {chatInputElement}
             <ExtensionStatusBar statuses={extensionStatuses} widgets={extensionWidgets} />
           </div>

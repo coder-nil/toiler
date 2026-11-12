@@ -728,7 +728,7 @@ export function MobileRemoteView() {
                     style={{
                       maxWidth: "90%", display: "flex", flexDirection: "column", gap: 2,
                       padding: "8px 11px 6px", borderRadius: MOBILE_RADIUS.bubble,
-                      background: "var(--user-bg)", border: "1px solid color-mix(in srgb, var(--accent) 14%, transparent)",
+                      background: "var(--user-bg)",
                     }}
                   >
                     <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, whiteSpace: "pre-wrap", overflowWrap: "anywhere", color: "var(--text)" }}>

@@ -1961,7 +1961,8 @@ export function AppShell() {
         className={`sidebar-container${sidebarOpen ? " sidebar-open" : " sidebar-closed"}${mobileSidebarReady ? "" : " sidebar-mobile-pending"}${sidebarResizer.isResizing ? " sidebar-resizing" : ""}`}
         style={{
           "--sidebar-width": `${sidebarResizer.width}px`,
-          background: "var(--bg-panel)",
+          /* 外壳面用 --bg-chrome：侧栏与顶部条是“应用壳”，不是内容。 */
+          background: "var(--bg-chrome)",
           borderRight: "none",
           display: "flex",
           flexDirection: "column",
@@ -1986,7 +1987,7 @@ export function AppShell() {
       {/* Center: chat */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         {/* Top bar keeps the sidebar opener available after the sidebar is hidden. */}
-        <div ref={topBarRef} style={{ flexShrink: 0, background: "var(--bg-panel)" }}>
+        <div ref={topBarRef} style={{ flexShrink: 0, background: "var(--bg-chrome)" }}>
         <div style={{ display: "flex", alignItems: "center", position: "relative", borderBottom: "1px solid var(--border)", height: "calc(36px + env(safe-area-inset-top))", paddingTop: "env(safe-area-inset-top)" }}>
           {!sidebarOpen && <button
             onClick={handleSidebarToggle}

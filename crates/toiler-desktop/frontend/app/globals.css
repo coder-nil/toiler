@@ -6,8 +6,11 @@
   container-type: inline-size;
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  /* 外壳是“浮在阅读面上的一个面”，所以用最大的那一档圆角 + 阴影；
+     不靠深边框分隔。 */
+  border-radius: var(--radius-xl);
   background: var(--bg);
+  box-shadow: var(--shadow-composer);
   transition: border-color 150ms, box-shadow 150ms;
 }
 
@@ -19,7 +22,7 @@
   gap: 8px;
   min-width: 0;
   padding: var(--composer-padding) var(--composer-padding) var(--composer-padding) 12px;
-  border-radius: 11px;
+  border-radius: calc(var(--radius-xl) - 1px);
   /* Keep the scrollbar beside the outer border: 200px of text + padding. */
   max-height: 220px;
   overflow-y: auto;
@@ -72,7 +75,7 @@
 
 .chat-composer-shell:focus-within {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: var(--shadow-composer), 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .chat-composer-field textarea::placeholder {
@@ -221,12 +224,105 @@
   cursor: not-allowed;
 }
 
+/* 流式过程中这一格换成「停止 / 排队发送」，但与发送键占同一个位置、同一角色，
+   所以同样是圆形（菜单里的文字键不走这条，它们在 .chat-composer-queue-menu 下）。 */
+.chat-composer-queue-actions .chat-composer-queue-button {
+  border-radius: var(--radius-full);
+}
+
 @container (max-width: 480px) {
   .chat-composer-queue-button {
     width: 36px;
     height: 36px;
     min-height: 36px;
   }
+}
+
+/* 发送键：圆形图标键，不用文字。
+   配色只分两个态：无可发送内容 = 与控制面同色的“空位”；
+   有内容 = 反相实心（浅色底上是近黑，深色底上是近白）。
+   不引入第三种颜色，强调色只留给链接与焦点环。 */
+.chat-composer-send {
+  flex-shrink: 0;
+  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: not-allowed;
+  transition: background 150ms, color 150ms, transform 120ms;
+}
+
+.chat-composer-send[data-ready="true"] {
+  background: var(--text);
+  color: var(--bg);
+  cursor: pointer;
+}
+
+.chat-composer-send[data-ready="true"]:hover {
+  background: color-mix(in srgb, var(--text) 82%, var(--bg));
+}
+
+/* 按下时整个键沉下去 6%，跟键盘手感对齐。 */
+.chat-composer-send[data-ready="true"]:active {
+  transform: scale(0.94);
+}
+
+.chat-composer-send:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-composer-send {
+    transition: none;
+  }
+
+  .chat-composer-send[data-ready="true"]:active {
+    transform: none;
+  }
+}
+
+/* 窄窗下跟旁边的图标键一起放大到 36px（触控友好）。
+   必须写在基础规则之后：同样是单个类，源码顺序才是胜负手。 */
+@container (max-width: 480px) {
+  .chat-composer-send {
+    width: 36px;
+    height: 36px;
+  }
+}
+
+/* 空会话：品牌标记 + 一句问候，之后直接接输入框。
+   不列建议卡片，也不堆快捷键速查（快捷键就在占位文字与按钮 tooltip 里）。 */
+.chat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 0 0 24px;
+  text-align: center;
+}
+
+.chat-empty-mark {
+  width: 30px;
+  height: 26px;
+  background: var(--text-muted);
+  -webkit-mask: url("/icons/pi-input-mark.png") center / contain no-repeat;
+  mask: url("/icons/pi-input-mark.png") center / contain no-repeat;
+}
+
+.chat-empty-title {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
 }
 
 /* 「回到最新」趴在输入框上沿，轮廓是一道底部外撇的弧（喇叭口）：
@@ -368,6 +464,7 @@
 
 @theme {
   --color-bg: var(--bg);
+  --color-bg-chrome: var(--bg-chrome);
   --color-bg-panel: var(--bg-panel);
   --color-bg-hover: var(--bg-hover);
   --color-bg-selected: var(--bg-selected);
@@ -393,22 +490,30 @@
   /* 代码阅读面统一字号：FileViewer 的源码视图、diff、编辑器（CodeMirror）共用，
      避免预览 12px vs 编辑 14px 的“保存后字号跳变”。 */
   --code-font-size: 12.5px;
+  /* 中性灰阶（改前先读）：一套无彩度灰，不用冷灰。
+     三层的分工是固定的，别互换：
+       --bg        内容面（阅读区、输入框内壁）
+       --bg-chrome 外壳面（侧栏、顶部条），永远比 --bg 低一档
+       --bg-panel  控件填充（按钮、开关、badge、代码块），在 --bg 上与 --bg 有可见色差
+     --text-muted / --text-dim 都按 AA 反推过：dim 也必须是正文可读级
+     （4.5:1），因为它承载时间戳与消息数这类真实信息。 */
   --bg: #ffffff;
-  --bg-panel: #f5f5f5;
-  --bg-hover: #eeeeee;
-  --bg-selected: #e8e8e8;
-  --border: #e0e0e0;
-  --text: #1a1a1a;
-  --text-muted: #6b7280;
-  --text-dim: #9ca3af;
+  --bg-chrome: #f7f7f7;
+  --bg-panel: #f1f1f1;
+  --bg-hover: #ebebeb;
+  --bg-selected: #e4e4e4;
+  --border: #e3e3e3;
+  --text: #0d0d0d;
+  --text-muted: #565656;
+  --text-dim: #757575;
   --accent: #2563eb;
   --accent-hover: #1d4ed8;
   /* 状态色是一对语义 token：浅色底上必须够深才达到 AA 对比度。 */
   --live: #15803d;
   --danger: #dc2626;
-  --user-bg: #eff6ff;
+  --user-bg: #f4f4f4;
   --assistant-bg: #ffffff;
-  --tool-bg: #f9fafb;
+  --tool-bg: #f9f9f9;
   --bg-subtle: rgba(0,0,0,0.03);
   /* 开关轨道在关闭态也必须能被看清：WCAG 1.4.11 要求 UI 组件边界达到 3:1，
      浅灰轨道（--border）在白底上只有 1.3:1，所以单独给一条中灰 token。 */
@@ -417,38 +522,56 @@
   --switch-knob: #ffffff;
   /* 置顶星标的琥珀色：白底上够深、深色底上换成亮一档，两个主题都不刺眼。 */
   --star: #d99a00;
+
+  /* 圆角阶：整个应用只用这六档。新代码不要再写 5/7/9/11 这类中间值，
+     需要“同心圆角”时用 calc(var(--radius-*) - 1px)。 */
+  --radius-xs: 4px;   /* kbd、内联代码块 */
+  --radius-sm: 6px;   /* 命令 chip、状态标记 */
+  --radius-md: 8px;   /* 小图标按钮 */
+  --radius-lg: 12px;  /* 行、输入控件、面板 */
+  --radius-xl: 16px;  /* 输入框外壳、用户气泡、对话框 */
+  --radius-full: 999px;
+
+  /* 阴影只给“浮在内容面之上”的两类东西用：输入框外壳、弹层。
+     色相跟背景走，不用纯黑，否则浅色底下发脏。 */
+  --shadow-composer: 0 1px 2px rgba(0, 0, 0, 0.04), 0 10px 28px -18px rgba(0, 0, 0, 0.18);
+  --shadow-overlay: 0 8px 32px -12px rgba(0, 0, 0, 0.24);
 }
 
+/* 深色主题沿用同一套三层分工：外壳面比内容面暗，控件填充比内容面亮。 */
 html.dark {
-  --bg: #1a1a1a;
-  --bg-panel: #242424;
-  --bg-hover: #2e2e2e;
-  --bg-selected: #383838;
-  --border: #3a3a3a;
-  --text: #e8e8e8;
-  --text-muted: #9ca3af;
-  --text-dim: #6b7280;
+  --bg: #212121;
+  --bg-chrome: #171717;
+  --bg-panel: #2a2a2a;
+  --bg-hover: #313131;
+  --bg-selected: #3a3a3a;
+  --border: #3d3d3d;
+  --text: #ececec;
+  --text-muted: #a6a6a6;
+  --text-dim: #8a8a8a;
   --accent: #60a5fa;
   --accent-hover: #93c5fd;
   --live: #4ade80;
   --danger: #f87171;
-  --user-bg: #1e293b;
-  --assistant-bg: #1a1a1a;
-  --tool-bg: #1f2937;
+  --user-bg: #2f2f2f;
+  --assistant-bg: #212121;
+  --tool-bg: #1c1c1c;
   --bg-subtle: rgba(255,255,255,0.04);
   --switch-track-off: #6b6b6b;
   --switch-track-off-hover: #7d7d7d;
   --switch-knob: #f4f4f5;
   --star: #f5c04a;
+  /* 深色底上阴影读不出来，靠加深不透明度而不是换颜色。 */
+  --shadow-composer: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 28px -18px rgba(0, 0, 0, 0.6);
+  --shadow-overlay: 0 8px 32px -12px rgba(0, 0, 0, 0.7);
 }
 
 /* ── 设置 → 常规 ───────────────────────────────────────────────
    分组的设置列表：组内靠留白与 hover 高亮区分行（不用逐行 hairline），
    组间用分组标题断开。
 
-   圆角规则（改前先读）：对话框 10 / 行与图标小块 8 / 右侧控件 8 /
-   开关轨道用 pill。图标一律取自 lucide-react（项目唯一图标家族），
-   strokeWidth 统一 1.8。 */
+   圆角一律取 :root 里的 --radius-* 阶（见 token 注释）；
+   图标一律取自 lucide-react（项目唯一图标家族），strokeWidth 统一 1.8。 */
 .settings-general {
   width: min(720px, 100%);
   padding: 10px 10px 20px;
@@ -1207,8 +1330,10 @@ pre, code {
   margin: 8px 0;
   overflow-x: auto;
   overflow-y: hidden;
-  border: 1px solid var(--border);
-  border-radius: 7px;
+  /* 不要把表格包成控件：外框 + 圆角 + 表头底色 + 斑马纹四层叠加，
+     一张 4 行的表格能画出 10 条线。表格只靠行底线与表头字重区分。 */
+  border: 0;
+  border-radius: 0;
 }
 .markdown-body table {
   border-collapse: separate;
@@ -1219,18 +1344,17 @@ pre, code {
 }
 .markdown-body th, .markdown-body td {
   border: 0;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   padding: 6px 10px;
   text-align: left;
   vertical-align: top;
 }
 .markdown-body tr:last-child td { border-bottom: 0; }
 .markdown-body th {
-  background: var(--bg-panel);
-  color: color-mix(in srgb, var(--text) 88%, var(--text-muted));
-  font-weight: 650;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 600;
 }
-.markdown-body tbody tr:nth-child(even) td { background: var(--bg-subtle); }
 .markdown-body hr {
   border: none;
   height: 1px;
