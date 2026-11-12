@@ -1,5 +1,5 @@
 //! 检查 models.json → rpi provider 的映射（不发请求）。
-use workman_server::catalog::ModelCatalog;
+use toiler_server::catalog::ModelCatalog;
 
 fn main() -> anyhow::Result<()> {
     let catalog = ModelCatalog::load()?;

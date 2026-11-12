@@ -2,7 +2,7 @@
 //!
 //! 目录结构与 pi 逐字一致（见 [`crate::home`]），所以：
 //!
-//! - 指向 `~/.workman/agent/sessions` → workman 自己的会话
+//! - 指向 `~/.toiler/agent/sessions` → toiler 自己的会话
 //! - 指向 `~/.pi/agent/sessions` → 直接读 pi 的历史会话（只读用）
 //!
 //! 列表只读每个文件的 **header**（不解析条目），这样扫 500+ 会话是毫秒级；

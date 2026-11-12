@@ -5375,6 +5375,91 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
+name = "toiler-desktop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-notification",
+ "toiler-server",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "toiler-poc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest 0.12.28",
+ "rpi-agent",
+ "rpi-ai",
+ "rpi-harness",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "toiler-server"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "cbc",
+ "flate2",
+ "futures",
+ "http-body-util",
+ "idna",
+ "include_dir",
+ "libc",
+ "md-5",
+ "rand 0.8.8",
+ "reqwest 0.12.28",
+ "rpi-agent",
+ "rpi-ai",
+ "rpi-harness",
+ "rpi-tools",
+ "rsa",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toiler-session",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "toiler-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "rpi-agent",
+ "rpi-ai",
+ "rpi-harness",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "tokio"
 version = "1.54.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6581,90 +6666,6 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
-
-[[package]]
-name = "workman-desktop"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "libc",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-notification",
- "tokio",
- "tracing",
- "workman-server",
-]
-
-[[package]]
-name = "workman-poc"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "reqwest 0.12.28",
- "rpi-agent",
- "rpi-ai",
- "rpi-harness",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "workman-server"
-version = "0.1.0"
-dependencies = [
- "aes",
- "anyhow",
- "async-stream",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "bytes",
- "cbc",
- "flate2",
- "futures",
- "http-body-util",
- "idna",
- "include_dir",
- "libc",
- "md-5",
- "rand 0.8.8",
- "reqwest 0.12.28",
- "rpi-agent",
- "rpi-ai",
- "rpi-harness",
- "rpi-tools",
- "rsa",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "workman-session",
-]
-
-[[package]]
-name = "workman-session"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "rpi-agent",
- "rpi-ai",
- "rpi-harness",
- "serde",
- "serde_json",
- "tokio",
-]
 
 [[package]]
 name = "writeable"

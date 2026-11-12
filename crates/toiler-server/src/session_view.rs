@@ -255,7 +255,7 @@ fn post_order(children: &[Vec<usize>]) -> Vec<usize> {
 
 fn timestamp_of(entry: &Value) -> i64 {
     match entry.get("timestamp") {
-        Some(Value::String(iso)) => workman_session::iso_to_ms(iso).unwrap_or(0),
+        Some(Value::String(iso)) => toiler_session::iso_to_ms(iso).unwrap_or(0),
         Some(Value::Number(n)) => n.as_i64().unwrap_or(0),
         _ => 0,
     }
@@ -476,7 +476,7 @@ pub fn total_active_ms(entries: &[Value]) -> i64 {
             continue;
         }
         let Some(ts) = entry.get("timestamp").and_then(|v| match v {
-            Value::String(iso) => workman_session::iso_to_ms(iso),
+            Value::String(iso) => toiler_session::iso_to_ms(iso),
             Value::Number(n) => n.as_i64(),
             _ => None,
         }) else {
@@ -745,7 +745,7 @@ fn entry_timestamp(entry: &Value) -> Value {
     entry
         .get("timestamp")
         .and_then(|t| t.as_str())
-        .and_then(workman_session::iso_to_ms)
+        .and_then(toiler_session::iso_to_ms)
         .map(Value::from)
         .unwrap_or(Value::Null)
 }

@@ -9,7 +9,7 @@
 //!
 //! 与 pi 的差异（`docs/contracts/README.md` 有记录）：
 //!
-//! - 导出：pi 用 `pi` CLI 生成一份带树状导航的 HTML；workman 自己渲染一份
+//! - 导出：pi 用 `pi` CLI 生成一份带树状导航的 HTML；toiler 自己渲染一份
 //!   线性转写稿（同一套 header / 下载文件名规则，内容更朴素）。
 
 use std::collections::HashMap;
@@ -354,7 +354,7 @@ fn render_export_html(session: &RawSession, id: &str) -> String {
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
 <title>{title}</title>\
-<meta name=\"generator\" content=\"workman\">\
+<meta name=\"generator\" content=\"toiler\">\
 <style>{style}</style></head><body>\
 <header><h1>{title}</h1><p class=\"meta\">{cwd} · {count} messages</p></header>\
 <main>{body}</main></body></html>\n",
@@ -443,7 +443,7 @@ pub async fn auto_name(
     };
 
     // 写回会话名（pi 的 `setSessionName` → 追加 `session_info` 条目）
-    let storage = match workman_session::V3SessionStorage::load(&path) {
+    let storage = match toiler_session::V3SessionStorage::load(&path) {
         Ok(storage) => storage,
         Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };

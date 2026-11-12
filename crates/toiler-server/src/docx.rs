@@ -1,6 +1,6 @@
 //! DOCX → HTML 预览（`?type=preview`）。
 //!
-//! pi 用 `mammoth` 做这件事；workman 没有 Node，所以这里自己解 OOXML：
+//! pi 用 `mammoth` 做这件事；toiler 没有 Node，所以这里自己解 OOXML：
 //! 读 zip 里的 `word/document.xml`，把段落/标题/粗斜体/表格/列表转成 HTML。
 //!
 //! **明确不做**（与 mammoth 的差距，写在这里以免被当成 bug）：

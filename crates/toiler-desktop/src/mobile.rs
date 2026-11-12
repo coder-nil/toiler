@@ -41,7 +41,7 @@ impl MobileAccess {
 
 /// 起两个后台件。`server_port` 是内嵌 axum 监听的端口（代理转发目标）。
 pub fn start(app: &tauri::AppHandle, server_port: u16) {
-    let directory = workman_server::paths::configs_dir();
+    let directory = toiler_server::paths::configs_dir();
     let _ = std::fs::create_dir_all(&directory);
 
     let proxy = lan_proxy::start(
@@ -86,7 +86,7 @@ fn home_dir() -> PathBuf {
 /// 顺序：显式环境变量（开发/排障）→ 随 app 打包的资源目录 → PATH → Homebrew 常见位置。
 /// 找不到时返回 None，让隧道管理器把状态报成 `missing-binary`，界面就能说明原因。
 fn resolve_cloudflared_binary(app: &tauri::AppHandle) -> Option<PathBuf> {
-    if let Some(configured) = std::env::var_os("WORKMAN_CLOUDFLARED_PATH") {
+    if let Some(configured) = std::env::var_os("TOILER_CLOUDFLARED_PATH") {
         let candidate = PathBuf::from(configured);
         if candidate.is_file() {
             return Some(candidate);

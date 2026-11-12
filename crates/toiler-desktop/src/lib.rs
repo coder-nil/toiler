@@ -1,8 +1,8 @@
-//! workman 的桌面壳（阶段 4：单进程）。
+//! toiler 的桌面壳（阶段 4：单进程）。
 //!
 //! 与 pi-desktop 的差别只有一处，但很关键：**没有子进程**。
 //!
-//! | | pi-desktop | workman |
+//! | | pi-desktop | toiler |
 //! |---|---|---|
 //! | 后端 | `Command::new(node)` 拉起 Next server | 同一进程里的 axum（Tauri 的 tokio runtime） |
 //! | 前端 | 打包的 `.next` + `node_modules` | `include_dir!` 嵌进二进制的静态产物 |
@@ -47,7 +47,7 @@ fn safe_external_url(raw: &str) -> Result<String, String> {
 
 #[tauri::command]
 fn hide_startup_overlay() -> Result<(), String> {
-    // workman 没有原生启动遮罩（不需要等 node 起来），保留这个命令是为了让
+    // toiler 没有原生启动遮罩（不需要等 node 起来），保留这个命令是为了让
     // pi 前端的 `pi-app-ready` 回调不至于报错。
     Ok(())
 }
@@ -95,17 +95,17 @@ fn open_url(url: &str) -> Result<(), String> {
 // 前端的 TerminalPanel 会把原因显示出来，而不是静默失效。
 #[tauri::command]
 fn terminal_start() -> Result<(), String> {
-    Err("workman 尚未提供内置终端（阶段 5 再评估）".to_string())
+    Err("toiler 尚未提供内置终端（阶段 5 再评估）".to_string())
 }
 
 #[tauri::command]
 fn terminal_write() -> Result<(), String> {
-    Err("workman 尚未提供内置终端（阶段 5 再评估）".to_string())
+    Err("toiler 尚未提供内置终端（阶段 5 再评估）".to_string())
 }
 
 #[tauri::command]
 fn terminal_resize() -> Result<(), String> {
-    Err("workman 尚未提供内置终端（阶段 5 再评估）".to_string())
+    Err("toiler 尚未提供内置终端（阶段 5 再评估）".to_string())
 }
 
 #[tauri::command]
@@ -127,7 +127,7 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
     let script = format!(
         "window.__PI_WEB_API_ORIGIN__ = {origin};\
          window.__PI_WEB_DESKTOP__ = true;\
-         window.__WORKMAN_DESKTOP__ = true;\
+         window.__TOILER_DESKTOP__ = true;\
          window.addEventListener('pi-app-ready', function () {{\
            if (window.__TAURI_INTERNALS__) {{\
              window.__TAURI_INTERNALS__.invoke('hide_startup_overlay').catch(function () {{}});\
@@ -136,7 +136,7 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
     );
 
     WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
-        .title("workman")
+        .title("Toiler")
         .inner_size(1280.0, 820.0)
         .min_inner_size(720.0, 520.0)
         .initialization_script(script)
@@ -184,7 +184,7 @@ fn spawn_signal_watcher(_handle: tauri::AppHandle) {}
 
 /// 应用入口（`main.rs` 调它）。
 pub fn run() {
-    workman_server::boot::init_tracing();
+    toiler_server::boot::init_tracing();
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -201,7 +201,7 @@ pub fn run() {
         ])
         .setup(|app| {
             // 把自己标记成「桌面壳」，并把 pid 交给服务层。两个变量都在 pi 里由
-            // spawn node 时的 env 注入；workman 同进程，直接写进进程环境即可：
+            // spawn node 时的 env 注入；toiler 同进程，直接写进进程环境即可：
             //
             // * `PI_WEB_DESKTOP_API_ORIGIN` —— `security` 的 origin 校验用它，
             //   `/api/mobile/*` 靠它区分「桌面壳」与「命令行直启」；
@@ -239,7 +239,7 @@ pub fn run() {
 
             mobile::start(&handle, port);
             spawn_signal_watcher(handle.clone());
-            tracing::info!("workman 桌面窗口已创建（端口 {port}）");
+            tracing::info!("toiler 桌面窗口已创建（端口 {port}）");
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -262,9 +262,9 @@ fn show_fatal(app: &tauri::AppHandle, message: &str) {
         "startup-error",
         WebviewUrl::App("startup-error.html".into()),
     )
-    .title("workman 启动失败")
+    .title("Toiler 启动失败")
     .inner_size(620.0, 380.0)
-    .initialization_script(format!("window.__WORKMAN_STARTUP_ERROR__ = {escaped};"))
+    .initialization_script(format!("window.__TOILER_STARTUP_ERROR__ = {escaped};"))
     .build();
 }
 
@@ -361,9 +361,9 @@ mod tests {
 
     #[test]
     fn agent_dir_is_absolute() {
-        // mobile::start 用的是 workman-server 的 agent 目录解析，
+        // mobile::start 用的是 toiler-server 的 agent 目录解析，
         // 这里只确认它是个绝对路径（不会写到进程当前目录下）。
-        let dir = workman_server::paths::configs_dir();
+        let dir = toiler_server::paths::configs_dir();
         assert!(dir.is_absolute(), "{} 应当是绝对路径", dir.display());
     }
 }

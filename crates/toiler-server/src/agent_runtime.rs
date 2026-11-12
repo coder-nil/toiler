@@ -7,7 +7,7 @@
 //!    投影成 pi 的 SSE 形状后广播（规则见 `docs/contracts/README.md`）。
 //! 3. [`LiveAgent::send`] —— 处理 `POST /api/agent/[id]` 的 `{type:…}` 命令。
 //!
-//! 会话持久化走 `workman-session` 的 v3 `SessionStorage`，所以一轮对话结束后
+//! 会话持久化走 `toiler-session` 的 v3 `SessionStorage`，所以一轮对话结束后
 //! 消息已经按 v3 写进同一个 `.jsonl` 文件。
 //!
 //! **注意**：rpi 的 `AgentEvent` 没有实现 `Serialize`（它是给 Rust 消费者的），
@@ -28,10 +28,12 @@ use rpi_harness::session::types::{ProvisionedEntry, ProvisionedKind};
 use rpi_harness::session::Session;
 use rpi_harness::types::{AgentHarnessOptions, SendMessageOptions};
 use serde_json::{json, Value};
+use toiler_session::V3SessionStorage;
 use tokio::sync::broadcast;
-use workman_session::V3SessionStorage;
 
 use crate::catalog::ModelCatalog;
+use crate::desktop_tools::task_progress::TaskItem;
+use crate::desktop_tools::{TaskProgressStore, UiBridge};
 use crate::settings::{QueueMode, QueueModePatch, SettingsFile};
 use crate::system_prompt::{Locale, PromptInputs};
 
@@ -71,6 +73,10 @@ pub struct LiveAgent {
     /// 注释里写得很清楚：面板显示得等于真正发出去的那份），所以放在这里由
     /// [`Self::set_ui_locale`] 和组装点统一维护。
     system_prompt: Mutex<String>,
+    /// 工具 ↔ 前端的通道（`ask_user` 的问答往返、`task_progress` 的状态推送）。
+    ui: Arc<UiBridge>,
+    /// 任务列表：既喂工具，也喂 `get_state.extensionStatuses/extensionWidgets`。
+    tasks: Arc<TaskProgressStore>,
 }
 
 impl LiveAgent {
@@ -112,24 +118,29 @@ impl LiveAgent {
             .or_else(|| catalog.default_model())
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("models.json 里没有可用模型"))?;
-        let tools = crate::tools::build_tools(cwd, &model);
+        let (events, _rx) = broadcast::channel(EVENT_BUFFER);
+        let tap = Arc::new(EventTap {
+            events: events.clone(),
+        });
+
+        // 桌面自带工具的通道与状态：`ask_user` 的问答往返、`task_progress` 的展示。
+        let ui = UiBridge::new(events.clone());
+        let tasks = TaskProgressStore::new(ui.clone());
+        let tools = crate::tools::build_tools(cwd, &model, ui.clone(), tasks.clone());
         let tool_names: Vec<String> = tools.iter().map(|(name, _)| name.clone()).collect();
+        // 任务列表从 transcript 恢复：pi 在 `session_start` 时做同一件事。
+        tasks.restore(restore_tasks(path, None));
         let queue_modes = settings.queue_modes();
 
         // 系统提示词：preamble / tools / rules / project_context / cwd + 语言指令。
         //
         // AGENTS.md 在这里读一次：它是会话级常量，不必每轮重新发现。全局那一份
-        // 从 workman 自己的 agent 目录取（对应 pi 的 `~/.pi/agent`）。
+        // 从 toiler 自己的 agent 目录取（对应 pi 的 `~/.pi/agent`）。
         let prompt_inputs =
-            PromptInputs::load(cwd, &tool_names, &crate::paths::workman_home()).await;        // 默认英文：pi 的 `normalizeUiLocale` 对未知值也给 en。桌面前端打开会话后
-        // 会发 `set_ui_locale`（它记得用户选的界面语言），这里随即换成中文文案。
+            PromptInputs::load(cwd, &tool_names, &crate::paths::toiler_home()).await; // 默认英文：pi 的 `normalizeUiLocale` 对未知值也给 en。桌面前端打开会话后
+                                                                                      // 会发 `set_ui_locale`（它记得用户选的界面语言），这里随即换成中文文案。
         let locale = Locale::En;
         let system_prompt = prompt_inputs.compose(locale);
-
-        let (events, _rx) = broadcast::channel(EVENT_BUFFER);
-        let tap = Arc::new(EventTap {
-            events: events.clone(),
-        });
 
         let options = AgentHarnessOptions {
             model: model.clone(),
@@ -167,6 +178,8 @@ impl LiveAgent {
             prompt_inputs: Mutex::new(prompt_inputs),
             locale: Mutex::new(locale),
             system_prompt: Mutex::new(system_prompt),
+            ui,
+            tasks,
         }))
     }
 
@@ -259,6 +272,14 @@ impl LiveAgent {
             // 少了前者，`getPresetFromTools` 拿不到东西，工具列表就是空的。
             "get_tools" => self.tool_infos().await,
             "set_tools" => self.set_tools(command).await,
+            // `ask_user` 的问答往返：前端弹窗回答后发回来。请求已作废（超时/中止）
+            // 时不算错误 —— 前端只是晚了一步。
+            "extension_ui_response" => {
+                self.ui.respond(command);
+                Ok(Value::Null)
+            }
+            // custom UI 的逐键输入；toiler 不提供 custom 渲染，收到就忽略。
+            "extension_ui_input" => Ok(Value::Null),
             "set_steering_mode" => self.set_queue_mode(command, true).await,
             "set_follow_up_mode" => self.set_queue_mode(command, false).await,
             "navigate_tree" => self.navigate_tree(command).await,
@@ -371,10 +392,15 @@ impl LiveAgent {
             .navigate_tree(Some(target), false, None, None)
             .await?;
         match result.outcome {
-            NavigationOutcome::Completed { new_leaf_id, .. } => Ok(json!({
-                "cancelled": false,
-                "leafId": new_leaf_id,
-            })),
+            NavigationOutcome::Completed { new_leaf_id, .. } => {
+                // 切分支后任务列表跟着分支走（pi 在 `session_tree` 事件里重建）。
+                self.tasks
+                    .restore(restore_tasks(&self.path, new_leaf_id.as_deref()));
+                Ok(json!({
+                    "cancelled": false,
+                    "leafId": new_leaf_id,
+                }))
+            }
             NavigationOutcome::Declined { leaf_id } | NavigationOutcome::Aborted { leaf_id } => {
                 Ok(json!({ "cancelled": true, "leafId": leaf_id }))
             }
@@ -406,7 +432,31 @@ impl LiveAgent {
             "thinkingLevel": "off",
             // pi 的面板读的就是这一项；缺了它会显示「系统提示词尚未加载」。
             "systemPrompt": self.current_system_prompt(),
+            // 任务进度与未回答的 UI 请求：前端靠这三项恢复界面状态。
+            "extensionStatuses": self.tasks.status_text().map_or_else(
+                || json!([]),
+                |text| json!([{ "key": crate::desktop_tools::task_progress::STATUS_KEY, "text": text }]),
+            ),
+            "extensionWidgets": self.tasks.widget_lines().map_or_else(
+                || json!([]),
+                |lines| json!([{
+                    "key": crate::desktop_tools::task_progress::WIDGET_KEY,
+                    "lines": lines,
+                    "placement": "aboveEditor",
+                }]),
+            ),
+            "pendingUiRequests": self.ui.pending_requests(),
         }))
+    }
+
+    /// 有未回答的 UI 请求（`ask_user` 正卡在提问上）。
+    pub fn has_pending_ui_request(&self) -> bool {
+        self.ui.has_pending()
+    }
+
+    /// 未回答的 UI 请求（手机端 `mobile/state.pendingUiRequest` 用）。
+    pub fn pending_ui_requests(&self) -> Vec<Value> {
+        self.ui.pending_requests()
     }
 
     /// 当前生效的系统提示词。
@@ -476,14 +526,16 @@ impl LiveAgent {
 
         let tools = self.harness.get_tools().await?;
         // 顺序沿用注册表（即 pi 的默认工具顺序），前端传的顺序不影响提示词。
+        // 桌面工具（`system_time` / `task_progress` / `ask_user`）不受预设控制：
+        // pi 的 `set_tools` 用 `withExtensionTools` 把它们加回激活集合。
         let ordered: Vec<String> = tools
             .iter()
             .map(|tool| tool.tool.schema().name.clone())
-            .filter(|name| requested.contains(name))
+            .filter(|name| {
+                requested.contains(name) || crate::tools::ALWAYS_ON_TOOLS.contains(&name.as_str())
+            })
             .collect();
-        self.harness
-            .set_tools(tools, Some(ordered.clone()))
-            .await?;
+        self.harness.set_tools(tools, Some(ordered.clone())).await?;
 
         self.prompt_inputs
             .lock()
@@ -511,6 +563,70 @@ impl LiveAgent {
         self.running.store(false, Ordering::Relaxed);
         let _ = self.lane.abort().await;
     }
+}
+
+/// 从 v3 文件里恢复任务列表：沿分支回溯，取最后一条 `task_progress` 的
+/// `toolResult.details.tasks`。
+///
+/// `leaf` 是当前分支的叶子（`None` = 文件末尾）。pi 用
+/// `sessionManager.getBranch()` 做同一件事；这里顺着 `parentId` 链得到同一条链。
+/// 出错一律返回空列表：任务框是辅助信息，不值得让开会话失败。
+fn restore_tasks(path: &Path, leaf: Option<&str>) -> Vec<TaskItem> {
+    use std::collections::HashMap;
+
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut entries: HashMap<String, (Option<String>, Value)> = HashMap::new();
+    let mut last: Option<String> = None;
+    for line in text.lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(id) = value.get("id").and_then(Value::as_str).map(str::to_string) else {
+            continue;
+        };
+        let parent = value
+            .get("parentId")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        entries.insert(id.clone(), (parent, value));
+        last = Some(id);
+    }
+
+    let mut cursor = leaf.map(str::to_string).or(last);
+    let mut branch: Vec<Value> = Vec::new();
+    let mut guard = 0usize;
+    while let Some(id) = cursor {
+        let Some((parent, value)) = entries.get(&id) else {
+            break;
+        };
+        branch.push(value.clone());
+        cursor = parent.clone();
+        guard += 1;
+        if guard > 200_000 {
+            break;
+        }
+    }
+    branch
+        .iter()
+        .rev()
+        .find_map(task_progress_tasks)
+        .unwrap_or_default()
+}
+
+fn task_progress_tasks(entry: &Value) -> Option<Vec<TaskItem>> {
+    if entry.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    let message = entry.get("message")?;
+    if message.get("role").and_then(Value::as_str) != Some("toolResult") {
+        return None;
+    }
+    if message.get("toolName").and_then(Value::as_str) != Some("task_progress") {
+        return None;
+    }
+    serde_json::from_value(message.get("details")?.get("tasks")?.clone()).ok()
 }
 
 /// `{message:"文本"}` / `{message:{…}}` / `{message:[blocks]}` → `AgentMessage`。
@@ -836,12 +952,19 @@ impl LiveSessions {
 
     /// 当前运行快照（pi 的 `56429.am()`）。
     ///
-    /// `pendingUiSessionIds` 恒为空：workman 没有「等待用户输入的 UI 请求」
+    /// `pendingUiSessionIds` 恒为空：toiler 没有「等待用户输入的 UI 请求」
     /// 这条链路（阶段 3 的说明里已记录）。
     pub fn running_snapshot(&self) -> Value {
         json!({
             "runningSessionIds": self.running(),
-            "pendingUiSessionIds": Vec::<String>::new(),
+            // `ask_user` 正卡在提问上的会话：前端靠它弹「等待回答」提示。
+            "pendingUiSessionIds": self.map
+                .lock()
+                .expect("live")
+                .values()
+                .filter(|agent| agent.has_pending_ui_request())
+                .map(|agent| agent.id.clone())
+                .collect::<Vec<_>>(),
         })
     }
 

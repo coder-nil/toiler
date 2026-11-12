@@ -1,4 +1,4 @@
-# workman 实施计划
+# Toiler 实施计划
 
 前提：`rpi` 作为 crates.io 依赖，不改源码；升级靠改版本号。
 `pi-desktop` 保持原样不动，两者并行。
@@ -12,7 +12,7 @@
 
 ## 阶段 1 — v3 SessionStorage ✅ 已完成
 
-交付物：`crates/workman-session`（约 2,600 行：实现 + CLI + 20 个测试）
+交付物：`crates/toiler-session`（约 2,600 行：实现 + CLI + 20 个测试）
 
 - [x] 实现 `SessionStorage`（`rpi_harness::session::types`）
   - 读：解析 v3 header + 条目，`seq` 按成功落地顺序补（v3 无此字段）
@@ -21,7 +21,7 @@
   - `bashExecution` / `system` → `CustomMessage` 映射
   - 分支（`parentId` 指向非叶子）→ 自动回退 lane 叶子再 append
   - pi 私有条目（`session_info` / `context_edit`）→ `Custom` 条目，名字回填 fact
-- [x] `~/.workman/agent/` 目录结构与首次启动初始化（`init` 子命令）
+- [x] `~/.toiler/agent/` 目录结构与首次启动初始化（`init` 子命令）
 - [x] 会话列表（复用 pi 的 `--<cwd>-` 目录命名与 `<ISO>_<id>.jsonl` 文件名）
 - [x] 单元测试：真实形状 fixture（`basic.jsonl` / `branch.jsonl`）+ 真实 pi 会话回归
 
@@ -30,7 +30,7 @@
 | 项 | 结果 |
 |---|---|
 | 554 个真实 pi 会话全量回放 | 554/554 完整加载，102,572 条目，0 行跳过 |
-| 复制一个真实会话到 `~/.workman` | 能列出、能加载、能追加一轮对话 |
+| 复制一个真实会话到 `~/.toiler` | 能列出、能加载、能追加一轮对话 |
 | 追加后老字节 | 完全一致（append-only） |
 | pi 侧复读追加后的文件 | `loadEntriesFromFile` 270 条全解析；`buildSessionContext` 把追加的两条纳入 context |
 
@@ -39,7 +39,7 @@
 保留手机遥控 → HTTP 服务不能省。用 axum 复刻 pi-desktop 的 `/api` 契约
 （契约事实来源：`docs/contracts/README.md`，从 `.next` 编译产物逐字逆向）。
 
-- [x] `crates/workman-server`：axum 0.8 + SSE
+- [x] `crates/toiler-server`：axum 0.8 + SSE
 - [x] 会话：`GET /api/sessions`、`GET /api/sessions/[id]`（含 tree/paging/totalActiveMs）
 - [x] 会话：`PATCH`（改名）、`DELETE`、`GET /api/sessions/[id]/state`、`GET /api/sessions/search`
 - [x] agent：`POST /api/agent/[id]`、`GET /api/agent/[id]/events`（SSE，裁剪规则逐条对齐）
@@ -61,7 +61,7 @@ tree/paging/totalActiveMs 形状与 pi 一致；新会话里 `prompt` 触发的
 
 ## 阶段 3 — 剩余 route ✅ 已完成
 
-交付物：`crates/workman-server` 新增 8 个模块 + 6 个 route 文件（约 6,600 行）
+交付物：`crates/toiler-server` 新增 8 个模块 + 6 个 route 文件（约 6,600 行）
 
 - [x] auth（API Key 存取，不返回明文）
   - `providers` / `all-providers` / `api-key`(GET·POST·DELETE) / `logout` / `login`(501)
@@ -101,25 +101,25 @@ tree/paging/totalActiveMs 形状与 pi 一致；新会话里 `prompt` 触发的
 
 ## 阶段 4 — Tauri 单进程 ✅ 已完成
 
-交付物：`crates/workman-desktop`（Tauri 壳 + 同进程 axum）+ `workman-server` 的
+交付物：`crates/toiler-desktop`（Tauri 壳 + 同进程 axum）+ `toiler-server` 的
 `boot.rs` / `assets.rs`（约 2,900 行：壳 700 行 + 移植的 lan_proxy/tunnel 2,100 行 +
 静态托管 300 行）
 
 - [x] axum server 跑在 Tauri 的 tokio runtime 上，不 spawn 子进程
   - `boot::bind`（`port = 0`，内核分配）→ `tauri::async_runtime::spawn(boot::serve)`
-  - 启动引导抽到 `workman_server::boot`，CLI（`main.rs`）与桌面壳共用同一套
+  - 启动引导抽到 `toiler_server::boot`，CLI（`main.rs`）与桌面壳共用同一套
   - 会话列表在服务起来后立刻后台预热（`spawn_blocking`），首屏不等扫描
 - [x] 前端产物 `include_dir!` 嵌入二进制
-  - `crates/workman-server/src/assets.rs`：`/_next/static/*`（immutable 缓存）、
+  - `crates/toiler-server/src/assets.rs`：`/_next/static/*`（immutable 缓存）、
     目录 index、RSC `.txt` 载荷、客户端路由兜底 `index.html`、404 页
-  - 产物目录由 `WORKMAN_FRONTEND_DIR` 决定（`build.rs` 注入 `rustc-env`），
+  - 产物目录由 `TOILER_FRONTEND_DIR` 决定（`build.rs` 注入 `rustc-env`），
     默认是 crate 内占位页 —— 没有前端也能 `cargo build`，API 照常可用
   - 静态资源挂在 `Router::fallback` 上：`/api/*` 仍是具体路由，不会被兜底吞掉
 - [x] 删除 `desktop-dist/runtime/node` 与 `spawn_server`
   - 新壳里没有 `Command::new(node)`、没有端口轮询、没有 `STARTUP_TIMEOUT = 45s`
   - `tauri.conf.json` 不再打包 `desktop-dist` 资源
 - [x] 保留 `lan_proxy.rs` 与 `tunnel.rs`（手机访问要用）
-  - 原样移植，只把 `agent_dir()` 接到 `workman_server::paths::agent_dir()`
+  - 原样移植，只把 `agent_dir()` 接到 `toiler_server::paths::agent_dir()`
   - 与 pi 共用 `desktop-access.json` / `.runtime.json` / `.tunnel.json`
   - 退出（含 SIGTERM/SIGINT）会先断隧道再关代理，不留孤儿 `cloudflared`
 
@@ -127,7 +127,7 @@ tree/paging/totalActiveMs 形状与 pi 一致；新会话里 `prompt` 触发的
 
 | 项 | 结果 |
 |---|---|
-| 单进程 | 只有一个 `workman-desktop` 进程；无 `node`，除用户启用的 `cloudflared` 外无子进程 |
+| 单进程 | 只有一个 `toiler-desktop` 进程；无 `node`，除用户启用的 `cloudflared` 外无子进程 |
 | 冷启动（exec → `GET /` 200） | 中位 **114ms**（5 次：496/106/114/110/120，首次含冷文件缓存） |
 | 二进制 | 51MB（含 24MB 前端产物）；pi 的 `Pi Desktop.app` 是 255MB（`runtime/node` 106MB + `server` 109MB） |
 | 前端渲染 | 真实 pi 静态导出产物内嵌后，界面完整：会话列表（559）/ 项目切换 / 模型选择器 / 文件面板（含 git 状态标记） |
@@ -142,7 +142,7 @@ tree/paging/totalActiveMs 形状与 pi 一致；新会话里 `prompt` 触发的
 
 ## 阶段 5 — 回归 ✅ 已完成
 
-交付物：`crates/workman-server` 新增 `filemeta.rs` / `docx.rs` / `mobile_access.rs` /
+交付物：`crates/toiler-server` 新增 `filemeta.rs` / `docx.rs` / `mobile_access.rs` /
 `mobile_view.rs` / `routes/mobile.rs` + `tests/regression.rs`（约 4,500 行），
 `/api/files` 全量重写，`session_view` 补 toolCall 归一化。
 
@@ -150,7 +150,7 @@ tree/paging/totalActiveMs 形状与 pi 一致；新会话里 `prompt` 触发的
 
 - [x] pi-desktop 前端测试跑通并固化基线：**1326 用例 / 1318 pass / 7 fail / 1 skip**
   - 7 个失败全部在 pi 自身（plugins catalog 需要联网、i18n 覆盖率、`sync-version.mjs`），
-    与 workman 无关；`PI_WEB_SHELL_PID` 会污染 `desktop-access` 用例，清掉后 10/10
+    与 toiler 无关；`PI_WEB_SHELL_PID` 会污染 `desktop-access` 用例，清掉后 10/10
 - [x] 新增 `tests/regression.rs`：**41 个契约用例**（把前端真实依赖的行为逐条落成断言）
   - `/api/files` 六种 `type` + 写侧三种方法 + SSE 命名事件
   - `/api/sessions` 全字段 / tree / context / paging / 改名 append-only / 搜索 / 删除
@@ -198,9 +198,9 @@ tree/paging/totalActiveMs 形状与 pi 一致；新会话里 `prompt` 触发的
 |---|---|
 | 测试 | **257 个全绿**（`cargo test --workspace`），0 warning |
 | 历史会话全量 | 561 个文件、560 个有 v3 header（1 个无 header 是 pi 自身也跳过的）、**560/560 可读**；104,986 条目 / 103,318 消息 **0 失败** |
-| 真实续聊 | 382 行老字节**一字不改**；追加 user+assistant（`stopReason=stop`）；**pi 自己的 `SessionManager` 复读该文件得 388 条目 / 385 context 消息**，最后一条正是 workman 写入的「收到」 |
+| 真实续聊 | 382 行老字节**一字不改**；追加 user+assistant（`stopReason=stop`）；**pi 自己的 `SessionManager` 复读该文件得 388 条目 / 385 context 消息**，最后一条正是 toiler 写入的「收到」 |
 | 桌面界面 | 会话列表 / 378 条消息会话（思考、工具调用、token 统计、分页「隐藏 351 条」）/ 文件面板 / Rust 语法高亮 / PNG 渲染 / Markdown 表格预览 —— 全部实测 |
-| 手机 Basic Auth | 无凭据 401（`WWW-Authenticate: Basic realm="Pi Desktop (username: pi)"`）、错密码 401、对密码 200 |
+| 手机 Basic Auth | 无凭据 401（`WWW-Authenticate: Basic realm="Toiler (username: pi)"`）、错密码 401、对密码 200 |
 | 手机遥控页 | 390×844 视口下完整渲染；`/api/mobile/state` 474KB → **54KB** |
 | 配对信息 | `{url: http://10.17.44.112:60612/m?…, reason: ok, publicUrl: https://m.π.works/m?…}`，**不含密码** |
 | Cloudflare 隧道 | named 模式真实建立，4 条连接全部 Registered（lax07/lax13/lax01/lax08，QUIC），退出无孤儿 |
@@ -208,18 +208,18 @@ tree/paging/totalActiveMs 形状与 pi 一致；新会话里 `prompt` 触发的
 
 ## 阶段 6 — 目录独立 ✅ 已完成
 
-workman 不再把状态写进 pi 的 `~/.pi/agent`。
+toiler 不再把状态写进 pi 的 `~/.pi/agent`。
 
 ```text
 ~/.agents/                  ← 通用根：skills / mcp / commands / tools
-└── workman/               ← workman 专属
+└── toiler/                ← toiler 专属
     ├── configs/            auth / models / settings / trust / desktop-access
     ├── sessions/           v3 会话
     ├── plugins/            （预留）
     └── work.sqlite         项目列表 + 选中项
 ```
 
-- [x] `paths.rs` 重写：`agents_home()` / `workman_home()` / `configs_dir()` /
+- [x] `paths.rs` 重写：`agents_home()` / `toiler_home()` / `configs_dir()` /
       `sessions_dir()` / `plugins_dir()` / `project_db()` / `legacy_pi_agent_dir()`
 - [x] 首次启动播种（`seed_from_pi_if_needed`）：从 `~/.pi/agent` **复制**配置与实际
       会话，0600 落盘，**旧文件保留**；播过就不再动
@@ -228,7 +228,7 @@ workman 不再把状态写进 pi 的 `~/.pi/agent`。
 
 **验收**：`auth/models/settings/trust/desktop-access` 5 份配置副本与源 sha256 一致、
 权限 0600；562 个会话全数复制；服务启动日志与 `/api/models` 的 `source` 都指向
-`~/.agents/workman/configs/models.json`；信任读写只落新目录，`~/.pi/agent` 一字未动。
+`~/.agents/toiler/configs/models.json`；信任读写只落新目录，`~/.pi/agent` 一字未动。
 
 ## 明确不做的
 

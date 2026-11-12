@@ -1,25 +1,25 @@
-//! workman 服务入口（CLI 宿主）。
+//! toiler 服务入口（CLI 宿主）。
 //!
 //! ```bash
-//! workman-server                      # 127.0.0.1:8787，会话根 = ~/.agents/workman/sessions
-//! workman-server --port 3000 --host 0.0.0.0
-//! workman-server --port 0             # 让内核分配端口（先打印再服务）
+//! toiler-server                      # 127.0.0.1:8787，会话根 = ~/.agents/toiler/sessions
+//! toiler-server --port 3000 --host 0.0.0.0
+//! toiler-server --port 0             # 让内核分配端口（先打印再服务）
 //! ```
 //!
-//! 启动流程全在 [`workman_server::boot`] 里：桌面壳（`workman-desktop`）复用同一套
+//! 启动流程全在 [`toiler_server::boot`] 里：桌面壳（`toiler-desktop`）复用同一套
 //! 逻辑，只是把 `serve` 交给 Tauri 的 tokio runtime，不再 spawn 子进程。
 //!
 //! 环境变量（完整列表见 `paths.rs` 与 `docs/contracts/README.md`）：
-//! - `WORKMAN_HOME`：workman 专属目录（默认 `~/.agents/workman`）
+//! - `TOILER_HOME`：toiler 专属目录（默认 `~/.agents/toiler`）
 //! - `AGENTS_HOME`：通用根（默认 `~/.agents`）
-//! - `WORKMAN_SESSIONS_ROOT` / `WORKMAN_MODELS`：单独覆盖会话根 / 模型目录
+//! - `TOILER_SESSIONS_ROOT` / `TOILER_MODELS`：单独覆盖会话根 / 模型目录
 //! - `PI_WEB_HOSTNAME` / `PI_WEB_ALLOWED_HOSTS` / `PI_WEB_DESKTOP_API_ORIGIN`：可信 host / origin
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use toiler_server::{assets, boot, routes};
 use tokio::sync::oneshot;
-use workman_server::{assets, boot, routes};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
             }
             "--help" | "-h" => {
                 println!(
-                    "用法: workman-server [--host 127.0.0.1] [--port 8787] \
+                    "用法: toiler-server [--host 127.0.0.1] [--port 8787] \
                      [--sessions-root DIR] [--cwd DIR]"
                 );
                 return Ok(());
@@ -86,12 +86,12 @@ async fn main() -> Result<()> {
 }
 
 fn log_startup(
-    state: &workman_server::state::AppState,
+    state: &toiler_server::state::AppState,
     addr: std::net::SocketAddr,
     root: &std::path::Path,
 ) {
     tracing::info!(
-        "workman server 监听 http://{addr}  (会话根 {})",
+        "toiler server 监听 http://{addr}  (会话根 {})",
         root.display()
     );
     tracing::info!(

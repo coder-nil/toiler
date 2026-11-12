@@ -11,7 +11,7 @@ use std::sync::Arc;
 use rpi_agent::message::AgentMessage;
 use rpi_harness::session::types::{EntryQuery, SessionRepo, SessionStorage};
 use rpi_harness::session::Session;
-use workman_session::{V3SessionRepo, V3SessionStorage};
+use toiler_session::{V3SessionRepo, V3SessionStorage};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -22,7 +22,7 @@ fn fixture(name: &str) -> PathBuf {
 /// 把 fixture 复制到临时目录，测试之间互不影响。
 fn stage(name: &str, tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "workman-session-{}-{}-{}",
+        "toiler-session-{}-{}-{}",
         std::process::id(),
         tag,
         name.replace('.', "-")
@@ -203,7 +203,7 @@ fn set_name_writes_a_pi_readable_session_info_entry() {
 
 #[test]
 fn repo_creates_lists_opens_and_deletes() {
-    let root = std::env::temp_dir().join(format!("workman-repo-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("toiler-repo-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let repo = V3SessionRepo::new(&root);
@@ -230,7 +230,7 @@ fn repo_creates_lists_opens_and_deletes() {
 
 #[test]
 fn repo_implements_session_repo_trait() {
-    let root = std::env::temp_dir().join(format!("workman-repo-trait-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("toiler-repo-trait-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let repo = V3SessionRepo::new(&root);

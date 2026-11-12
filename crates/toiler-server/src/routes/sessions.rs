@@ -145,7 +145,7 @@ pub async fn rename(
         return error_response(StatusCode::NOT_FOUND, "Session not found");
     };
 
-    let storage = match workman_session::V3SessionStorage::load(&path) {
+    let storage = match toiler_session::V3SessionStorage::load(&path) {
         Ok(s) => s,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     };

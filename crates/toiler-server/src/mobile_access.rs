@@ -390,7 +390,7 @@ pub fn local_ipv4_addresses() -> Vec<(String, Ipv4Addr)> {
 
 #[cfg(not(unix))]
 pub fn local_ipv4_addresses() -> Vec<(String, Ipv4Addr)> {
-    // 非 Unix 分支不做实现：workman 当前只发布 macOS/Linux。
+    // 非 Unix 分支不做实现：toiler 当前只发布 macOS/Linux。
     // 返回空表示「拿不到局域网地址」，配对弹窗会走 no-lan-address 提示。
     Vec::new()
 }
@@ -649,7 +649,7 @@ mod tests {
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "workman-mobile-{tag}-{}-{}",
+            "toiler-mobile-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

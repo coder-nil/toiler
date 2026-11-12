@@ -210,19 +210,19 @@ pub async fn new_session(
     }
     let cwd = cwd.to_string();
 
-    let repo = workman_session::V3SessionRepo::new(state.sessions().root());
+    let repo = toiler_session::V3SessionRepo::new(state.sessions().root());
     let created_at = now_ms();
     let id = uuid::Uuid::now_v7().to_string();
-    let header = workman_session::V3Header::new(&id, created_at, &cwd);
+    let header = toiler_session::V3Header::new(&id, created_at, &cwd);
     let dir = state
         .sessions()
         .root()
-        .join(workman_session::session_directory_name(&cwd));
-    let file = dir.join(workman_session::session_file_name(
+        .join(toiler_session::session_directory_name(&cwd));
+    let file = dir.join(toiler_session::session_file_name(
         header.created_at,
         &header.id,
     ));
-    match workman_session::V3SessionStorage::create_at(&file, &header, repo.clock(), repo.ids()) {
+    match toiler_session::V3SessionStorage::create_at(&file, &header, repo.clock(), repo.ids()) {
         Ok(storage) => drop(storage),
         Err(e) => {
             return (
@@ -259,6 +259,17 @@ pub async fn new_session(
                 .into_response()
         }
     };
+
+    // 工具预设：前端新会话会带上 `toolNames`（`getToolNamesForPreset`，默认
+    // `read/bash/edit/write`）。忽略它会让会话始终 7 个工具全开，前端选的预设
+    // 也就形同虚设；而 pi 的「用 bash 做 ls/rg/find」那条准则只在没有
+    // grep/find/ls 时出现，所以默认预设下的提示词也会与 pi 不同。
+    if let Some(names) = payload.get("toolNames").and_then(Value::as_array) {
+        let names: Vec<&str> = names.iter().filter_map(Value::as_str).collect();
+        let _ = agent
+            .send(&json!({ "type": "set_tools", "toolNames": names }))
+            .await;
+    }
 
     // pi 的 `/api/agent/new` 会带上界面语言（`uiLocale`），新会话第一轮就该用对文案。
     // 前端的 `set_ui_locale` 也会随后到达，这里先应用一次不会冲突。

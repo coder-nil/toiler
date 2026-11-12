@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 把 pi-desktop 的最新前端同步进 workman 的 release 客户端。
+# 把 pi-desktop 的最新前端同步进 toiler 的 release 客户端。
 #
 # 用法：
 #   tools/sync-frontend.sh                 # 构建前端 → 同步 → 重编 → 启动
@@ -7,9 +7,9 @@
 #   tools/sync-frontend.sh --skip-export   # 不重新构建前端，直接同步现有导出
 #
 # 产物落点沿用 pi-desktop 自己的约定：`<pi-desktop>/src-tauri/frontend`
-# （那里被 pi-desktop 的 .gitignore 忽略）。workman 只是把它当作
-# `WORKMAN_FRONTEND_DIR` 读进来编译，**不往本仓库写前端产物** ——
-# `crates/workman-server/frontend/` 是提交在版本库里的占位页，不能覆盖。
+# （那里被 pi-desktop 的 .gitignore 忽略）。toiler 只是把它当作
+# `TOILER_FRONTEND_DIR` 读进来编译，**不往本仓库写前端产物** ——
+# `crates/toiler-server/frontend/` 是提交在版本库里的占位页，不能覆盖。
 #
 # 两个必须记住的坑：
 #
@@ -21,7 +21,7 @@
 #
 # 2. 必须重新编译。
 #    前端产物在编译期由 `include_dir!` 嵌进二进制（见
-#    crates/workman-server/build.rs）。只换产物不重编，桌面版还是旧页面。
+#    crates/toiler-server/build.rs）。只换产物不重编，桌面版还是旧页面。
 
 set -euo pipefail
 
@@ -113,8 +113,8 @@ echo "产物就位：$(du -sh "$target" | cut -f1)"
 # ---------------------------------------------------------------------------
 # pi-desktop 的模型设置页把路径写死成 `~/.pi/agent/models.json`
 # （`_next/static/chunks/app/page-*.js` 里一个 `<code>` 的字面量，不是
-# `/api/models-config` 返回的字段），而 workman 读的是
-# `<workman home>/configs/models.json`。标签与实际不符会让人以为配置没生效，
+# `/api/models-config` 返回的字段），而 toiler 读的是
+# `<toiler home>/configs/models.json`。标签与实际不符会让人以为配置没生效，
 # 所以同步后改掉。
 #
 # 只改 `$target`（pi-desktop 仓库里被 gitignore 的产物副本），**不动
@@ -123,7 +123,7 @@ echo "产物就位：$(du -sh "$target" | cut -f1)"
 #
 # 找不到这个字面量不算错：上游改成从 API 读路径时它就会自然消失。
 models_label='~/.pi/agent/models.json'
-models_real='~/.agents/workman/configs/models.json'
+models_real='~/.agents/toiler/configs/models.json'
 shopt -s nullglob
 page_chunks=("$target"/_next/static/chunks/app/page-*.js)
 shopt -u nullglob
@@ -145,7 +145,63 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. 重新编译（+ 启动）
+# 5. 页面里的品牌名：Pi Desktop → Toiler
+# ---------------------------------------------------------------------------
+# 前端产物把产品名写死成 `Pi Desktop`：窗口标题、关于面板、PWA manifest、
+# 离线页、启动错误页、service worker 日志、更新日志——用户看到的就是这几处。
+#
+# 只换**显示字符串**，下面两类东西不碰：
+#
+# - 类名 `pi-desktop`：样式表按它选中根元素，改了直接白屏；
+# - `sw.js` 的缓存前缀与 `__PI_WEB_*` 全局量：前者是缓存键，后者与 Rust 侧
+#   注入的同名全局量成对出现（`lan_proxy.rs` / `lib.rs`）。
+#
+# 图标库自带的 README 也一并改：它随产物内嵌，能被浏览器直接打开，
+# 里面写的「用于浅色/深色主题」同样指本产品。
+#
+# 与第 4 节同理：只改 `$target`；重新导出会写回原文，所以每次同步都要重跑。
+brand_old='Pi Desktop'
+brand_new='Toiler'
+branded=$(grep -rlIF "$brand_old" "$target" 2>/dev/null || true)
+if [[ -z "$branded" ]]; then
+  echo "品牌文案无需修正（产物里没有 $brand_old）"
+else
+  branded_count=0
+  while IFS= read -r file; do
+    perl -pi -e "s/\Q${brand_old}\E/${brand_new}/g" "$file"
+    branded_count=$((branded_count + 1))
+  done <<< "$branded"
+  echo "已把 $branded_count 个文件里的 $brand_old 改为 $brand_new"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. 关于面板：去掉 pi 的版本号
+# ---------------------------------------------------------------------------
+# 上游把产品版本和 pi 版本并列显示（`v0.1.0 · pi v1.4.0`）。toiler 的后端是 rpi
+# 而不是 pi，写在一起会让人以为界面版本来自 pi，所以只留产品自己的版本。
+#
+# 两处文案，都在 `app/page-*.js`：
+# - i18n 的 `settings.aboutDescription`（中英各一份，`\xb7` 是转义后的 `·`）；
+# - 「复制版本信息」拼的数组里的 `pi v${B}` 一项。
+#
+# 与第 4、5 节同理：只改 `$target`，重新导出后要重跑。
+about_fixed=0
+for chunk in "$target"/_next/static/chunks/app/page-*.js; do
+  [[ -f "$chunk" ]] || continue
+  if grep -qF 'pi v{piVersion}' "$chunk" || grep -qF '`pi v${B}`' "$chunk"; then
+    perl -pi -e 's/v\{version\} \\xb7 pi v\{piVersion\}/v{version}/g;
+                 s/`pi v\$\{B\}`,\s*//g' "$chunk"
+    about_fixed=$((about_fixed + 1))
+  fi
+done
+if (( about_fixed > 0 )); then
+  echo "已从 $about_fixed 个 chunk 去掉关于面板里的 pi 版本号"
+else
+  echo "关于面板无需修正（产物里没有 pi 版本号文案）"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. 重新编译（+ 启动）
 # ---------------------------------------------------------------------------
 if (( launch )); then
   # run-desktop.sh 内部的 build-release.sh 会自动探测到同一个目录

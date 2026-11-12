@@ -423,7 +423,7 @@ mod tests {
     #[tokio::test]
     async fn validate_registers_project_and_roundtrips() {
         let dir =
-            std::env::temp_dir().join(format!("workman-route-projects-{}", std::process::id()));
+            std::env::temp_dir().join(format!("toiler-route-projects-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("proj")).unwrap();
         let router = app(&dir);
@@ -485,7 +485,7 @@ mod tests {
 
     #[tokio::test]
     async fn trust_requires_resources() {
-        let dir = std::env::temp_dir().join(format!("workman-route-trust-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-route-trust-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("proj/.pi")).unwrap();
         let router = app(&dir);
@@ -529,7 +529,7 @@ mod tests {
 
     #[tokio::test]
     async fn browse_lists_directories() {
-        let dir = std::env::temp_dir().join(format!("workman-route-browse-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-route-browse-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("alpha")).unwrap();
         std::fs::create_dir_all(dir.join("beta")).unwrap();

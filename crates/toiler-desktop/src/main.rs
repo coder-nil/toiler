@@ -6,5 +6,5 @@
 )]
 
 fn main() {
-    workman_desktop_lib::run();
+    toiler_desktop_lib::run();
 }

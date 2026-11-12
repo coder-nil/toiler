@@ -1,6 +1,10 @@
-//! 内置工具集：与 pi 默认启用的那一组对齐（read / bash / edit / write / grep / find / ls）。
+//! 内置工具集：pi 默认启用的编码工具 + Pi Desktop 的三个桌面工具。
 //!
-//! 工具来自 `rpi-tools`，执行环境是进程内的 `OsExecutionEnv`（cwd = 会话的 cwd）。
+//! 编码工具来自 `rpi-tools`，执行环境是进程内的 `OsExecutionEnv`（cwd = 会话的 cwd）；
+//! `system_time` / `task_progress` / `ask_user` 在 [`crate::desktop_tools`] 里，
+//! 对应 pi-desktop 的三份 TS 内联扩展。
+//!
+//! 顺序就是 `get_tools` 返回的顺序，也是提示词里 `<tools>` 段的顺序（未启用会被过滤）。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,8 +16,22 @@ use rpi_tools::{
     create_read_tool, create_write_tool, ExecutionToolContext, OsExecutionEnv,
 };
 
-/// 返回 `(工具名, HarnessTool)`，顺序与 pi 的默认工具列表一致。
-pub fn build_tools(cwd: &str, _model: &Model) -> Vec<(String, HarnessTool)> {
+use crate::desktop_tools::{
+    create_ask_user_tool, create_system_time_tool, create_task_progress_tool, TaskProgressStore,
+    UiBridge,
+};
+
+/// 不受工具预设影响的工具：pi 的 `set_tools` 会把扩展工具加回激活集合
+/// （`withExtensionTools`），所以「只读」「默认」等预设不会把这三个关掉。
+pub const ALWAYS_ON_TOOLS: [&str; 3] = ["system_time", "task_progress", "ask_user"];
+
+/// 返回 `(工具名, HarnessTool)`。
+pub fn build_tools(
+    cwd: &str,
+    _model: &Model,
+    ui: Arc<UiBridge>,
+    tasks: Arc<TaskProgressStore>,
+) -> Vec<(String, HarnessTool)> {
     let env = Arc::new(OsExecutionEnv::with_cwd(PathBuf::from(cwd)));
     let context = ExecutionToolContext::new(env.clone(), Some(env));
 
@@ -25,6 +43,10 @@ pub fn build_tools(cwd: &str, _model: &Model) -> Vec<(String, HarnessTool)> {
         create_grep_tool(&context, None),
         create_find_tool(&context, None),
         create_ls_tool(&context, None),
+        // 桌面自带工具排在最后：pi 的面板里它们也是跟在编码工具后面的。
+        create_system_time_tool(),
+        create_task_progress_tool(tasks),
+        create_ask_user_tool(ui),
     ];
 
     tools

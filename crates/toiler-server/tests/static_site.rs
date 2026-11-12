@@ -1,18 +1,18 @@
 //! 阶段 4 的端到端检查：静态前端与 `/api` 在**同一个 Router**里共存。
 //!
-//! 这里用的是编译期嵌入的那份产物（默认是 `crates/workman-server/frontend/` 占位页，
-//! 也可以是 `WORKMAN_FRONTEND_DIR` 指向的真实 Next 导出）。断言只依赖「产物里一定
+//! 这里用的是编译期嵌入的那份产物（默认是 `crates/toiler-server/frontend/` 占位页，
+//! 也可以是 `TOILER_FRONTEND_DIR` 指向的真实 Next 导出）。断言只依赖「产物里一定
 //! 有 index.html」这一点，这样换产物不用改测试。
 
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
+use toiler_server::{catalog::ModelCatalog, routes, state::AppState};
 use tower::util::ServiceExt;
-use workman_server::{catalog::ModelCatalog, routes, state::AppState};
 
 fn fixture_root(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "workman-static-{tag}-{}-{}",
+        "toiler-static-{tag}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

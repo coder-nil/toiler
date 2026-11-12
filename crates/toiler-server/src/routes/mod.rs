@@ -92,7 +92,7 @@ pub fn router(state: AppState) -> Router {
             "/api/skills",
             get(crate::routes::skills::list).patch(crate::routes::skills::toggle_not_implemented),
         )
-        // 技能市场：pi 有搜索/安装，workman 返回 501 + 中文说明（见 routes/skills.rs）
+        // 技能市场：pi 有搜索/安装，toiler 返回 501 + 中文说明（见 routes/skills.rs）
         .route(
             "/api/skills/search",
             post(crate::routes::skills::market_not_implemented),
@@ -108,7 +108,7 @@ pub fn router(state: AppState) -> Router {
             "/api/plugins",
             get(crate::routes::plugins::list).post(crate::routes::plugins::command),
         )
-        // 插件市场：pi 搜 npm 扩展包；workman 返回空页（PLAN「明确不做的」）
+        // 插件市场：pi 搜 npm 扩展包；toiler 返回空页（PLAN「明确不做的」）
         .route("/api/plugins/catalog", get(crate::routes::plugins::catalog))
         .route(
             "/api/plugins/catalog/translate",

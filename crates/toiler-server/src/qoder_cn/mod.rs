@@ -9,11 +9,11 @@
 //! pi 的做法是给 SDK 换一个 `fetch`（`withQoderCnFetch`）：body 改写成 Qoder 的
 //! agent 请求体、签名、发上游、把信封拆回标准 OpenAI chunk。rpi 的 provider
 //! **不允许注入传输层**（`OpenAiCompletionsProvider` 内部自己持有 `reqwest::Client`），
-//! 所以 workman 换了个等价的接缝：把模型的 `baseUrl` 指向**本进程自己的**端点
+//! 所以 toiler 换了个等价的接缝：把模型的 `baseUrl` 指向**本进程自己的**端点
 //! `http://127.0.0.1:<port>/qoder-cn/<token>`，再由 [`proxy`] 调 [`transport`]
 //! 完成同样的改写与解包。
 //!
-//! | 环节 | pi | workman |
+//! | 环节 | pi | toiler |
 //! |---|---|---|
 //! | 请求体改写 | `withQoderCnFetch` 拦 fetch | 本机端点里调 [`request_body`] |
 //! | 签名 | `createCosySession` | [`cosy::Session`] |
@@ -25,11 +25,11 @@
 //!
 //! # 与 pi 的已知差异
 //!
-//! - **模型目录只有静态快照**：pi 登录后会再拉一次官方 `model/list`；workman 用
+//! - **模型目录只有静态快照**：pi 登录后会再拉一次官方 `model/list`；toiler 用
 //!   [`constants::STATIC_CATALOG`]，官方改显示名/上下架后要跟着升版本（与内置
 //!   供应商表同一套维护方式）。
 //! - **只有登录/刷新走 openapi**，`user/plan`、`quota/usage` 这些用量接口没移植
-//!   （workman 的界面不显示 Qoder 套餐额度）。
+//!   （toiler 的界面不显示 Qoder 套餐额度）。
 
 pub mod auth;
 pub mod base64;
@@ -62,7 +62,7 @@ pub fn local_base_url(port: u16, token: &str) -> String {
 /// 目录条目 → rpi 的模型定义（对齐 pi 的 `toPiModel`）。
 ///
 /// `thinkingLevelMap` 必须给全：pi 对「目录没写档位」的推理模型把七个等级全部显式
-/// 映射为 `null`（即不在请求里带 effort），workman 的
+/// 映射为 `null`（即不在请求里带 effort），toiler 的
 /// [`crate::catalog::supported_thinking_levels`] 依赖同一语义决定下拉框。
 fn thinking_level_map(entry: &constants::CatalogEntry) -> Option<ThinkingLevelMap> {
     if !entry.reasoning {

@@ -1090,7 +1090,7 @@ struct Askpass {
 impl Askpass {
     fn new(secret: &str, username: Option<&str>) -> Result<Self, GitError> {
         let dir = std::env::temp_dir().join(format!(
-            "workman-git-askpass-{}-{}",
+            "toiler-git-askpass-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1104,7 +1104,7 @@ impl Askpass {
         let script = dir.join("askpass.sh");
         std::fs::write(
             &script,
-            "#!/bin/sh\ncase \"$1\" in *[Uu]sername*) cat \"$WORKMAN_GIT_USERNAME_FILE\" ;; *) cat \"$WORKMAN_GIT_SECRET_FILE\" ;; esac\n",
+            "#!/bin/sh\ncase \"$1\" in *[Uu]sername*) cat \"$TOILER_GIT_USERNAME_FILE\" ;; *) cat \"$TOILER_GIT_SECRET_FILE\" ;; esac\n",
         )
         .map_err(|e| err(e.to_string()))?;
         #[cfg(unix)]
@@ -1131,14 +1131,14 @@ impl Askpass {
             ("SSH_ASKPASS_REQUIRE", "force".to_string()),
             (
                 "DISPLAY",
-                std::env::var("DISPLAY").unwrap_or_else(|_| "workman".into()),
+                std::env::var("DISPLAY").unwrap_or_else(|_| "toiler".into()),
             ),
             (
-                "WORKMAN_GIT_SECRET_FILE",
+                "TOILER_GIT_SECRET_FILE",
                 self.dir.join("secret").to_string_lossy().to_string(),
             ),
             (
-                "WORKMAN_GIT_USERNAME_FILE",
+                "TOILER_GIT_USERNAME_FILE",
                 self.dir.join("username").to_string_lossy().to_string(),
             ),
         ]
@@ -1547,7 +1547,7 @@ mod tests {
 
     fn temp_repo(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "workman-git-{}-{}-{}",
+            "toiler-git-{}-{}-{}",
             std::process::id(),
             tag,
             std::time::SystemTime::now()

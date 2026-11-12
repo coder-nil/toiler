@@ -7,8 +7,8 @@
 use std::net::SocketAddr;
 use std::time::Instant;
 
+use toiler_server::{assets, boot, routes};
 use tokio::sync::oneshot;
-use workman_server::{assets, boot, routes};
 
 /// 一个正在跑的内嵌服务。
 pub struct DesktopServer {
@@ -63,7 +63,7 @@ fn default_workspace_dir() -> std::path::PathBuf {
 
 /// 同 [`start`]，但允许调用方传入现成的 state（测试与 `--sessions-root` 覆盖用）。
 pub fn start_with_state(
-    state: workman_server::state::AppState,
+    state: toiler_server::state::AppState,
     options: &boot::BootOptions,
 ) -> Result<DesktopServer, String> {
     const HOST: &str = "127.0.0.1";
@@ -109,12 +109,12 @@ pub fn start_with_state(
 }
 
 fn log_startup(
-    state: &workman_server::state::AppState,
+    state: &toiler_server::state::AppState,
     addr: SocketAddr,
     options: &boot::BootOptions,
 ) {
     tracing::info!(
-        "workman 内嵌服务 http://{addr}（会话根 {}）",
+        "toiler 内嵌服务 http://{addr}（会话根 {}）",
         options.sessions_root.display()
     );
     tracing::info!(

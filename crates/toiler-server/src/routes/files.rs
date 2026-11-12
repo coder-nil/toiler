@@ -674,7 +674,7 @@ async fn watch(target: PathBuf) -> Response {
                     last = None;
                     last_exists = false;
                     let payload = json!({
-                        "mtime": crate::workman_now_iso(),
+                        "mtime": crate::toiler_now_iso(),
                         "size": 0,
                     });
                     yield Ok::<Event, Infallible>(
@@ -767,7 +767,7 @@ pub async fn write(
             .into_response();
     }
     let size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
-    Json(json!({ "size": size, "modified": crate::workman_now_iso() })).into_response()
+    Json(json!({ "size": size, "modified": crate::toiler_now_iso() })).into_response()
 }
 
 /// `PATCH /api/files/{path}`：重命名（`{name}` 只能是纯文件名）。

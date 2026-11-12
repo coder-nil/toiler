@@ -2,7 +2,7 @@
 //!
 //! pi 的对应实现是 `app/api/skills/route.ts` + `lib/skills-service.ts`：
 //! 用 `DefaultResourceLoader` 扫 `settings.json` 的 `skillPaths`、package 自带
-//! 的技能，以及 `.agents/skills`。workman 没有 package 系统，`settings.json`
+//! 的技能，以及 `.agents/skills`。toiler 没有 package 系统，`settings.json`
 //! 里也没有 `skillPaths` 键，因此只扫 pi 在默认配置下真正会命中的那一对目录：
 //!
 //! | 目录 | `sourceInfo` | 前端分组 |
@@ -10,7 +10,7 @@
 //! | `<项目根>/.agents/skills`（项目根 = 最近的 git 仓库根，否则 cwd 本身） | `{source:"project", scope:"project"}` | Project |
 //! | `~/.agents/skills` | `{source:"user", scope:"user"}` | Global |
 //! | `~/.pi/agent/skills`（pi 的 agent 目录） | 同上 | Global |
-//! | `~/.agents/workman/skills`（workman 的 agent 目录） | 同上 | Global |
+//! | `~/.agents/toiler/skills`（toiler 的 agent 目录） | 同上 | Global |
 //!
 //! # 项目技能的两个前提
 //!
@@ -27,7 +27,7 @@
 //!
 //! # 与 pi 的差异
 //!
-//! | 项 | pi | workman |
+//! | 项 | pi | toiler |
 //! |---|---|---|
 //! | 技能来源 | `DefaultResourceLoader`：`skillPaths` + package 技能 + 上述两目录 | 只扫上述两目录（无 package / `skillPaths`） |
 //! | 同名冲突 | loader 按 `name` 去重，项目版本把用户版本顶掉 | 按 `filePath` 去重，**同名不同文件两份都返回**（项目在前） |
@@ -62,7 +62,7 @@ use crate::state::AppState;
 
 /// `GET /api/skills?cwd=<绝对路径>`。
 ///
-/// `?cache=1` 是 pi 的「只读缓存」开关。workman 没有技能缓存，参数被忽略
+/// `?cache=1` 是 pi 的「只读缓存」开关。toiler 没有技能缓存，参数被忽略
 /// （axum 默认丢弃未知 query 字段），响应里 `cacheHit` 恒为 `false`；
 /// 前端的预填逻辑只在 `cacheHit === true` 时采用，因此不会误显示旧数据。
 #[derive(Debug, Deserialize)]
@@ -145,7 +145,7 @@ pub async fn list(
 ///
 /// 返回 501 而不是 404，前端会把 `error` 原文显示出来，用户能看懂为什么没反应。
 pub async fn market_not_implemented() -> Response {
-    not_implemented("技能市场未实现：workman 只加载本地 ~/.agents/skills 与项目 .agents/skills")
+    not_implemented("技能市场未实现：toiler 只加载本地 ~/.agents/skills 与项目 .agents/skills")
 }
 
 /// `PATCH /api/skills`：切换 `disable-model-invocation`。
@@ -175,7 +175,7 @@ fn skill_dirs(cwd: &Path, trusted: bool) -> Vec<(PathBuf, &'static str, &'static
         // 项目根 = 从 cwd 向上最近的 git 仓库根；不在 git 里就是 cwd 自己。
         // 与 pi 的差异：pi 的 `collectAncestorAgentsSkillDirs` 在找不到 git 根时
         // 会一路扫到文件系统根，那样 `~/Development/.agents/skills` 这类「祖先共享
-        // 目录」也会被当成项目技能。workman 只认项目根，行为更好预测。
+        // 目录」也会被当成项目技能。toiler 只认项目根，行为更好预测。
         if let Some(root) = project_root(cwd) {
             let candidate = root.join(".agents").join("skills");
             // `~/.agents/skills` 在下面按 user 加，别重复标成 project。
@@ -185,8 +185,8 @@ fn skill_dirs(cwd: &Path, trusted: bool) -> Vec<(PathBuf, &'static str, &'static
         }
     }
 
-    // 用户级：跨工具目录 + pi 的 agent 目录 + workman 自己的 agent 目录。
-    // 两个 agent 目录都算，是为了让「刚从 pi 迁过来」和「只在 workman 里建过」
+    // 用户级：跨工具目录 + pi 的 agent 目录 + toiler 自己的 agent 目录。
+    // 两个 agent 目录都算，是为了让「刚从 pi 迁过来」和「只在 toiler 里建过」
     // 的技能都能看到——pi 的 user skills 默认就在 `~/.pi/agent/skills`。
     push_dir(&mut out, user_agents, "user", "user");
     push_dir(
@@ -197,7 +197,7 @@ fn skill_dirs(cwd: &Path, trusted: bool) -> Vec<(PathBuf, &'static str, &'static
     );
     push_dir(
         &mut out,
-        paths::workman_home().join("skills"),
+        paths::toiler_home().join("skills"),
         "user",
         "user",
     );
@@ -236,7 +236,7 @@ fn project_root(cwd: &Path) -> Option<PathBuf> {
 /// 去重规则一句话：**项目与用户之间合并（同名都留），用户目录之间按名字去重**。
 ///
 /// - 与 pi 的差异：pi 的 loader 用 `name` 做 key，项目里放一份同名技能会把全局
-///   那份顶掉。workman 两份都返回 —— 项目技能本来就是「给这个项目换一套行为」，
+///   那份顶掉。toiler 两份都返回 —— 项目技能本来就是「给这个项目换一套行为」，
 ///   界面上应该能同时看到、分别查看。
 /// - 用户级那三个目录之间仍按名字去重，否则同一份技能（`~/.agents/skills` 与
 ///   `~/.pi/agent/skills` 里的副本）会在列表里出现两遍。

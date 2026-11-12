@@ -5,7 +5,7 @@
 //! 监听端口，WebView 直接开 `http://127.0.0.1:<port>/` —— 同源，SSE 与 fetch 都不
 //! 用再处理跨域。
 //!
-//! 产物目录在编译期由 `WORKMAN_FRONTEND_DIR` 决定（见 `build.rs`），默认是 crate
+//! 产物目录在编译期由 `TOILER_FRONTEND_DIR` 决定（见 `build.rs`），默认是 crate
 //! 内置的 `frontend/`（占位页）。pi 的 Next 静态导出产物形状是：
 //!
 //! ```text
@@ -27,10 +27,10 @@ use include_dir::{include_dir, Dir};
 /// 编译期嵌入的前端产物（`build.rs` 通过 `rustc-env` 注入绝对路径）。
 ///
 /// `include_dir!` 只接受字符串字面量，环境变量用它的 `$NAME` 插值语法。
-static FRONTEND: Dir<'static> = include_dir!("$WORKMAN_FRONTEND_DIR");
+static FRONTEND: Dir<'static> = include_dir!("$TOILER_FRONTEND_DIR");
 
 /// 产物目录的来源，用于日志和 `/api/home` 一侧的自检。
-pub const FRONTEND_DIR: &str = env!("WORKMAN_FRONTEND_DIR");
+pub const FRONTEND_DIR: &str = env!("TOILER_FRONTEND_DIR");
 
 /// 嵌入的产物是否只是一个占位页（没有真实前端）。
 pub fn is_placeholder() -> bool {

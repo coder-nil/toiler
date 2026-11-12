@@ -30,9 +30,9 @@ impl Default for ModelsFile {
     }
 }
 
-/// 默认路径：`$WORKMAN_MODELS` > `<workmanHome>/configs/models.json`。
+/// 默认路径：`$TOILER_MODELS` > `<toilerHome>/configs/models.json`。
 pub fn default_path() -> PathBuf {
-    if let Ok(p) = std::env::var("WORKMAN_MODELS") {
+    if let Ok(p) = std::env::var("TOILER_MODELS") {
         if !p.trim().is_empty() {
             return PathBuf::from(p);
         }
@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn write_adds_schema_and_normalizes_cost() {
-        let dir = std::env::temp_dir().join(format!("workman-models-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-models-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let file = ModelsFile::at(dir.join("models.json"));
         let written = file
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn deletes_provider_and_model() {
-        let dir = std::env::temp_dir().join(format!("workman-models-del-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-models-del-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let file = ModelsFile::at(dir.join("models.json"));
         file.write(&serde_json::json!({

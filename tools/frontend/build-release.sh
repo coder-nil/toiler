@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 把前端产物嵌进 workman 的 release 二进制。
+# 把前端产物嵌进 toiler 的 release 二进制。
 #
 # 用法：
 #   tools/frontend/build-release.sh                      # 自动探测 pi-desktop 的静态导出产物
@@ -8,8 +8,8 @@
 # 产物要求（pi 的 `npm run build:desktop-frontend` 就是这个形状）：
 #   index.html  index.txt  _next/static/...  icons/...  favicon.ico
 #
-# 产物目录只在这里参与编译：`WORKMAN_FRONTEND_DIR` 变化会触发 workman-server
-# 重新编译（见 crates/workman-server/build.rs），所以换前端只需重跑本脚本。
+# 产物目录只在这里参与编译：`TOILER_FRONTEND_DIR` 变化会触发 toiler-server
+# 重新编译（见 crates/toiler-server/build.rs），所以换前端只需重跑本脚本。
 
 set -euo pipefail
 
@@ -22,7 +22,7 @@ have_frontend_arg=0
 if [[ $# -gt 0 && "${1:-}" != -* ]]; then
   have_frontend_arg=1
 fi
-src="${1:-${WORKMAN_FRONTEND_DIR:-}}"
+src="${1:-${TOILER_FRONTEND_DIR:-}}"
 
 if [[ -z "$src" ]]; then
   for candidate in \
@@ -45,8 +45,8 @@ if [[ -z "$src" || ! -f "$src/index.html" ]]; then
 两条路：
   1. 在 pi-desktop 仓库里跑 `npm run build:desktop-frontend`（产物落在
      src-tauri/frontend/），然后重跑本脚本并把目录作为参数传进来。
-  2. 先不嵌真实前端：直接 `cargo build -p workman-desktop`，二进制里是
-     crates/workman-server/frontend/ 的占位页（API 仍然可用）。
+  2. 先不嵌真实前端：直接 `cargo build -p toiler-desktop`，二进制里是
+     crates/toiler-server/frontend/ 的占位页（API 仍然可用）。
 MSG
   exit 1
 fi
@@ -63,7 +63,7 @@ cd "$root"
 if (( have_frontend_arg )); then
   shift
 fi
-WORKMAN_FRONTEND_DIR="$src" cargo build --release -p workman-desktop "$@"
+TOILER_FRONTEND_DIR="$src" cargo build --release -p toiler-desktop "$@"
 echo
-echo "完成：target/release/workman-desktop"
-ls -lh target/release/workman-desktop
+echo "完成：target/release/toiler-desktop"
+ls -lh target/release/toiler-desktop

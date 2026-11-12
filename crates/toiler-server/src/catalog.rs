@@ -142,19 +142,19 @@ pub struct ModelCatalog {
     /// `~/.pi/agent/models.json` 的原始内容（前端 `/api/models` 会透传一部分）
     pub raw: Value,
     pub source: Option<std::path::PathBuf>,
-    /// 默认模型下标（`entries` 里第一个可用的；可被 `WORKMAN_MODEL` 或历史会话覆盖）
+    /// 默认模型下标（`entries` 里第一个可用的；可被 `TOILER_MODEL` 或历史会话覆盖）
     default_index: usize,
 }
 
 impl ModelCatalog {
-    /// 默认路径：`$WORKMAN_MODELS` > `~/.workman/agent/models.json` > `~/.pi/agent/models.json`
-    /// 模型目录：`$WORKMAN_MODELS` > `<workmanHome>/configs/models.json`。
+    /// 默认路径：`$TOILER_MODELS` > `~/.toiler/agent/models.json` > `~/.pi/agent/models.json`
+    /// 模型目录：`$TOILER_MODELS` > `<toilerHome>/configs/models.json`。
     ///
-    /// 早先这里自己拼 `~/.workman/agent` → `~/.pi/agent` 两条路径，与
+    /// 早先这里自己拼 `~/.toiler/agent` → `~/.pi/agent` 两条路径，与
     /// `paths::config_file` 各写一份，很容易漂移（阶段 6 换布局时就漏了这里，
     /// 表现为「会话根换了、模型目录还在读 pi」）。统一走 `paths`。
     pub fn default_path() -> Option<std::path::PathBuf> {
-        if let Ok(p) = std::env::var("WORKMAN_MODELS") {
+        if let Ok(p) = std::env::var("TOILER_MODELS") {
             if !p.trim().is_empty() {
                 return Some(std::path::PathBuf::from(p));
             }
@@ -366,12 +366,12 @@ impl ModelCatalog {
         self
     }
 
-    /// 选默认模型：`WORKMAN_MODEL=provider/id` > 历史会话提示 > 第一个。
+    /// 选默认模型：`TOILER_MODEL=provider/id` > 历史会话提示 > 第一个。
     ///
     /// 历史会话提示（`hint`）来自最近一个会话的 `model_change` 条目——也就是
     /// 「你上次用的模型」，这比随便挑第一个更符合直觉。
     pub fn apply_default_hint(&mut self, hint: Option<(String, String)>) {
-        let env_hint = std::env::var("WORKMAN_MODEL").ok().and_then(|raw| {
+        let env_hint = std::env::var("TOILER_MODEL").ok().and_then(|raw| {
             let (provider, id) = raw.split_once('/')?;
             Some((provider.to_string(), id.to_string()))
         });

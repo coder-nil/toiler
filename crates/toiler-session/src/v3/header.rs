@@ -121,7 +121,7 @@ fn ordered_json(value: &Value) -> String {
 mod tests {
     use super::*;
 
-    const REAL: &str = r#"{"type":"session","version":3,"id":"01a1c430-f1ef-7516-b8ed-33ac88cc72cc","timestamp":"2026-11-10T06:41:44.431Z","cwd":"/Volumes/Chenxiaoni·SSD/Development/RustProjects/workman"}"#;
+    const REAL: &str = r#"{"type":"session","version":3,"id":"01a1c430-f1ef-7516-b8ed-33ac88cc72cc","timestamp":"2026-11-10T06:41:44.431Z","cwd":"/Volumes/Chenxiaoni·SSD/Development/RustProjects/toiler"}"#;
 
     #[test]
     fn parses_real_pi_header() {
@@ -129,7 +129,7 @@ mod tests {
         assert_eq!(h.id, "01a1c430-f1ef-7516-b8ed-33ac88cc72cc");
         assert_eq!(
             h.cwd,
-            "/Volumes/Chenxiaoni·SSD/Development/RustProjects/workman"
+            "/Volumes/Chenxiaoni·SSD/Development/RustProjects/toiler"
         );
         assert_eq!(h.created_at, iso_to_ms("2026-11-10T06:41:44.431Z").unwrap());
     }

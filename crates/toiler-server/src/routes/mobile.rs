@@ -27,7 +27,7 @@ pub struct PairParams {
     cwd: Option<String>,
 }
 
-/// 三份文件的位置：`<workmanHome>/configs/desktop-access*.json`。
+/// 三份文件的位置：`<toilerHome>/configs/desktop-access*.json`。
 fn paths() -> mobile_access::MobilePaths {
     mobile_access::MobilePaths::in_dir(&crate::paths::configs_dir())
 }
@@ -312,7 +312,7 @@ async fn current_state() -> Value {
 /// `{zoneID, accountID, apiToken}`。用它查一次 DNS 记录，就能把指向本隧道的
 /// CNAME 反推出来。
 ///
-/// **这一层在 workman 里刻意留空**：它要把用户的 Cloudflare API token 发到公网，
+/// **这一层在 toiler 里刻意留空**：它要把用户的 Cloudflare API token 发到公网，
 /// 而设置页里手填一次域名就够（`publicHostnameDetected` 因此恒为 `null`）。
 /// 壳那边的隧道管理器自己会读 `cert.pem` 起 named 隧道，不受影响。
 fn discover_tunnel_hostname() -> Option<String> {

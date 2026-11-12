@@ -2,7 +2,7 @@
 //!
 //! pi 的 `app/api/plugins/route.ts` 是围绕 `DefaultPackageManager` 的一整套控制台：
 //! 跑 npm/git 安装、解析 `package.json` 的 `pi` 清单、把包里发现的扩展/技能/提示词/
-//! 主题并入资源池，并支持 install / remove / update / enable / disable。workman
+//! 主题并入资源池，并支持 install / remove / update / enable / disable。toiler
 //! 只做「看」这一半——但必须做，否则前端拉 `GET /api/plugins` 会落到静态兜底拿到
 //! 404 `{"error":"Not found"}`，插件页左侧就会把这个 error 当成一条插件画出来。
 //!
@@ -15,23 +15,23 @@
 //!
 //! # 安装根为什么是 `plugins/` 而不是 agent 目录
 //!
-//! pi 把包装在 `<agentDir>/npm`、`<agentDir>/git`；workman 的 agent 目录是
-//! `~/.agents/workman`，那样放包会让「插件」与「配置 / 会话 / 项目库」挤在同一层，
+//! pi 把包装在 `<agentDir>/npm`、`<agentDir>/git`；toiler 的 agent 目录是
+//! `~/.agents/toiler`，那样放包会让「插件」与「配置 / 会话 / 项目库」挤在同一层，
 //! 也和 `paths.rs` 早就声明的 `plugins/` 目录约定冲突。所以全局包一律落在
-//! `<workmanHome>/plugins` 下，内部保留按来源分类的子目录（与 pi 同构，便于对照）：
+//! `<toilerHome>/plugins` 下，内部保留按来源分类的子目录（与 pi 同构，便于对照）：
 //!
 //! ```text
-//! ~/.agents/workman/plugins/
+//! ~/.agents/toiler/plugins/
 //! ├── npm/node_modules/<name>/     npm: 来源
 //! └── git/<host>/<path>/           git: 来源
 //! ```
 //!
 //! # 与 pi 的差异
 //!
-//! | 项 | pi | workman |
+//! | 项 | pi | toiler |
 //! |---|---|---|
 //! | 包来源 | 全局 + 项目 `settings.json` 的 `packages` | 同；项目未信任时忽略项目那份（同 pi） |
-//! | 安装目录 | `<agentDir>/npm/node_modules/<name>`，缺省时退回全局 npm root / pnpm | `<workmanHome>/plugins/{npm/node_modules,git}/…`；**不**回退 `~/.pi/agent/npm`，也不跑 `npm root -g` |
+//! | 安装目录 | `<agentDir>/npm/node_modules/<name>`，缺省时退回全局 npm root / pnpm | `<toilerHome>/plugins/{npm/node_modules,git}/…`；**不**回退 `~/.pi/agent/npm`，也不跑 `npm root -g` |
 //! | 安装 / 卸载 / 更新 / 启停 | 调 npm / git、改 `settings.json` | npm 走**本机 npm**（`--legacy-peer-deps`），启停改 `settings.json`；**git 来源不支持**（需手动 clone）；找不到 npm 时 500 + 中文提示 |
 //! | 资源发现 | 递归时按 `.gitignore` / `.ignore` / `.fdignore` 过滤 | 只跳过 `.` 开头与 `node_modules`（不解析忽略文件） |
 //! | 清单里的 glob 条目 | `*` `?` 展开 | 跳过该条目 |
@@ -301,7 +301,7 @@ impl From<std::io::Error> for Failure {
     }
 }
 
-/// 该作用域的 `settings.json`：全局 = workman 的配置目录，项目 = `<cwd>/.pi`。
+/// 该作用域的 `settings.json`：全局 = toiler 的配置目录，项目 = `<cwd>/.pi`。
 fn settings_path(state: &AppState, scope: Scope, cwd: &Path) -> PathBuf {
     match scope {
         Scope::Global => state.settings().path().to_path_buf(),
@@ -342,15 +342,15 @@ fn ensure_npm_project(dir: &Path) -> Result<(), Failure> {
 ///
 /// 从 Finder / launchd 启动时 `PATH` 往往只有 `/usr/bin:/bin:/usr/sbin:/sbin`，
 /// 而 npm 通常装在 nvm / Homebrew 目录里，所以 `PATH` 找不到时再探一遍常见位置。
-/// `WORKMAN_NPM` 可以显式指定（测试与非常规安装用）。
+/// `TOILER_NPM` 可以显式指定（测试与非常规安装用）。
 fn npm_executable() -> Result<PathBuf, Failure> {
-    if let Some(raw) = std::env::var_os("WORKMAN_NPM") {
+    if let Some(raw) = std::env::var_os("TOILER_NPM") {
         let path = PathBuf::from(raw);
         return if path.is_file() {
             Ok(path)
         } else {
             Err(missing_npm(&format!(
-                "WORKMAN_NPM 指向的文件不存在：{}",
+                "TOILER_NPM 指向的文件不存在：{}",
                 path.display()
             )))
         };
@@ -498,7 +498,7 @@ async fn install(
         Source::Git { .. } => {
             return Err(Failure::new(
                 StatusCode::BAD_REQUEST,
-                "暂不支持 git: 来源的插件：请先手动 git clone 到 <workmanHome>/plugins/git/<host>/<path>，再把条目写进 settings.json",
+                "暂不支持 git: 来源的插件：请先手动 git clone 到 <toilerHome>/plugins/git/<host>/<path>，再把条目写进 settings.json",
             ));
         }
     }
@@ -903,9 +903,9 @@ fn kind_index(kind: Kind) -> usize {
     }
 }
 
-/// workman 的插件安装根（`<workmanHome>/plugins`）。
+/// toiler 的插件安装根（`<toilerHome>/plugins`）。
 ///
-/// 生产的 `settings.json` 在 `<workmanHome>/configs/settings.json`（见 `paths.rs` 的
+/// 生产的 `settings.json` 在 `<toilerHome>/configs/settings.json`（见 `paths.rs` 的
 /// 目录布局），而测试里 `with_stores` 往往直接指向 `<tmp>/settings.json`。用配置
 /// 目录反推工作区根再拼 `plugins`，两种情况都对，也免了在 `AppState` 里再加字段。
 fn plugins_root(state: &AppState) -> PathBuf {
@@ -1086,7 +1086,7 @@ fn configured_version(source: &Source) -> Option<String> {
 
 /// 包安装位置，不存在时 `None`（pi 的 `getInstalledPath`）。
 ///
-/// 安装根：全局 = `<workmanHome>/plugins`，项目 = `<cwd>/.pi`（项目插件跟项目配置
+/// 安装根：全局 = `<toilerHome>/plugins`，项目 = `<cwd>/.pi`（项目插件跟项目配置
 /// 在同一个 `.pi/` 下，与 pi 一致）。
 fn installed_path(source: &str, scope: Scope, cwd: &Path, plugins_root: &Path) -> Option<PathBuf> {
     let base = match scope {
@@ -1169,7 +1169,7 @@ fn collect_resources(package_root: &Path, filter: Option<&Value>) -> Vec<(Kind, 
             }
         } else {
             for entry in entries {
-                // 覆盖模式（`!` `+` `-`）只影响启用状态，workman 不做启停，跳过。
+                // 覆盖模式（`!` `+` `-`）只影响启用状态，toiler 不做启停，跳过。
                 if matches!(entry.chars().next(), Some('!' | '+' | '-')) {
                     continue;
                 }

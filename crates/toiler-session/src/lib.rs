@@ -1,10 +1,10 @@
-//! workman 的会话层。
+//! toiler 的会话层。
 //!
 //! 目标：**直接读写 pi 自己的 v3 `.jsonl` 会话文件**，不迁移、不改格式。
-//! 这样 pi 和 workman 可以并行打开同一份会话历史。
+//! 这样 pi 和 toiler 可以并行打开同一份会话历史。
 //!
 //! ```text
-//! ~/.workman/agent/sessions/--<cwd 编码>--/<ISO>_<id>.jsonl      ← 与 pi 同构
+//! ~/.toiler/agent/sessions/--<cwd 编码>--/<ISO>_<id>.jsonl      ← 与 pi 同构
 //! ```
 //!
 //! # 四个模块
@@ -27,11 +27,11 @@
 //!
 //! ```no_run
 //! use std::sync::Arc;
-//! use workman_session::{WorkmanHome, V3SessionRepo};
+//! use toiler_session::{ToilerHome, V3SessionRepo};
 //! use rpi_harness::session::Session;
 //!
 //! # async fn demo() -> anyhow::Result<()> {
-//! let home = WorkmanHome::discover()?;
+//! let home = ToilerHome::discover()?;
 //! home.ensure()?;
 //! let repo = V3SessionRepo::new(home.sessions_root());
 //!
@@ -52,7 +52,7 @@ pub mod storage;
 pub mod time;
 pub mod v3;
 
-pub use home::{session_directory_name, session_file_name, WorkmanHome};
+pub use home::{session_directory_name, session_file_name, ToilerHome};
 pub use repo::V3SessionRepo;
 pub use storage::{LoadReport, SessionFileInfo, V3Appender, V3SessionStorage, DEFAULT_LANE};
 pub use time::{iso_to_ms, ms_to_iso};

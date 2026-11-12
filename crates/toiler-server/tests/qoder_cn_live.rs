@@ -4,10 +4,10 @@
 //!
 //! ```bash
 //! # 1. 起服务（debug 日志会打出本机转发端点地址，含路径令牌）
-//! RUST_LOG=workman_server=debug cargo run -p workman-server -- --port 8892
+//! RUST_LOG=toiler_server=debug cargo run -p toiler-server -- --port 8892
 //! # 2. 把端点地址喂给这个测试
 //! QODER_CN_ENDPOINT=http://127.0.0.1:8892/qoder-cn/<token> \
-//!   cargo test -p workman-server --test qoder_cn_live -- --ignored --nocapture
+//!   cargo test -p toiler-server --test qoder_cn_live -- --ignored --nocapture
 //! ```
 //!
 //! 它验证的是**接缝**：rpi 的 `OpenAiCompletionsProvider` 能不能消费我们代理出来的
@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use workman_server::{oneshot, qoder_cn};
+use toiler_server::{oneshot, qoder_cn};
 
 #[tokio::test]
 #[ignore = "需要网络与已登录的 Qoder CN 账号；见文件头注释"]

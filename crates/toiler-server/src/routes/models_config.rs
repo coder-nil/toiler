@@ -447,7 +447,7 @@ pub async fn catalog(_trusted: Trusted) -> Response {
         "models": [],
         "recommendation": Value::Null,
         "source": "models-dev",
-        "note": "workman 不内置 models.dev 目录（见 PLAN.md「明确不做的」）",
+        "note": "toiler 不内置 models.dev 目录（见 PLAN.md「明确不做的」）",
     }))
     .into_response()
 }
@@ -559,7 +559,7 @@ fn models_json_name(root: &Value, provider: &str, id: &str) -> Option<String> {
 /// 前端再把 `warnings` 逐条渲染成文本。返回对象会让 React 抛
 /// “Objects are not valid as a React child (found: object with keys
 /// {type, code, message, pattern})”，整个页面直接落到 `global-error`
-/// 的 “This page couldn't load” 兜底页（workman 就曾因此整页崩掉）。
+/// 的 “This page couldn't load” 兜底页（toiler 就曾因此整页崩掉）。
 fn pattern_warnings(patterns: Option<&[String]>, models: &[ModelRef]) -> Vec<String> {
     let Some(patterns) = patterns else {
         return Vec::new();

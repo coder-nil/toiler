@@ -1,5 +1,5 @@
-//! 项目列表与「上次选中的项目」—— workman **自己的** SQLite 库
-//! （`<appDir>/work.sqlite`，即 `~/.agents/workman/work.sqlite`）。
+//! 项目列表与「上次选中的项目」—— toiler **自己的** SQLite 库
+//! （`<appDir>/work.sqlite`，即 `~/.agents/toiler/work.sqlite`）。
 //!
 //! 早先直接读 pi 的 `~/.pi/agent/pi.sqlite`。共用库的好处是项目列表、星标、
 //! 选中项与 pi 天然一致，坏处是要跟 pi 的 schema 完全对齐，而且两个工具各自
@@ -142,7 +142,7 @@ impl ProjectStore {
 
     /// 加入 / 更新项目（父目录变化时以新值为准）。
     pub fn upsert(&self, project_key: &str, project_root: &str, cwd: &str) -> Result<Project> {
-        let now = crate::workman_now_iso();
+        let now = crate::toiler_now_iso();
         let conn = self.open()?;
         conn.execute(
             "INSERT INTO added_projects(project_key, project_root, cwd, added_at, starred)
@@ -214,7 +214,7 @@ impl ProjectStore {
 
     /// 写选中项（`58641.Ey`）。
     pub fn set_selected(&self, project_key: &str, project_root: &str) -> Result<()> {
-        let now = crate::workman_now_iso();
+        let now = crate::toiler_now_iso();
         let value = json!({ "projectKey": project_key, "projectRoot": project_root });
         let conn = self.open()?;
         conn.execute(
@@ -244,7 +244,7 @@ impl ProjectStore {
     /// 3. 能打开它并读到 `added_projects`。
     ///
     /// **只读旧库**：不写它、不删它、不改 schema。旧库里的其它表（skills、
-    /// plugin 等）一律不碰——它们属于 pi，不属于 workman。
+    /// plugin 等）一律不碰——它们属于 pi，不属于 toiler。
     ///
     /// 返回 `Some(导入的项目数)`；没触发时返回 `None`。
     pub fn migrate_from_pi_if_needed(&self, legacy: &Path) -> Result<Option<usize>> {
@@ -314,7 +314,7 @@ impl ProjectStore {
             tx.execute(
                 "INSERT OR REPLACE INTO app_preferences(key, value, updated_at)
                  VALUES (?1, ?2, ?3)",
-                params!["last_selected_project", value, crate::workman_now_iso()],
+                params!["last_selected_project", value, crate::toiler_now_iso()],
             )?;
         }
         tx.commit()?;
@@ -351,7 +351,7 @@ mod tests {
 
     fn store(tag: &str) -> (PathBuf, ProjectStore) {
         let dir =
-            std::env::temp_dir().join(format!("workman-projects-{}-{}", std::process::id(), tag));
+            std::env::temp_dir().join(format!("toiler-projects-{}-{}", std::process::id(), tag));
         let _ = std::fs::remove_dir_all(&dir);
         let store = ProjectStore::at(dir.join("work.sqlite"));
         (dir, store)
@@ -395,12 +395,12 @@ mod tests {
     /// 旧库（`pi.sqlite`）里的项目与选中项要能完整搬到新库，且旧库不能被写。
     #[test]
     fn migrates_projects_and_selection_from_the_legacy_database() {
-        let dir = std::env::temp_dir().join(format!("workman-migrate-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-migrate-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let legacy = dir.join("pi.sqlite");
 
-        // 造一个「旧库」：两张表 + 两条项目 + 选中项 + 一张 workman 不关心的表
+        // 造一个「旧库」：两张表 + 两条项目 + 选中项 + 一张 toiler 不关心的表
         {
             let conn = Connection::open(&legacy).unwrap();
             conn.execute_batch(
@@ -462,7 +462,7 @@ mod tests {
     /// 新库一旦建过就不再导入：否则用户删掉的项目会在下次启动时「复活」。
     #[test]
     fn migration_runs_only_once() {
-        let dir = std::env::temp_dir().join(format!("workman-migrate-once-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-migrate-once-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let legacy = dir.join("pi.sqlite");
@@ -496,7 +496,7 @@ mod tests {
     /// 没有旧库 / 旧库没有那张表 / 旧库坏了 → 都安静地不迁移。
     #[test]
     fn migration_is_a_noop_without_a_usable_legacy_database() {
-        let dir = std::env::temp_dir().join(format!("workman-migrate-none-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-migrate-none-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let store = ProjectStore::at(dir.join("work.sqlite"));
@@ -521,18 +521,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 默认路径必须是 `<workmanHome>/work.sqlite`，而不是 pi 的库。
+    /// 默认路径必须是 `<toilerHome>/work.sqlite`，而不是 pi 的库。
     #[test]
     fn default_database_lives_in_the_app_directory() {
         let path = paths::project_db();
         assert_eq!(path.file_name().unwrap(), "work.sqlite");
-        assert_eq!(path.parent().unwrap(), paths::workman_home());
+        assert_eq!(path.parent().unwrap(), paths::toiler_home());
         assert!(
-            path.to_string_lossy().ends_with("workman/work.sqlite")
-                || std::env::var_os("WORKMAN_HOME").is_some()
-                || std::env::var_os("WORKMAN_AGENT_DIR").is_some()
+            path.to_string_lossy().ends_with("toiler/work.sqlite")
+                || std::env::var_os("TOILER_HOME").is_some()
+                || std::env::var_os("TOILER_AGENT_DIR").is_some()
                 || std::env::var_os("AGENTS_HOME").is_some(),
-            "{} 应在 <agents>/workman/ 下",
+            "{} 应在 <agents>/toiler/ 下",
             path.display()
         );
     }

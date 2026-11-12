@@ -99,10 +99,29 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 `{systemPrompt}`。前端打开会话、切换界面语言都会发它，返回值直接刷新「系统提示词」
 面板；它同时把提示词换成对应语言（preamble / 工具说明 / 行为准则 / 语言指令）。
 
-`get_state` 的响应里含 `systemPrompt`，值是**实际发给模型的那一份**提示词：
+`get_state` 的响应里含 `systemPrompt`、`extensionStatuses`、`extensionWidgets`、
+`pendingUiRequests`。前两项是 `task_progress` 的任务框/状态栏镜像（前端渲染任务列表
+读的就是它们；只发事件的话刷新一次界面就没了），第三项是还没回答的 `ask_user`
+请求，前端重连后靠它恢复弹窗。`systemPrompt` 的值是**实际发给模型的那一份**提示词：
 `preamble → <tools> → <rules> → <project_context> → <cwd>` 分节
 （`system_prompt.rs`），与 pi 的 `effectiveSystemPrompt()` 同义。缺了它前端面板
 会一直显示「系统提示词尚未加载」，所以它是契约的一部分，不是可选字段。
+
+`get_tools` 返回 `[{name, description, active}]`，`set_tools`
+（`{"type":"set_tools","toolNames":[…]}`）返回 `null`。前端打开会话就用
+`get_tools` 反推工具预设（`getPresetFromTools`），参数面板切换预设则发 `set_tools`。
+注册的工具共 10 个：7 个编码工具（read/bash/edit/write/grep/find/ls）+
+3 个桌面工具（`system_time` / `task_progress` / `ask_user`，实现见
+`toiler-server/src/desktop_tools/`）。桌面工具**不受预设控制**（pi 的
+`withExtensionTools` 也是这么做的），所以「只读」「关闭」预设下它们仍是 active。
+`mcp` / `browser` / `goal` 系工具不提供（见 AGENTS.md「明确不做的事」）。
+`set_tools` 同时重算系统提示词的 `<tools>` 段与 `<project_context>` 形态
+（没有 `read` 时退回全文）。
+
+`extension_ui_response`（`{"type":"extension_ui_response","id":…,"value"|"confirmed"|"cancelled":true}`）
+回答 `ask_user` 的提问，返回 `null`；请求已作废（超时/中止）时同样返回 `null`
+（前端只是晚了一步，不算错误）。`extension_ui_input`（custom UI 的逐键输入）
+收下即忽略：toiler 不提供 custom 渲染。
 
 `navigate_tree`（`{"type":"navigate_tree","targetId":"<entryId>"}`）把 main lane 的叶子
 **移到**目标条目上（不是它的父节点），返回 `{cancelled, leafId}`。前端三个入口都发它：
@@ -137,7 +156,10 @@ v3 文件里没有 leaf 记录（pi 也没有）：只挪内存指针，重开�
      `partial.content[contentIndex]`）
    - `tool_execution_update`：只留 `{type, toolCallId, toolName, partialResult}`
    - `agent_end`：只留 `{type}`
-3. 启动失败：`{"type":"startup_error","errorMessage":"Failed to start agent: …"}` 后关闭
+3. 扩展 UI 请求：`{"type":"extension_ui_request","id":…,"method":"select"|"confirm"|"input"|"editor",…}`，
+   请求作废（回答/超时/中止）时补一帧 `{"type":"extension_ui_resolved","id":…}`；
+   `method` 还有 `setStatus` / `setWidget`（`task_progress` 的展示，非阻塞）。
+4. 启动失败：`{"type":"startup_error","errorMessage":"Failed to start agent: …"}` 后关闭
 
 会话不存在：`404 Session not found`；请求已中断：`204`。
 
@@ -175,7 +197,7 @@ v3 文件里没有 leaf 记录（pi 也没有）：只挪内存指针，重开�
   （`~/.agents/skills` 与 `~/.pi/agent/skills` 常有同一份副本）。pi 是全局按 name 去重，
   项目版本会把用户版本顶掉 —— 这里刻意不同。
 - `sourceInfo` 决定前端的组：`user` → Global，`project` → Project；两者都没有时落到 Other。
-- `SKILL.md` **缺 `description`** 会被直接丢弃且**不产生诊断**（pi 与 workman 一致），
+- `SKILL.md` **缺 `description`** 会被直接丢弃且**不产生诊断**（pi 与 toiler 一致），
   “技能写好了却不显示”先查 frontmatter（如新建的 `k8s-deploy` 曾因此消失）。
 
 ### 技能目录（决定「不同项目不同技能」）
@@ -185,21 +207,21 @@ v3 文件里没有 leaf 记录（pi 也没有）：只挪内存指针，重开�
 | 项目 | **`$project/.agents/skills` 一层**。`$project` = 从 `cwd` 向上最近的 git 仓库根；不在 git 里就是 `cwd` 本身（跳过 `~/.agents/skills`） | `project` |
 | 用户 | `~/.agents/skills`（跨工具） | `user` |
 | 用户 | `~/.pi/agent/skills`（pi 的 agent 目录，迁移用户默认就在这） | `user` |
-| 用户 | `~/.agents/workman/skills`（workman 自己的 agent 目录） | `user` |
+| 用户 | `~/.agents/toiler/skills`（toiler 自己的 agent 目录） | `user` |
 
 两条前提，对应 pi 的 `collectAncestorAgentsSkillDirs` + `projectTrusted`：
 
 1. **只认项目根**：约定位置就是 `$project/.agents/skills`。子目录里开会话
    （`$project/frontend`）仍读项目根那一份；子目录自己的 `.agents/skills` 不算。
    与 pi 的差异：pi 在找不到 git 根时会一路扫到文件系统根（`~/Development/.agents/skills`
-   也会被当成项目技能），workman 只认项目根，行为更好预测。
+   也会被当成项目技能），toiler 只认项目根，行为更好预测。
 2. **项目必须已信任**：未信任时项目技能**完全不加载**，同时 `projectResourcesLoaded=false`
    （前端据此禁用「Project」作用域按钮）。否则一个刚 clone 的仓库可以靠 `.agents/skills` 里的
    提示词影响 agent。
 
-目录不存在不产生诊断（pi 会为它报 `list_failed`，workman 直接跳过——「没装过项目技能」是常态）。
+目录不存在不产生诊断（pi 会为它报 `list_failed`，toiler 直接跳过——「没装过项目技能」是常态）。
 
-pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文说明…"}`：
+pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文说明…"}`：
 
 | 方法 | pi 行为 |
 |---|---|
@@ -281,7 +303,7 @@ pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文�
 选会话规则：显式 `session` > `cwd` 过滤后「正在运行」的会话 > 该 cwd 下
 `modified` 最新的会话；都没有则返回空态（`sessionId: null`）。
 
-## 实现进度（`crates/workman-server`）
+## 实现进度（`crates/toiler-server`）
 
 | route | 状态 | 备注 |
 |---|---|---|
@@ -294,14 +316,14 @@ pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文�
 | `POST /api/agent/{id}` | ✅ | `prompt`/`steer`/`follow_up`/`abort`/`get_state`/`set_model`/`navigate_tree`/`set_steering_mode`/`set_follow_up_mode`（后两个只落盘，`applied:false`，新会话生效；见 `GET/PUT /api/queue-modes`） |
 | `GET /api/agent/{id}` | ✅ | `{running}` / `{running, state}` |
 | `GET /api/agent/{id}/events` | ✅ | SSE，裁剪规则与 pi 逐条对齐 |
-| `POST /api/agent/new` | ✅ | 建 v3 会话 + 登记项目 + 执行 body 里的命令；`{success,sessionId,data,model,thinkingLevel}` |
+| `POST /api/agent/new` | ✅ | 建 v3 会话 + 登记项目 + 执行 body 里的命令；`{success,sessionId,data,model,thinkingLevel}`。body 的 `toolNames`（前端工具预设，默认 `read/bash/edit/write`，桌面工具始终启用）与 `uiLocale` 也在建会话时应用 |
 | `GET /api/agent/running` | ✅ | `{runningSessionIds, pendingUiSessionIds}`（pi 的 `56429.am()`） |
 | `GET /api/files/{*path}` | ✅ | 六种 `type` 全实现（`list`/`read`/`download`/`meta`/`preview`/`watch`），`Range` 206/416，SSE 命名事件 `connected`/`change` |
 | `PUT /api/files/{*path}` | ✅ | `{content, allowEmpty}`；空覆盖 409 `empty_overwrite_blocked`；256KB 上限 |
 | `PATCH /api/files/{*path}` | ✅ | 重命名；纯文件名校验；撞名 409 `already_exists` |
 | `POST /api/files/{*path}` | ✅ | `?type=upload-check` / `?type=upload&conflict=error\|overwrite\|skip`；25MB 单文件 / 100MB 总量；部分成功 207 |
 | `GET /api/models` | ✅ | `{models, modelList, defaultModel, thinkingLevels, thinkingLevelMaps, thinkingLevelPins, source}` 全对齐；`models` 是 `provider:id` 字典 |
-| `GET /api/skills` | ⚠️ | 项目技能：`$project/.agents/skills`（项目根 = 最近 git 根，需已信任）；用户技能：`~/.agents/skills` + `~/.pi/agent/skills` + `~/.agents/workman/skills`，三者按名字去重；两组合并返回（同名不互相顶掉）。pi 的 `skillPaths`/package 技能没有（无 package 系统），`usageCount` 与缓存也不提供（`cacheHit` 恒 false） |
+| `GET /api/skills` | ⚠️ | 项目技能：`$project/.agents/skills`（项目根 = 最近 git 根，需已信任）；用户技能：`~/.agents/skills` + `~/.pi/agent/skills` + `~/.agents/toiler/skills`，三者按名字去重；两组合并返回（同名不互相顶掉）。pi 的 `skillPaths`/package 技能没有（无 package 系统），`usageCount` 与缓存也不提供（`cacheHit` 恒 false） |
 | `POST /api/skills/search` | ❌ | 501：技能市场（PLAN 已砍） |
 | `POST /api/skills/install` | ❌ | 501：技能市场（PLAN 已砍） |
 | `PATCH /api/skills` | ❌ | 501：会改写用户目录的 `SKILL.md`，写侧暂不开放 |
@@ -341,10 +363,10 @@ pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文�
 | `GET /api/git/diff?cwd=&path=` | ✅ | `{supported,status?,patch?}`；未跟踪文件会合成补丁 |
 | `POST /api/git/commit-message` | ✅ | NDJSON：`update` → `done`（失败 `error`）；用 `settings.json` 的默认模型 |
 | `GET/POST/DELETE /api/worktrees` | ✅ | 列出 / 新建（`action:"checkout"` 走切分支）/ 删除（脏工作区 409 + `dirty:true`） |
-| `GET/PUT/PATCH/DELETE /api/projects` | ✅ | 用 workman 自己的 `<appDir>/work.sqlite`（`~/.agents/workman/work.sqlite`）；接口形状与 pi 一致，但**不再共库** |
+| `GET/PUT/PATCH/DELETE /api/projects` | ✅ | 用 toiler 自己的 `<appDir>/work.sqlite`（`~/.agents/toiler/work.sqlite`）；接口形状与 pi 一致，但**不再共库** |
 | `GET/POST /api/project-trust` | ✅ | `{requiresTrust,trusted}`；`trust.json` 与 pi 同格式 |
-| `GET /api/plugins?cwd=` | ⚠️ | 只读：列 `settings.json` 的 `packages` + 安装状态 + 包内资源；安装根只认 workman 自己的 agent 目录（见差异 19） |
-| `POST /api/plugins` | ⚠️ | `install`/`remove`/`update`/`disable`/`enable` 全支持：npm 走本机 npm（`--legacy-peer-deps`，安装根 `<workmanHome>/plugins/npm`），启停改 `settings.json`；**git: 来源不支持**；找不到 npm → 500 + 中文提示。注意：装上的 TS 扩展 rpi 不会加载，功能不生效 |
+| `GET /api/plugins?cwd=` | ⚠️ | 只读：列 `settings.json` 的 `packages` + 安装状态 + 包内资源；安装根只认 toiler 自己的 agent 目录（见差异 19） |
+| `POST /api/plugins` | ⚠️ | `install`/`remove`/`update`/`disable`/`enable` 全支持：npm 走本机 npm（`--legacy-peer-deps`，安装根 `<toilerHome>/plugins/npm`），启停改 `settings.json`；**git: 来源不支持**；找不到 npm → 500 + 中文提示。注意：装上的 TS 扩展 rpi 不会加载，功能不生效 |
 | `GET /api/plugins/catalog` | ⚠️ | 恒为空页（`{plugins:[],hasMore:false}`）：插件市场同技能市场，PLAN 明确不做 |
 | `POST /api/plugins/catalog/translate` | ⚠️ | 恒为 `{translations:{}}`：没有目录可翻 |
 | `GET/PUT /api/tools/settings` | ⚠️ | `{isWindows:false,powerShellEnabled:false}`；PUT 501（shell 工具是 bash，没有 PowerShell 通道） |
@@ -381,12 +403,12 @@ pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文�
 6. **auth provider 列表来自写死的内置表**：pi 的列表来自 provider 目录
    —— `@earendil-works/pi-ai` 的 `builtinProviders()`（1.4.0 版 42 家）**加上
    pi-desktop 自己注册的 2 家**（`apisets` / `qoder-cn`，见 `lib/desktop-providers.ts`）。
-   rpi 只有三种 `api` 协议的实现、没有目录接口，所以 workman 把这份目录**写死**在
-   `crates/workman-server/src/builtin_providers.rs`（`PROVIDERS` + `DESKTOP_PROVIDERS`，
+   rpi 只有三种 `api` 协议的实现、没有目录接口，所以 toiler 把这份目录**写死**在
+   `crates/toiler-server/src/builtin_providers.rs`（`PROVIDERS` + `DESKTOP_PROVIDERS`，
    每家含 id/name/baseUrl/是否 API Key/OAuth 名/chat 模型 id）。
    文件头注释里有重新提取的脚本。
 
-   | 列表 | pi 的行为 | workman |
+   | 列表 | pi 的行为 | toiler |
    |---|---|---|
    | `/api/auth/providers`（订阅区） | `buildOAuthProviderList`：声明了 OAuth 的 10 家 | 一致（含 `anthropic`、`qoder-cn`） |
    | `/api/auth/all-providers`（API Key 区） | `buildApiKeyProviderList`：声明了 API Key 登录的 42 家，跳过 `source` 是 `models_json_key`/`models_json_command` 的 | 一致 |
@@ -424,37 +446,38 @@ pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文�
 9. **`/api/auth/api-key/{provider}` 的 `displayName`** 取 `models.json` 的 `name`，缺省用 id
    （pi 取 models.dev 的展示名）。
 10. **git 凭据**：pi 用 AES-256-GCM 加密存进 `git-credentials.json`（密钥在 macOS Keychain）。
-   workman 把凭据交给系统 credential helper（`git credential approve`），因此
+   toiler 把凭据交给系统 credential helper（`git credential approve`），因此
    `hasSavedCredential` / `savedCredentialUsername` 恒为 `false` / `null`；
    「记住凭据」对后续 `git` 命令仍然生效。
-11. **`/api/git/commit-message` 的流**：pi 每收到一段就发一行 `update`；workman 攒完再一次
+11. **`/api/git/commit-message` 的流**：pi 每收到一段就发一行 `update`；toiler 攒完再一次
     `update` + `done`（字段相同，少了中间增量）。
 12. **`/api/sessions/{id}/export` 的 HTML**：响应头与文件名规则与 pi 一致，但内容是自己渲染的
     线性转写稿（pi 用 `pi` CLI 生成带树状导航的 HTML）。`?inline=1` / `?desktop=1` / `returnTo`
     都支持。
 13. **`/api/agent/{id}/bash-output` 的会话归属校验**：pi 只认
-    `role:"bashExecution"` 的顶层 `fullOutputPath`；workman 额外接受新工具形态
+    `role:"bashExecution"` 的顶层 `fullOutputPath`；toiler 额外接受新工具形态
     （`role:"toolResult"` 的 `details.fullOutputPath`），因为当前 pi 就是这么写的。
 13. **`/api/models-config/catalog`** 恒为空表（models.dev 目录已砍，见 PLAN「明确不做的」）。
-14. **`/api/agent/running/events` 的 `pendingUiSessionIds`** 恒为空：workman 没有
-    「等待用户输入的 UI 请求」这条链路。
+14. **`/api/agent/running/events` 的 `pendingUiSessionIds`**：`ask_user` 卡在提问上的
+    会话 id（与 pi 同义）。`/api/mobile/state` 的 `pendingUiRequest` 也从同一处取第一个
+    阻塞式请求（`select`/`confirm`/`input`/`editor`），手机端据此弹卡片。
 15. **`/api/mobile/access` 的 `publicHostnameDetected`** 恒为 `null`：pi 用 `cert.pem`
-    里的 Cloudflare API token 去查 DNS 反推域名，workman 刻意不做（不把用户的 token
+    里的 Cloudflare API token 去查 DNS 反推域名，toiler 刻意不做（不把用户的 token
     发到公网）。设置页里手填一次域名即可；`publicHostnameDisplay` 仍会正确转成 Unicode。
 16. **`/api/mobile/pair` 的 `publicUrl` 来源**：pi 会抓 quick 模式的 `trycloudflare`
-    日志；workman 的隧道管理器把地址写进 `desktop-access.tunnel.json`，这里直接读。
+    日志；toiler 的隧道管理器把地址写进 `desktop-access.tunnel.json`，这里直接读。
 17. **`/api/sessions/{id}` 的 context 会归一化 `toolCall` 块**：v3 文件里是
     `{id,name,arguments}`，接口输出 `{toolCallId,toolName,input}` —— **必须**这么做，
     否则前端 `isFileWritingToolName(undefined)` 直接 TypeError，打开任何带工具调用的
     历史会话都整页白屏（阶段 5 走查实测）。
 18. **`role: "system"` 的转录消息不进 context**（与 pi 的 `entryToUiMessage` 一致）：
     pi ≥0.86 把 prompt / 工具清单写成 system 消息，它们是 provider 输入而不是对话。
-19. **`/api/plugins` 只读，且只认 workman 自己的安装目录**：pi 的插件面板背后是
-    `DefaultPackageManager`（npm/git 安装 + 启停 + 资源池合并）；workman 只做投影：
+19. **`/api/plugins` 只读，且只认 toiler 自己的安装目录**：pi 的插件面板背后是
+    `DefaultPackageManager`（npm/git 安装 + 启停 + 资源池合并）；toiler 只做投影：
     读 `settings.json` 的 `packages`，按 `<agentDir>/npm/node_modules/<name>`、
     `<agentDir>/git/<host>/<path>`（项目作用域换成 `<cwd>/.pi/…`）判断装没装。
-    **不**回退 `~/.pi/agent/npm`，也不跑 `npm root -g` / pnpm —— 因为 workman 的
-    agent 目录是自己的（`~/.agents/workman`），把 pi 那边装的包显示成「已安装」会误导：
+    **不**回退 `~/.pi/agent/npm`，也不跑 `npm root -g` / pnpm —— 因为 toiler 的
+    agent 目录是自己的（`~/.agents/toiler`），把 pi 那边装的包显示成「已安装」会误导：
     rpi 并不会加载它们。资源发现按 `package.json` 的 `pi` 清单（存在则只按清单字段收，
     缺失的类型不再回退约定目录），无清单时扫 `extensions/` `skills/` `prompts/` `themes/`；
     不做 `.gitignore` 过滤、不展开清单里的 glob、对象形态的过滤清单只认「空数组 = 该类型
@@ -472,7 +495,7 @@ pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文�
 ├── mcp/
 ├── commands/
 ├── tools/
-└── workman/                    ← workman 专属
+└── toiler/                     ← toiler 专属
     ├── configs/                 auth.json / models.json / settings.json /
     │                            trust.json / desktop-access*.json
     ├── sessions/                v3 会话（`--<cwd>--/<ISO>_<id>.jsonl`）
@@ -483,13 +506,13 @@ pi 另有三个写侧/市场接口，workman 都返回 `501 {"error":"…中文�
 | 环境变量 | 作用 |
 |---|---|
 | `AGENTS_HOME` | 改通用根（默认 `~/.agents`） |
-| `WORKMAN_HOME` | 改 workman 专属目录（默认 `<agentsHome>/workman`） |
-| `WORKMAN_AGENT_DIR` | 旧名兼容，等价于 `WORKMAN_HOME` |
-| `WORKMAN_SESSIONS_ROOT` / `WORKMAN_MODELS` | 单独覆盖会话根 / 模型目录 |
+| `TOILER_HOME` | 改 toiler 专属目录（默认 `<agentsHome>/toiler`） |
+| `TOILER_AGENT_DIR` | 旧名兼容，等价于 `TOILER_HOME` |
+| `TOILER_SESSIONS_ROOT` / `TOILER_MODELS` | 单独覆盖会话根 / 模型目录 |
 | `PI_CODING_AGENT_DIR` | 只影响**播种源**（`legacy_pi_agent_dir`） |
 
 **为什么不继续用 `~/.pi/agent`**：那是 pi 的目录，pi 会按自己的节奏迁移 schema、
-清理缓存、重写文件。workman 的配置放进去会跟着被改，而且两边谁改了哪个键说不清。
+清理缓存、重写文件。toiler 的配置放进去会跟着被改，而且两边谁改了哪个键说不清。
 
 **首次启动的种子数据**：`configs/` 为空时，从 `~/.pi/agent` **复制**
 `auth.json` / `models.json` / `settings.json` / `trust.json` / `desktop-access*.json`

@@ -1,9 +1,9 @@
-//! `~/.workman/agent` 的目录约定。
+//! `~/.toiler/agent` 的目录约定。
 //!
 //! 与 pi 的 `~/.pi/agent` **同构**，这样两边的会话文件可以互相复制：
 //!
 //! ```text
-//! ~/.workman/agent/
+//! ~/.toiler/agent/
 //!   sessions/
 //!     --Users-me-Development-project--/        ← cwd 编码（/ \ : → -）
 //!       2026-11-10T06-41-44-431Z_<id>.jsonl    ← ISO（: . → -）_ id
@@ -18,20 +18,20 @@ use anyhow::{Context, Result};
 
 use crate::time::ms_to_iso;
 
-/// workman 的 home 根（默认 `~/.workman`）。
+/// toiler 的 home 根（默认 `~/.toiler`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkmanHome {
+pub struct ToilerHome {
     root: PathBuf,
 }
 
-impl WorkmanHome {
-    /// `$WORKMAN_HOME` 优先，其次 `~/.workman`。
+impl ToilerHome {
+    /// `$TOILER_HOME` 优先，其次 `~/.toiler`。
     pub fn discover() -> Result<Self> {
-        if let Some(dir) = std::env::var_os("WORKMAN_HOME") {
+        if let Some(dir) = std::env::var_os("TOILER_HOME") {
             return Ok(Self::at(PathBuf::from(dir)));
         }
-        let home = std::env::var_os("HOME").context("HOME 未设置，无法定位 ~/.workman")?;
-        Ok(Self::at(PathBuf::from(home).join(".workman")))
+        let home = std::env::var_os("HOME").context("HOME 未设置，无法定位 ~/.toiler")?;
+        Ok(Self::at(PathBuf::from(home).join(".toiler")))
     }
 
     pub fn at(root: impl Into<PathBuf>) -> Self {
@@ -42,17 +42,17 @@ impl WorkmanHome {
         &self.root
     }
 
-    /// `~/.workman/agent`
+    /// `~/.toiler/agent`
     pub fn agent_dir(&self) -> PathBuf {
         self.root.join("agent")
     }
 
-    /// `~/.workman/agent/sessions`
+    /// `~/.toiler/agent/sessions`
     pub fn sessions_root(&self) -> PathBuf {
         self.agent_dir().join("sessions")
     }
 
-    /// `~/.workman/agent/models.json`（阶段 3 用，这里只给路径）
+    /// `~/.toiler/agent/models.json`（阶段 3 用，这里只给路径）
     pub fn models_path(&self) -> PathBuf {
         self.agent_dir().join("models.json")
     }
@@ -111,10 +111,10 @@ mod tests {
 
     #[test]
     fn directory_name_matches_pi() {
-        // 真实 pi 目录：~/.pi/agent/sessions/--Volumes-Chenxiaoni·SSD-…-workman--
+        // 真实 pi 目录：~/.pi/agent/sessions/--Volumes-Chenxiaoni·SSD-…-toiler--
         assert_eq!(
-            session_directory_name("/Volumes/Chenxiaoni·SSD/Development/RustProjects/workman"),
-            "--Volumes-Chenxiaoni·SSD-Development-RustProjects-workman--"
+            session_directory_name("/Volumes/Chenxiaoni·SSD/Development/RustProjects/toiler"),
+            "--Volumes-Chenxiaoni·SSD-Development-RustProjects-toiler--"
         );
         assert_eq!(session_directory_name("/a/b"), "--a-b--");
         assert_eq!(session_directory_name("C:\\x"), "--C--x--");
@@ -140,9 +140,9 @@ mod tests {
 
     #[test]
     fn ensure_creates_sessions_root() {
-        let tmp = std::env::temp_dir().join(format!("workman-home-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("toiler-home-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        let home = WorkmanHome::at(&tmp);
+        let home = ToilerHome::at(&tmp);
         home.ensure().unwrap();
         assert!(home.sessions_root().is_dir());
         std::fs::remove_dir_all(&tmp).unwrap();

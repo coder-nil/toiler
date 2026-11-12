@@ -6,15 +6,15 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::Value;
+use toiler_server::catalog::ModelCatalog;
+use toiler_server::routes;
+use toiler_server::state::AppState;
 use tower::ServiceExt;
-use workman_server::catalog::ModelCatalog;
-use workman_server::routes;
-use workman_server::state::AppState;
 
 const HEADER: &str = r#"{"type":"session","version":3,"id":"sess-a","timestamp":"2026-11-10T06:41:44.431Z","cwd":"/tmp/demo"}"#;
 
 fn fixture_root(tag: &str) -> std::path::PathBuf {
-    let root = std::env::temp_dir().join(format!("workman-http-{}-{}", std::process::id(), tag));
+    let root = std::env::temp_dir().join(format!("toiler-http-{}-{}", std::process::id(), tag));
     let _ = std::fs::remove_dir_all(&root);
     let dir = root.join("--tmp-demo--");
     std::fs::create_dir_all(&dir).unwrap();

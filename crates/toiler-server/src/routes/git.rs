@@ -163,7 +163,7 @@ pub async fn diff(
 pub struct CommitMessageBody {
     cwd: Option<String>,
     locale: Option<String>,
-    /// 前端会带上，但 workman 直接用默认模型生成（见模块文档）
+    /// 前端会带上，但 toiler 直接用默认模型生成（见模块文档）
     #[serde(rename = "sessionId")]
     #[allow(dead_code)]
     session_id: Option<String>,

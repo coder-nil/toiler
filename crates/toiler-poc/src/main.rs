@@ -1,12 +1,12 @@
-//! workman PoC — 验证三件事，都不改 rpi 源码：
+//! toiler PoC — 验证三件事，都不改 rpi 源码：
 //!
 //! 1. crates.io 上的 `rpi-ai` 能被独立项目引入并编译（升级只需改版本号）。
 //! 2. `openai-responses` provider 对自定义 baseUrl 端点真实流式出字。
 //! 3. 从 pi 的 `models.json` 直接映射出 rpi 的 `Model`（provider 配置无需改写）。
 //!
 //! 用法：
-//!   cargo run -p workman-poc -- stream   # 打通 #2 #3（会真实发请求）
-//!   cargo run -p workman-poc -- info     # 只做配置映射，不发请求
+//!   cargo run -p toiler-poc -- stream   # 打通 #2 #3（会真实发请求）
+//!   cargo run -p toiler-poc -- info     # 只做配置映射，不发请求
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -35,7 +35,7 @@ struct Resolved {
 }
 
 /// 从 pi 的 models.json 里挑第一个 `api: openai-responses` 的模型，
-/// 映射成 rpi 的 `Model`。这正是将来 workman 的 provider 加载层要做的事。
+/// 映射成 rpi 的 `Model`。这正是将来 toiler 的 provider 加载层要做的事。
 fn resolve_from_pi_config(wanted_model: Option<&str>) -> Result<Resolved> {
     let path = pi_models_path()?;
     let text =

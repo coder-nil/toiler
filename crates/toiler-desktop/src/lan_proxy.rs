@@ -324,8 +324,7 @@ fn text_response(status_line: &str, extra_headers: &[&str], body: &str) -> Vec<u
 fn unauthorized_response(had_credentials: bool) -> Vec<u8> {
     // realm 里必须写出用户名：浏览器原生登录框只显示 realm，
     // 否则用户不知道要填 `pi`。
-    let authenticate =
-        "WWW-Authenticate: Basic realm=\"Pi Desktop (username: pi)\", charset=\"UTF-8\"";
+    let authenticate = "WWW-Authenticate: Basic realm=\"Toiler (username: pi)\", charset=\"UTF-8\"";
     if had_credentials {
         text_response(
             "401 Unauthorized",
@@ -425,7 +424,7 @@ fn disabled_response() -> Vec<u8> {
 }
 
 fn bad_gateway_response() -> Vec<u8> {
-    text_response("502 Bad Gateway", &[], "Pi Desktop server is unavailable")
+    text_response("502 Bad Gateway", &[], "Toiler server is unavailable")
 }
 
 /// 把 `reader` 的全部字节写到 `writer`，返回写出的字节数。
@@ -1078,7 +1077,7 @@ mod tests {
         // 浏览器原生登录框只显示 realm，忘记写用户名会让用户无从下手。
         let challenge = String::from_utf8(unauthorized_response(false)).unwrap();
         assert!(
-            challenge.contains("realm=\"Pi Desktop (username: pi)\""),
+            challenge.contains("realm=\"Toiler (username: pi)\""),
             "{challenge}"
         );
         assert!(challenge.contains("username"), "{challenge}");
@@ -1122,7 +1121,7 @@ mod integration_tests {
 
     fn workspace(name: &str) -> PathBuf {
         let directory = std::env::temp_dir().join(format!(
-            "pi-desktop-lan-proxy-{name}-{}-{:?}",
+            "toiler-lan-proxy-{name}-{}-{:?}",
             std::process::id(),
             thread::current().id(),
         ));

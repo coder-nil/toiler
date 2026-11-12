@@ -20,7 +20,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use workman_server::{catalog::ModelCatalog, routes, state::AppState};
+use toiler_server::{catalog::ModelCatalog, routes, state::AppState};
 
 // ============================================================================
 // 脚手架
@@ -48,9 +48,23 @@ impl Reply {
     }
 }
 
+/// 改进程级环境变量的测试要串行跑。
+///
+/// `cargo test` 默认多线程，而 `TOILER_AGENT_DIR` / `TOILER_NPM` 是全局的：
+/// 一个测试把它们指向临时目录的窗口期内，邻接测试会跟着读到那个值（曾经让
+/// `mobile_access_and_pair_share_one_contract` 偶发失败）。需要隔离目录的测试持有
+/// 这把锁，改完立刻恢复。
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn fixture_root(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "workman-regress-{tag}-{}-{}",
+        "toiler-regress-{tag}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -69,7 +83,7 @@ fn app(sessions_root: &Path, cwd: &Path) -> axum::Router {
 ///
 /// `agent_dir` 给定时，项目库（`work.sqlite`）、`settings.json`、`trust.json` 等
 /// **全部指到那个隔离目录**。这一步不能省：默认的 `ProjectStore::default()` 指向
-/// 用户真实的 `~/.agents/workman/work.sqlite`，`POST /api/cwd/validate` 会往里
+/// 用户真实的 `~/.agents/toiler/work.sqlite`，`POST /api/cwd/validate` 会往里
 /// 登记项目 —— 阶段 5 第一次跑契约测试时就污染过用户 18 条项目记录（已清理）。
 fn app_with_agent_dir(sessions_root: &Path, cwd: &Path, agent_dir: Option<&Path>) -> axum::Router {
     let catalog = ModelCatalog::from_config(json!({ "providers": {} }), None).unwrap();
@@ -77,11 +91,11 @@ fn app_with_agent_dir(sessions_root: &Path, cwd: &Path, agent_dir: Option<&Path>
         AppState::with_cwd(sessions_root, catalog, cwd).with_binding("127.0.0.1", 30141);
     if let Some(dir) = agent_dir {
         state = state.with_stores(
-            workman_server::auth::AuthStore::new(dir.join("auth.json")),
-            workman_server::models_json::ModelsFile::at(dir.join("models.json")),
-            workman_server::settings::SettingsFile::at(dir.join("settings.json")),
-            workman_server::projects::ProjectStore::at(dir.join("work.sqlite")),
-            workman_server::trust::TrustStore::at(dir.join("trust.json")),
+            toiler_server::auth::AuthStore::new(dir.join("auth.json")),
+            toiler_server::models_json::ModelsFile::at(dir.join("models.json")),
+            toiler_server::settings::SettingsFile::at(dir.join("settings.json")),
+            toiler_server::projects::ProjectStore::at(dir.join("work.sqlite")),
+            toiler_server::trust::TrustStore::at(dir.join("trust.json")),
         );
     }
     routes::router(state)
@@ -1039,11 +1053,11 @@ async fn default_model_ref_prefers_settings_over_catalog() {
         }
     }), None).unwrap(), &root)
     .with_stores(
-        workman_server::auth::AuthStore::default(),
-        workman_server::models_json::ModelsFile::default(),
-        workman_server::settings::SettingsFile::at(&settings_path),
-        workman_server::projects::ProjectStore::default(),
-        workman_server::trust::TrustStore::default(),
+        toiler_server::auth::AuthStore::default(),
+        toiler_server::models_json::ModelsFile::default(),
+        toiler_server::settings::SettingsFile::at(&settings_path),
+        toiler_server::projects::ProjectStore::default(),
+        toiler_server::trust::TrustStore::default(),
     );
     assert_eq!(
         state.default_model_ref(),
@@ -1061,11 +1075,11 @@ async fn default_model_ref_prefers_settings_over_catalog() {
         "providers": {"first": {"api": "openai-completions", "baseUrl": "https://first.example.test/v1", "models": [{"id": "model-a"}]}}
     }), None).unwrap(), &root)
     .with_stores(
-        workman_server::auth::AuthStore::default(),
-        workman_server::models_json::ModelsFile::default(),
-        workman_server::settings::SettingsFile::at(&settings_path),
-        workman_server::projects::ProjectStore::default(),
-        workman_server::trust::TrustStore::default(),
+        toiler_server::auth::AuthStore::default(),
+        toiler_server::models_json::ModelsFile::default(),
+        toiler_server::settings::SettingsFile::at(&settings_path),
+        toiler_server::projects::ProjectStore::default(),
+        toiler_server::trust::TrustStore::default(),
     );
     assert_eq!(
         state.default_model_ref(),
@@ -1324,7 +1338,7 @@ async fn tools_settings_hides_the_powershell_group_on_non_windows() {
     assert_eq!(body["isWindows"], cfg!(windows));
     assert_eq!(
         body["powerShellEnabled"], false,
-        "workman 的 shell 工具是 bash，没有 PowerShell 通道"
+        "toiler 的 shell 工具是 bash，没有 PowerShell 通道"
     );
 
     // PUT 只在 Windows 的 pi 上有意义，这里给明确错误而不是静默成功。
@@ -1443,7 +1457,7 @@ async fn cwd_validate_returns_project_identity() {
     assert!(body["projectRoot"].as_str().is_some());
     assert!(body["projectKey"].as_str().is_some());
 
-    // 项目必须登记到**隔离库**里，而不是用户的 ~/.agents/workman/work.sqlite
+    // 项目必须登记到**隔离库**里，而不是用户的 ~/.agents/toiler/work.sqlite
     assert!(agent_dir.join("work.sqlite").exists(), "应写进隔离的项目库");
     std::fs::remove_dir_all(&root).ok();
     std::fs::remove_dir_all(&agent_dir).ok();
@@ -1604,11 +1618,11 @@ fn state_with_agent_dir(sessions_root: &Path, cwd: &Path, agent_dir: &Path) -> A
     let catalog = ModelCatalog::from_config(json!({ "providers": {} }), None).unwrap();
     AppState::with_cwd(sessions_root, catalog, cwd)
         .with_stores(
-            workman_server::auth::AuthStore::new(agent_dir.join("auth.json")),
-            workman_server::models_json::ModelsFile::at(agent_dir.join("models.json")),
-            workman_server::settings::SettingsFile::at(agent_dir.join("settings.json")),
-            workman_server::projects::ProjectStore::at(agent_dir.join("work.sqlite")),
-            workman_server::trust::TrustStore::at(agent_dir.join("trust.json")),
+            toiler_server::auth::AuthStore::new(agent_dir.join("auth.json")),
+            toiler_server::models_json::ModelsFile::at(agent_dir.join("models.json")),
+            toiler_server::settings::SettingsFile::at(agent_dir.join("settings.json")),
+            toiler_server::projects::ProjectStore::at(agent_dir.join("work.sqlite")),
+            toiler_server::trust::TrustStore::at(agent_dir.join("trust.json")),
         )
         .with_binding("127.0.0.1", 30141)
 }
@@ -1674,7 +1688,7 @@ async fn qoder_cn_models_come_from_the_builtin_catalog() {
     assert!(!state.attach_qoder_cn(), "重复注入应幂等");
 
     let catalog = state.catalog();
-    let qoder: Vec<&workman_server::catalog::ModelEntry> = catalog
+    let qoder: Vec<&toiler_server::catalog::ModelEntry> = catalog
         .entries
         .iter()
         .filter(|entry| entry.provider == "qoder-cn")
@@ -1758,7 +1772,7 @@ async fn thinking_levels_match_pi_semantics() {
     // 返回 off/minimal/low/medium/high，前端会在不支持推理的模型上显示出
     // 推理强度菜单。
     use rpi_ai::{Api, Model, ThinkingLevel};
-    use workman_server::catalog::supported_thinking_levels;
+    use toiler_server::catalog::supported_thinking_levels;
 
     let mut model = Model::new("m", "M", Api::OpenaiCompletions, "p", "http://x");
     model.reasoning = false;
@@ -1834,11 +1848,11 @@ fn app_with_two_models(sessions_root: &Path, cwd: &Path, agent_dir: &Path) -> ax
     let state = AppState::with_cwd(sessions_root, catalog, cwd)
         .with_binding("127.0.0.1", 30141)
         .with_stores(
-            workman_server::auth::AuthStore::new(agent_dir.join("auth.json")),
-            workman_server::models_json::ModelsFile::at(agent_dir.join("models.json")),
-            workman_server::settings::SettingsFile::at(agent_dir.join("settings.json")),
-            workman_server::projects::ProjectStore::at(agent_dir.join("work.sqlite")),
-            workman_server::trust::TrustStore::at(agent_dir.join("trust.json")),
+            toiler_server::auth::AuthStore::new(agent_dir.join("auth.json")),
+            toiler_server::models_json::ModelsFile::at(agent_dir.join("models.json")),
+            toiler_server::settings::SettingsFile::at(agent_dir.join("settings.json")),
+            toiler_server::projects::ProjectStore::at(agent_dir.join("work.sqlite")),
+            toiler_server::trust::TrustStore::at(agent_dir.join("trust.json")),
         );
     routes::router(state)
 }
@@ -2068,13 +2082,18 @@ async fn unknown_api_paths_stay_json_404() {
 // 5) 手机访问（会改进程环境，串行执行）
 // ============================================================================
 
-/// 手机相关的用例都要改 `WORKMAN_AGENT_DIR`（进程级），所以集中成一条用例，
+/// 手机相关的用例都要改 `TOILER_AGENT_DIR`（进程级），所以集中成一条用例，
 /// 避免并行测试互相看到对方的 agent 目录。
 #[tokio::test]
+// 串行锁跨 await 持有是故意的：这些测试都在各自的 tokio runtime 线程上 block_on，
+// 持锁方不会被别人的 lock() 卡住（不会被反过来等待），而 `TOILER_AGENT_DIR` 这类
+// 进程级变量必须整段互斥。
+#[allow(clippy::await_holding_lock)]
 async fn mobile_access_and_pair_share_one_contract() {
-    let previous = std::env::var_os("WORKMAN_AGENT_DIR");
+    let _env = env_guard();
+    let previous = std::env::var_os("TOILER_AGENT_DIR");
     let agent_dir = fixture_root("mobileagent");
-    std::env::set_var("WORKMAN_AGENT_DIR", &agent_dir);
+    std::env::set_var("TOILER_AGENT_DIR", &agent_dir);
     let sessions = fixture_root("mobilesessions");
     let cwd = fixture_root("mobilecwd");
 
@@ -2144,7 +2163,7 @@ async fn mobile_access_and_pair_share_one_contract() {
     let config = configs.join("desktop-access.json");
     assert!(
         config.exists(),
-        "配置应写到 <workmanHome>/configs/，实际找的是 {}",
+        "配置应写到 <toilerHome>/configs/，实际找的是 {}",
         config.display()
     );
     #[cfg(unix)]
@@ -2220,8 +2239,8 @@ async fn mobile_access_and_pair_share_one_contract() {
 
     // 恢复环境，别影响别的测试
     match previous {
-        Some(value) => std::env::set_var("WORKMAN_AGENT_DIR", value),
-        None => std::env::remove_var("WORKMAN_AGENT_DIR"),
+        Some(value) => std::env::set_var("TOILER_AGENT_DIR", value),
+        None => std::env::remove_var("TOILER_AGENT_DIR"),
     }
     std::fs::remove_dir_all(&agent_dir).ok();
     std::fs::remove_dir_all(&sessions).ok();
@@ -2242,7 +2261,7 @@ async fn mobile_access_and_pair_share_one_contract() {
 /// 没有真实会话（CI）时自动跳过：断言的是「扫描能跑完」，不是「一定有 N 个」。
 ///
 /// 标记 `#[ignore]`：560 个真实会话要跑 80 秒左右，不适合放进每次 `cargo test`。
-/// 手动跑：`cargo test -p workman-server --test regression -- --ignored --nocapture`
+/// 手动跑：`cargo test -p toiler-server --test regression -- --ignored --nocapture`
 #[tokio::test]
 #[ignore = "需要真实的 ~/.pi/agent/sessions，且全量扫描约 80s"]
 async fn every_real_pi_session_loads() {
@@ -2283,14 +2302,14 @@ async fn every_real_pi_session_loads() {
         // 详情页的三块结构：tree / context / paging（与 GET /api/sessions/{id}
         // 走同一批 session_view 函数，所以这里等价于打一遍那条接口）。
         let labels = session.labels();
-        let tree = workman_server::session_view::tree_projection(
-            &workman_server::session_view::build_tree(&session.entries, &labels),
+        let tree = toiler_server::session_view::tree_projection(
+            &toiler_server::session_view::build_tree(&session.entries, &labels),
         );
         if tree.as_array().map(Vec::is_empty).unwrap_or(true) {
             failures.push(format!("{id} 没有 tree"));
         }
 
-        let view = workman_server::session_view::context_view(&session.entries, None);
+        let view = toiler_server::session_view::context_view(&session.entries, None);
         if session.message_count() > 0 && view.messages.is_empty() {
             failures.push(format!(
                 "{id} 有 {} 条消息但 context 为空",
@@ -2332,13 +2351,13 @@ async fn every_real_pi_session_loads() {
             failures.push(format!("{id} 的 messages 比 entryIds 多，分页会错位"));
         }
 
-        let leaf = workman_server::session_view::leaf_id(&session.entries);
+        let leaf = toiler_server::session_view::leaf_id(&session.entries);
         if leaf.is_none() && session.message_count() > 0 {
             failures.push(format!("{id} 有消息但没有 leafId（续聊会没有锚点）"));
         }
 
         // 分页：默认 120 条，起点不能越界
-        let page = workman_server::session_view::page_tail(&view.messages, None);
+        let page = toiler_server::session_view::page_tail(&view.messages, None);
         if page.end > view.messages.len() || page.start > page.end {
             failures.push(format!(
                 "{id} 分页越界：start={} end={} len={}",
@@ -2383,7 +2402,7 @@ async fn real_project_root_is_detected_for_a_git_checkout() {
     let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") else {
         return;
     };
-    // CARGO_MANIFEST_DIR 指向 crates/workman-server，仓库根在两级之上
+    // CARGO_MANIFEST_DIR 指向 crates/toiler-server，仓库根在两级之上
     let repo = Path::new(&manifest)
         .parent()
         .and_then(Path::parent)
@@ -2426,7 +2445,7 @@ async fn skills_lists_project_skill_with_source_info() {
     )
     .unwrap();
     // 项目技能只在项目被信任时加载（见 routes/skills.rs 头部），先落一条信任决定。
-    workman_server::trust::TrustStore::at(store.join("trust.json"))
+    toiler_server::trust::TrustStore::at(store.join("trust.json"))
         .set(root.to_str().unwrap(), Some(true))
         .unwrap();
 
@@ -2527,7 +2546,7 @@ async fn skills_climb_to_git_root_and_stop_there() {
     }
 
     let store = fixture_root("skills-git-store");
-    workman_server::trust::TrustStore::at(store.join("trust.json"))
+    toiler_server::trust::TrustStore::at(store.join("trust.json"))
         .set(repo.to_str().unwrap(), Some(true))
         .unwrap();
 
@@ -2609,7 +2628,7 @@ async fn skills_come_from_project_root_not_cwd() {
     }
 
     let store = fixture_root("skills-root-store");
-    workman_server::trust::TrustStore::at(store.join("trust.json"))
+    toiler_server::trust::TrustStore::at(store.join("trust.json"))
         .set(repo.to_str().unwrap(), Some(true))
         .unwrap();
 
@@ -2673,7 +2692,7 @@ async fn project_and_user_skills_are_merged_even_with_same_name() {
     .unwrap();
 
     let store = fixture_root("skills-merge-store");
-    workman_server::trust::TrustStore::at(store.join("trust.json"))
+    toiler_server::trust::TrustStore::at(store.join("trust.json"))
         .set(root.to_str().unwrap(), Some(true))
         .unwrap();
 
@@ -2721,7 +2740,7 @@ async fn post_plugins(root: &Path, configs: &Path, body: Value) -> Reply {
     .await
 }
 
-/// 假的 npm：只做 workman 真正会调用的两件事（install / uninstall），不碰网络。
+/// 假的 npm：只做 toiler 真正会调用的两件事（install / uninstall），不碰网络。
 /// 真 npm 在离线机器 / CI 上不可用，但这里要验证的是「命令怎么拼、settings 怎么落盘」。
 #[cfg(unix)]
 const FAKE_NPM: &str = r#"#!/usr/bin/env python3
@@ -2766,8 +2785,8 @@ async fn plugins_list_reports_configured_packages_and_install_state() {
     // 前端把这个 error 当成一条插件画在左侧列表里（就是「不显示已安装插件」）。
     let root = fixture_root("plugins");
     let agent = fixture_root("plugins-agent");
-    // 生产的配置目录是 `<workmanHome>/configs`（见 paths.rs 的目录布局），
-    // 路由按这个位置反推「插件安装根」= `<workmanHome>/plugins`。
+    // 生产的配置目录是 `<toilerHome>/configs`（见 paths.rs 的目录布局），
+    // 路由按这个位置反推「插件安装根」= `<toilerHome>/plugins`。
     let configs = agent.join("configs");
     std::fs::create_dir_all(&configs).unwrap();
 
@@ -2825,7 +2844,7 @@ async fn plugins_list_reports_configured_packages_and_install_state() {
         .to_string(),
     )
     .unwrap();
-    // 未信任的项目里配一个包：pi 与 workman 都**不**读项目 settings。
+    // 未信任的项目里配一个包：pi 与 toiler 都**不**读项目 settings。
     std::fs::create_dir_all(root.join(".pi")).unwrap();
     std::fs::write(
         root.join(".pi/settings.json"),
@@ -2932,7 +2951,7 @@ async fn plugins_list_reports_configured_packages_and_install_state() {
     assert_eq!(body["totals"]["themes"], 0);
 
     // 信任之后项目包才出现，且作用域是 project。
-    workman_server::trust::TrustStore::at(configs.join("trust.json"))
+    toiler_server::trust::TrustStore::at(configs.join("trust.json"))
         .set(root.to_str().unwrap(), Some(true))
         .unwrap();
     let trusted = get(app_with_agent_dir(&root, &root, Some(&configs)), &url)
@@ -3026,12 +3045,17 @@ async fn plugins_list_reports_configured_packages_and_install_state() {
 
 #[cfg(unix)]
 #[tokio::test]
+// 串行锁跨 await 持有是故意的：这些测试都在各自的 tokio runtime 线程上 block_on，
+// 持锁方不会被别人的 lock() 卡住（不会被反过来等待），而 `TOILER_AGENT_DIR` 这类
+// 进程级变量必须整段互斥。
+#[allow(clippy::await_holding_lock)]
 async fn plugins_install_remove_run_local_npm_and_persist_settings() {
     // 前端 PluginsConfig 的三个按钮直接依赖它：
     // `install`（抽屉「添加插件」）、`remove`（详情页「移除」）、`disable`/`enable`（详情页开关）。
     // 装包必须走本机 npm；找不到 npm 时要给一句能看懂的提示，而不是 `spawn npm ENOENT`。
     use std::os::unix::fs::PermissionsExt;
 
+    let _env = env_guard();
     let root = fixture_root("plugins-npm");
     let agent = fixture_root("plugins-npm-agent");
     let configs = agent.join("configs");
@@ -3047,7 +3071,7 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
     let npm = bin.join("npm");
     std::fs::write(&npm, FAKE_NPM).unwrap();
     std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::env::set_var("WORKMAN_NPM", &npm);
+    std::env::set_var("TOILER_NPM", &npm);
 
     // 项目作用域要先信任项目（这里 trust.json 还没写）：否则一个刚 clone 的仓库
     // 就能靠 `.pi/settings.json` 决定装什么。注意「需要信任」的前提是项目里已经有
@@ -3088,7 +3112,7 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
 
     let read_settings = || -> Value { read_settings_file(&configs.join("settings.json")) };
 
-    // ---- install：npm 装到 <workmanHome>/plugins/npm，并把条目写进 settings.json
+    // ---- install：npm 装到 <toilerHome>/plugins/npm，并把条目写进 settings.json
     let installed = post_plugins(
         &root,
         &configs,
@@ -3118,7 +3142,7 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
             .as_str()
             .unwrap()
             .ends_with("plugins/npm/node_modules/pi-mcp-adapter"),
-        "全局安装根是 <workmanHome>/plugins/npm：{package}"
+        "全局安装根是 <toilerHome>/plugins/npm：{package}"
     );
     assert!(
         agent
@@ -3219,7 +3243,7 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
     );
 
     // ---- 找不到 npm：给一句能看懂的中文提示（不是 spawn ENOENT）
-    std::env::set_var("WORKMAN_NPM", "/nonexistent/npm");
+    std::env::set_var("TOILER_NPM", "/nonexistent/npm");
     let missing = post_plugins(
         &root,
         &configs,
@@ -3243,7 +3267,7 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
         missing.text()
     );
 
-    std::env::remove_var("WORKMAN_NPM");
+    std::env::remove_var("TOILER_NPM");
 }
 
 /// 系统提示词：pi 的分节结构 + `get_state.systemPrompt`。
@@ -3254,7 +3278,12 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
 /// 这一项以前没返回，面板永远停在未加载；提示词本身也只有一句话，
 /// 模型既看不到工具清单与行为准则，也读不到项目的 AGENTS.md。
 #[tokio::test]
+// 串行锁跨 await 持有是故意的：这些测试都在各自的 tokio runtime 线程上 block_on，
+// 持锁方不会被别人的 lock() 卡住（不会被反过来等待），而 `TOILER_AGENT_DIR` 这类
+// 进程级变量必须整段互斥。
+#[allow(clippy::await_holding_lock)]
 async fn system_prompt_has_pi_sections_and_get_state_exposes_it() {
+    let _env = env_guard();
     let root = fixture_root("prompt");
     let agent_dir = fixture_root("prompt-agent");
     let project = fixture_root("prompt-project");
@@ -3264,16 +3293,16 @@ async fn system_prompt_has_pi_sections_and_get_state_exposes_it() {
     )
     .unwrap();
 
-    // 全局 AGENTS.md 从 workman 自己的 agent 目录发现，这里指到临时目录，
-    // 免得用户的 `~/.agents/workman/AGENTS.md` 混进断言。
-    let previous = std::env::var("WORKMAN_AGENT_DIR").ok();
-    std::env::set_var("WORKMAN_AGENT_DIR", &agent_dir);
+    // 全局 AGENTS.md 从 toiler 自己的 agent 目录发现，这里指到临时目录，
+    // 免得用户的 `~/.agents/toiler/AGENTS.md` 混进断言。
+    let previous = std::env::var("TOILER_AGENT_DIR").ok();
+    std::env::set_var("TOILER_AGENT_DIR", &agent_dir);
 
     let cwd = project.to_string_lossy().to_string();
-    let dir = root.join(workman_session::session_directory_name(&cwd));
+    let dir = root.join(toiler_session::session_directory_name(&cwd));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
-        dir.join(workman_session::session_file_name(1794292904431, "sess-a")),
+        dir.join(toiler_session::session_file_name(1794292904431, "sess-a")),
         format!(
             "{{\"type\":\"session\",\"version\":3,\"id\":\"sess-a\",\"timestamp\":\"2026-11-10T06:41:44.431Z\",\"cwd\":{}}}\n",
             serde_json::to_string(&cwd).unwrap()
@@ -3355,13 +3384,284 @@ async fn system_prompt_has_pi_sections_and_get_state_exposes_it() {
         "{english}"
     );
 
+    // 工具清单：`get_tools` 是工具预设面板的数据源（`getPresetFromTools`），
+    // 之前没实现时面板拿不到任何工具。
+    let listed = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"get_tools"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text());
+    let tools = listed.json()["data"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(tools.len(), 10, "{}", listed.text());
+    assert!(
+        tools.iter().all(|tool| tool["active"] == true),
+        "新会话默认全部启用：{}",
+        listed.text()
+    );
+
+    // 切到只读预设：提示词的 `<tools>` 段必须跟着变，不能还列着 bash/edit/write
+    let preset = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"set_tools","toolNames":["read","grep","find","ls"]}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(preset.status, StatusCode::OK, "{}", preset.text());
+    let narrowed = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"get_tools"}"#),
+        &[],
+    )
+    .await;
+    let active: Vec<String> = narrowed.json()["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|tool| tool["active"] == true)
+        .map(|tool| tool["name"].as_str().unwrap().to_string())
+        .collect();
+    // 桌面工具（system_time / task_progress / ask_user）不受预设控制：
+    // pi 的 `set_tools` 用 `withExtensionTools` 把它们加回激活集合。
+    assert_eq!(
+        active,
+        vec![
+            "read",
+            "grep",
+            "find",
+            "ls",
+            "system_time",
+            "task_progress",
+            "ask_user"
+        ]
+    );
+
+    let narrowed_state = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"get_state"}"#),
+        &[],
+    )
+    .await
+    .json();
+    let narrowed_prompt = narrowed_state["data"]["systemPrompt"].as_str().unwrap();
+    assert!(narrowed_prompt.contains("- read: Read file contents"));
+    assert!(!narrowed_prompt.contains("- bash:"), "{narrowed_prompt}");
+    assert!(!narrowed_prompt.contains("- edit:"), "{narrowed_prompt}");
+    // `read` 还在，AGENTS.md 依旧压成路径
+    assert!(narrowed_prompt.contains("<project_context>"));
+
     match previous {
-        Some(value) => std::env::set_var("WORKMAN_AGENT_DIR", value),
-        None => std::env::remove_var("WORKMAN_AGENT_DIR"),
+        Some(value) => std::env::set_var("TOILER_AGENT_DIR", value),
+        None => std::env::remove_var("TOILER_AGENT_DIR"),
     }
     std::fs::remove_dir_all(&root).ok();
     std::fs::remove_dir_all(&agent_dir).ok();
     std::fs::remove_dir_all(&project).ok();
+}
+
+/// 新会话按前端的工具预设初始化，且提示词里的「用 bash 做 ls/rg/find」准则
+/// 只在没有 grep/find/ls 时出现（pi 的 `buildRules`）。
+///
+/// 前端 `ensureNewSession` 会带 `toolNames`（`getToolNamesForPreset`，默认
+/// `read/bash/edit/write`）。以前 `/api/agent/new` 忽略它，会话总是 7 个工具全开，
+/// 设置页选的预设形同虚设，pi 那条条件准则也永远不会出现。
+#[tokio::test]
+// 串行锁跨 await 持有是故意的：这些测试都在各自的 tokio runtime 线程上 block_on，
+// 持锁方不会被别人的 lock() 卡住（不会被反过来等待），而 `TOILER_AGENT_DIR` 这类
+// 进程级变量必须整段互斥。
+#[allow(clippy::await_holding_lock)]
+async fn new_session_honours_tool_names_and_bash_rule() {
+    let _env = env_guard();
+    let root = fixture_root("newtools");
+    let agent_dir = fixture_root("newtools-agent");
+    let project = fixture_root("newtools-project");
+    let previous = std::env::var("TOILER_AGENT_DIR").ok();
+    std::env::set_var("TOILER_AGENT_DIR", &agent_dir);
+    let router = app_with_two_models(&root, &project, &agent_dir);
+
+    let body = json!({
+        "cwd": project.to_string_lossy(),
+        "type": "ensure_session",
+        "toolNames": ["read", "bash", "edit", "write"],
+        "uiLocale": "zh-CN",
+    })
+    .to_string();
+    let created = call(
+        router.clone(),
+        "POST",
+        "/api/agent/new",
+        Some(body.as_str()),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let sid = created.json()["sessionId"].as_str().unwrap().to_string();
+
+    let listed = call(
+        router.clone(),
+        "POST",
+        &format!("/api/agent/{sid}"),
+        Some(r#"{"type":"get_tools"}"#),
+        &[],
+    )
+    .await;
+    let active: Vec<String> = listed.json()["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|tool| tool["active"] == true)
+        .map(|tool| tool["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        active,
+        vec![
+            "read",
+            "bash",
+            "edit",
+            "write",
+            "system_time",
+            "task_progress",
+            "ask_user"
+        ]
+    );
+
+    let state = call(
+        router.clone(),
+        "POST",
+        &format!("/api/agent/{sid}"),
+        Some(r#"{"type":"get_state"}"#),
+        &[],
+    )
+    .await;
+    let prompt = state.json()["data"]["systemPrompt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        prompt.contains("- 使用 bash 执行 ls、rg、find 等文件操作"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("- grep:"), "{prompt}");
+
+    // 切到 full 预设：grep/find/ls 回来了，那条准则就必须消失（不重复给建议）
+    let full = call(
+        router.clone(),
+        "POST",
+        &format!("/api/agent/{sid}"),
+        Some(
+            r#"{"type":"set_tools","toolNames":["bash","read","edit","write","grep","find","ls"]}"#,
+        ),
+        &[],
+    )
+    .await;
+    assert_eq!(full.status, StatusCode::OK, "{}", full.text());
+    let wide = call(
+        router.clone(),
+        "POST",
+        &format!("/api/agent/{sid}"),
+        Some(r#"{"type":"get_state"}"#),
+        &[],
+    )
+    .await;
+    let wide_prompt = wide.json()["data"]["systemPrompt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(wide_prompt.contains("- grep:"), "{wide_prompt}");
+    assert!(
+        !wide_prompt.contains("ls、rg、find"),
+        "有专用搜索工具时不该再让模型用 bash：{wide_prompt}"
+    );
+
+    match previous {
+        Some(value) => std::env::set_var("TOILER_AGENT_DIR", value),
+        None => std::env::remove_var("TOILER_AGENT_DIR"),
+    }
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+    std::fs::remove_dir_all(&project).ok();
+}
+
+/// `task_progress` 的任务列表要能从 transcript 恢复，并且必须出现在
+/// `get_state` 的两个扩展字段里 —— 前端任务框读的就是它们
+/// （`useAgentSession.ts` 的 `setExtensionStatuses` / `setExtensionWidgets`）。
+///
+/// pi 在 `session_start` 时从分支里的 `toolResult.details` 重建任务列表，
+/// 这里往会话文件里放一条真实的 `task_progress` 结果，验证同一条恢复路径。
+// 串行锁跨 await 持有是故意的（同其余改 `TOILER_AGENT_DIR` 的用例）。
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn task_progress_restores_from_transcript_into_get_state() {
+    let _env = env_guard();
+    let root = fixture_root("taskprogress");
+    let agent_dir = fixture_root("taskprogress-agent");
+    let previous = std::env::var("TOILER_AGENT_DIR").ok();
+    std::env::set_var("TOILER_AGENT_DIR", &agent_dir);
+
+    let entry = r#"{"type":"message","id":"tp1","parentId":null,"timestamp":"2026-11-10T06:41:46.000Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"task_progress","content":[{"type":"text","text":"已完成 0/2"}],"details":{"tasks":[{"id":"a","title":"写代码","status":"in_progress"},{"id":"b","title":"跑测试","status":"pending"}]},"isError":false,"timestamp":1794292906000}}"#;
+    write_session(&root, &[entry]);
+    let router = app_with_two_models(&root, Path::new("/tmp/demo"), &agent_dir);
+
+    let state = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"get_state"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(state.status, StatusCode::OK, "{}", state.text());
+    let data = state.json()["data"].clone();
+
+    let statuses = data["extensionStatuses"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(statuses.len(), 1, "{data}");
+    assert_eq!(statuses[0]["key"], "task-progress");
+    let text = statuses[0]["text"].as_str().unwrap();
+    assert!(text.starts_with("任务 0/2"), "{text}");
+    assert!(text.contains("正在执行：写代码"), "{text}");
+
+    let widgets = data["extensionWidgets"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(widgets.len(), 1, "{data}");
+    assert_eq!(widgets[0]["key"], "任务进度");
+    assert_eq!(widgets[0]["placement"], "aboveEditor");
+    let lines: Vec<&str> = widgets[0]["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|line| line.as_str())
+        .collect();
+    assert_eq!(lines, vec!["已完成 0/2", "● 写代码", "○ 跑测试"]);
+
+    // 没有提问时不该有悬挂的 UI 请求
+    assert!(
+        data["pendingUiRequests"].as_array().unwrap().is_empty(),
+        "{data}"
+    );
+
+    match previous {
+        Some(value) => std::env::set_var("TOILER_AGENT_DIR", value),
+        None => std::env::remove_var("TOILER_AGENT_DIR"),
+    }
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
 }
 
 /// 读一个 settings.json 文件（测试用；文件必须是合法 JSON 对象）。

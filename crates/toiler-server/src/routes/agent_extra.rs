@@ -153,7 +153,7 @@ fn is_bash_log_name(name: &str) -> bool {
 
 /// 复刻 `49180.j1` 的意图：这条路径必须出现在**本会话**的条目里。
 ///
-/// pi 只认 `role:"bashExecution"` 消息的顶层 `fullOutputPath`。workman 额外
+/// pi 只认 `role:"bashExecution"` 消息的顶层 `fullOutputPath`。toiler 额外
 /// 接受新工具形态（`role:"toolResult"` 的 `details.fullOutputPath`），因为
 /// 现在的 pi 把 bash 结果写成 toolResult —— 两种写法都要求路径属于该会话。
 fn belongs_to_session(state: &AppState, id: &str, path: &std::path::Path) -> bool {

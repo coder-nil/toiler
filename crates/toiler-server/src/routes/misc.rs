@@ -260,7 +260,7 @@ pub async fn mobile_state(
         "status": status,
         "updatedAt": chosen.get("modified").cloned().unwrap_or(Value::Null),
         "queue": queue.unwrap_or_else(|| json!({ "steering": 0, "followUp": 0 })),
-        "pendingUiRequest": Value::Null,
+        "pendingUiRequest": pending_ui_request(&state, &id),
         "messages": window.messages,
         "earlierCount": window.earlier_count,
     });
@@ -308,7 +308,7 @@ pub async fn default_cwd(State(state): State<AppState>, _trusted: Trusted) -> Re
 /// 少了这条路由，请求会落到静态兜底的 404 `{"error":"Not found"}`，前端把 error
 /// 原文画在开关下面——这就是设置页里那条莫名其妙的红字。
 ///
-/// workman 的 shell 工具是 bash（`rpi`），没有 PowerShell 通道，所以恒为关闭。
+/// toiler 的 shell 工具是 bash（`rpi`），没有 PowerShell 通道，所以恒为关闭。
 pub async fn tools_settings(_trusted: Trusted) -> Response {
     Json(json!({
         "isWindows": cfg!(windows),
@@ -322,7 +322,7 @@ pub async fn tools_settings_put() -> Response {
     (
         StatusCode::NOT_IMPLEMENTED,
         Json(json!({
-            "error": "workman 的 shell 工具是 bash，没有 PowerShell 通道可切换"
+            "error": "toiler 的 shell 工具是 bash，没有 PowerShell 通道可切换"
         })),
     )
         .into_response()
@@ -406,4 +406,23 @@ fn parse_mode(raw: Option<&str>, field: &str) -> Result<Option<QueueMode>, Strin
 
 fn bad_request(message: &str) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
+}
+
+/// 手机上要弹的待确认请求：`ask_user` 卡在提问上时，这一轮会一直挂着。
+///
+/// 与 pi 的 `pickPendingUiRequest` 同义：只取**第一个阻塞式**请求
+/// （`select` / `confirm` / `input` / `editor`），同时存在多个也只弹一个。
+fn pending_ui_request(state: &AppState, id: &str) -> Value {
+    state
+        .live()
+        .get(id)
+        .and_then(|agent| {
+            agent.pending_ui_requests().into_iter().find(|request| {
+                matches!(
+                    request.get("method").and_then(Value::as_str),
+                    Some("select" | "confirm" | "input" | "editor")
+                )
+            })
+        })
+        .unwrap_or(Value::Null)
 }

@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "crates/workman-poc",
-    "crates/workman-session",
-    "crates/workman-server",
-    "crates/workman-desktop",
+    "crates/toiler-poc",
+    "crates/toiler-session",
+    "crates/toiler-server",
+    "crates/toiler-desktop",
 ]
 resolver = "2"
 

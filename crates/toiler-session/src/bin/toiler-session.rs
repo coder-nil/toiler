@@ -1,11 +1,11 @@
-//! `workman-session` 的命令行入口。
+//! `toiler-session` 的命令行入口。
 //!
 //! ```bash
-//! workman-session init                     # 初始化 ~/.workman/agent/sessions
-//! workman-session list [root]              # 列会话（默认 ~/.workman，也可指向 ~/.pi）
-//! workman-session show <file>              # 看一个会话文件：header / 条目 / 名字
-//! workman-session load <file>              # 回放进 rpi 后端，报告跳过的行
-//! workman-session append <file> "文本"      # 加载后追加一轮 user+assistant 消息
+//! toiler-session init                     # 初始化 ~/.toiler/agent/sessions
+//! toiler-session list [root]              # 列会话（默认 ~/.toiler，也可指向 ~/.pi）
+//! toiler-session show <file>              # 看一个会话文件：header / 条目 / 名字
+//! toiler-session load <file>              # 回放进 rpi 后端，报告跳过的行
+//! toiler-session append <file> "文本"      # 加载后追加一轮 user+assistant 消息
 //! ```
 
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use anyhow::{bail, Context, Result};
 use rpi_agent::message::{AgentMessage, CustomMessage};
 use rpi_harness::session::types::{EntryQuery, SessionStorage};
 use rpi_harness::session::Session;
-use workman_session::{V3SessionRepo, V3SessionStorage, WorkmanHome};
+use toiler_session::{ToilerHome, V3SessionRepo, V3SessionStorage};
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -33,15 +33,15 @@ fn main() -> Result<()> {
             rest.get(1).map(String::as_str).unwrap_or("（空消息）"),
         ),
         "help" | "-h" | "--help" => {
-            println!("用法： workman-session <init|list|show|load|append|verify> [参数]");
+            println!("用法： toiler-session <init|list|show|load|append|verify> [参数]");
             Ok(())
         }
         other => bail!("未知子命令 {other}"),
     }
 }
 
-fn home() -> Result<WorkmanHome> {
-    WorkmanHome::discover()
+fn home() -> Result<ToilerHome> {
+    ToilerHome::discover()
 }
 
 fn init() -> Result<()> {
@@ -68,7 +68,7 @@ fn list(root: Option<&str>) -> Result<()> {
             .unwrap_or_else(|| "-".into());
         println!(
             "  {}  {:>6} 条  {}\n      {}\n      {}",
-            workman_session::ms_to_iso(info.created_at),
+            toiler_session::ms_to_iso(info.created_at),
             info.entries,
             name,
             info.cwd,
@@ -130,10 +130,7 @@ fn show(path: Option<&str>) -> Result<()> {
     let path = path.context("需要会话文件路径")?;
     let info = V3SessionStorage::inspect(path)?;
     println!("id        : {}", info.id);
-    println!(
-        "created_at: {}",
-        workman_session::ms_to_iso(info.created_at)
-    );
+    println!("created_at: {}", toiler_session::ms_to_iso(info.created_at));
     println!("cwd       : {}", info.cwd);
     println!("entries   : {}", info.entries);
     println!("name      : {}", info.name.unwrap_or_else(|| "-".into()));
@@ -173,12 +170,12 @@ fn append(path: Option<&str>, text: &str) -> Result<()> {
     let user = rpi_ai::types::UserMessage::new(text, now);
     let user_id = block_on(session.append_message(AgentMessage::User(user)))?;
 
-    let reply = format!("（workman 写入的占位回复）收到：{text}");
+    let reply = format!("（toiler 写入的占位回复）收到：{text}");
     // 用 pi 官方认可的自定义消息形状：role = "custom" + customType
     let assistant = CustomMessage::new(
         "custom",
         vec![rpi_ai::types::Content::text(&reply)],
-        serde_json::json!({ "customType": "workman", "display": true }),
+        serde_json::json!({ "customType": "toiler", "display": true }),
         now + 1,
     );
     let assistant_id = block_on(session.append_message(AgentMessage::Custom(assistant)))?;

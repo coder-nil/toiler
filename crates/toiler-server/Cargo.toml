@@ -1,19 +1,20 @@
 [package]
-name = "workman-server"
+name = "toiler-server"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "workman 的 HTTP/SSE 服务：复刻 pi-desktop 的 /api 契约"
+description = "toiler 的 HTTP/SSE 服务：复刻 pi-desktop 的 /api 契约"
 
 [dependencies]
-workman-session = { path = "../workman-session" }
+toiler-session = { path = "../toiler-session" }
 rpi-harness = { workspace = true }
 rpi-agent = { workspace = true }
 rpi-ai = { workspace = true, features = ["providers"] }
 rpi-tools = { workspace = true }
 
 axum = { version = "0.8", features = ["json", "query", "multipart"] }
+tokio-util = "0.7"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net", "signal", "process"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 serde = { workspace = true }

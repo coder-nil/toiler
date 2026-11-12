@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>workman 启动失败</title>
+<title>Toiler 启动失败</title>
 <style>
   body { font: 14px/1.7 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
          margin: 0; padding: 2rem; }
@@ -9,10 +9,10 @@
         border-radius: 10px; background: rgba(0, 0, 0, 0.06); }
   p { opacity: 0.7; }
 </style>
-<h2>workman 启动失败</h2>
+<h2>Toiler 启动失败</h2>
 <pre id="detail">（没有收到错误信息，请查看日志）</pre>
 <p>常见原因：会话根目录不可写、端口被占用、模型配置缺失。</p>
 <script>
-  const detail = window.__WORKMAN_STARTUP_ERROR__;
+  const detail = window.__TOILER_STARTUP_ERROR__;
   if (detail) document.getElementById("detail").textContent = String(detail);
 </script>

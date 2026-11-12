@@ -134,7 +134,7 @@ fn model_count(models: &Value, id: &str, builtin: Option<&BuiltinProvider>) -> u
 /// `GET /api/auth/providers` —— 「订阅（OAuth）」列表（pi 的 `buildOAuthProviderList`）。
 ///
 /// 形状：`{id, name, baseUrl?, usesCallbackServer, loggedIn, supportsApiKey}`。
-/// workman 没有 OAuth 登录流程，`loggedIn` 只可能来自别人写进 `auth.json` 的
+/// toiler 没有 OAuth 登录流程，`loggedIn` 只可能来自别人写进 `auth.json` 的
 /// `oauth` 凭据；前端点「Login」会拿到一条 SSE 错误事件（见 [`login_stream`]）。
 pub async fn providers(State(state): State<AppState>, _trusted: Trusted) -> Response {
     let rows: Vec<Value> = listing_inputs(&state)
@@ -294,13 +294,13 @@ fn remove_credential(store: &AuthStore, provider: &str, expect: &str, expected: 
 pub async fn login_unsupported(_trusted: Trusted, Path(provider): Path<String>) -> Response {
     error(
         StatusCode::NOT_IMPLEMENTED,
-        &format!("OAuth 登录未实现（{provider}）：workman 只支持 API Key"),
+        &format!("OAuth 登录未实现（{provider}）：toiler 只支持 API Key"),
     )
 }
 
 /// `GET /api/auth/login/{provider}` —— 前端用 `EventSource` 订阅登录过程。
 ///
-/// workman 不做 OAuth，但**必须**回一条 `{type:"error"}` 的 SSE 事件：前端只认
+/// toiler 不做 OAuth，但**必须**回一条 `{type:"error"}` 的 SSE 事件：前端只认
 /// 这个形状（`ModelsConfig.tsx` 的 `es.onmessage`），返回 501/405 会让面板显示
 /// 英文的「Connection lost」，用户不知道是能力缺失。
 pub async fn login_stream(
@@ -313,7 +313,7 @@ pub async fn login_stream(
     }
     let payload = json!({
         "type": "error",
-        "message": format!("OAuth 登录未实现（{provider}）：workman 只支持 API Key 与 Qoder CN 订阅"),
+        "message": format!("OAuth 登录未实现（{provider}）：toiler 只支持 API Key 与 Qoder CN 订阅"),
     })
     .to_string();
     // 一条事件后就结束流：前端收到 `error` 会自己 `close()`，不必再挂 keep-alive。
@@ -453,7 +453,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_key_roundtrip_never_returns_plaintext() {
-        let dir = std::env::temp_dir().join(format!("workman-route-auth-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-route-auth-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -556,7 +556,7 @@ mod tests {
     /// 「API Key」列表里退场（前端 `ApiKeyDetail` 只在非 oauth 时算已配置）。
     #[tokio::test]
     async fn oauth_credential_moves_a_provider_to_the_subscription_list() {
-        let dir = std::env::temp_dir().join(format!("workman-route-auth3-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-route-auth3-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -600,7 +600,7 @@ mod tests {
 
     #[tokio::test]
     async fn login_is_not_implemented() {
-        let dir = std::env::temp_dir().join(format!("workman-route-auth2-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-route-auth2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let (router, _) = app(&dir);

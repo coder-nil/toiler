@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn detects_project_resources() {
-        let dir = std::env::temp_dir().join(format!("workman-trust-probe-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-trust-probe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".pi")).unwrap();
         assert!(!requires_trust(dir.to_string_lossy().as_ref()));
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn stores_and_finds_nearest_decision() {
-        let dir = std::env::temp_dir().join(format!("workman-trust-store-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-trust-store-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = TrustStore::at(dir.join("trust.json"));
         let project = dir.join("proj/sub");

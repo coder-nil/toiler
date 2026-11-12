@@ -5,7 +5,7 @@
 //! `builtinProviders()`（1.4.0 版 42 家）**加上 pi-desktop 自己注册的 2 家**
 //! （`apisets` / `qoder-cn`，见本文末的 `DESKTOP_PROVIDERS`），一共 44 家。
 //! rpi 是 crates.io 上的 Rust 版，只有三种 `api` 协议的实现（见 `catalog.rs`）、
-//! **没有**目录接口，所以这份表只能写死在 workman 里。
+//! **没有**目录接口，所以这份表只能写死在 toiler 里。
 //!
 //! ## 数据来源
 //!
@@ -37,7 +37,7 @@
 //! | `oauth` | 是否进「订阅（OAuth）」列表、卡片标题 | `provider.auth.oauth.name` |
 //! | `models` | 卡片的「N models」（`modelCount`） | `getBuiltinModels(id)`（只取 chat 模型） |
 //!
-//! `models` **不是**模型目录：workman 的 `/api/models` 仍然只读 `models.json`
+//! `models` **不是**模型目录：toiler 的 `/api/models` 仍然只读 `models.json`
 //! （见 `catalog.rs`），这里存 id 列表只为算准 `modelCount`、并在用户自己往
 //! `models.json` 里写了同名 provider 时去重。
 //!

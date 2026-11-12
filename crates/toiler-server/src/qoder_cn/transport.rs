@@ -7,7 +7,7 @@
 //! reasoning 的解析全部复用，避免两份协议实现漂移。
 //!
 //! pi 是给 SDK 换掉 `fetch` 实现的；rpi 的 provider 不允许注入传输层，所以
-//! workman 把模型的 `baseUrl` 指向**自己的 HTTP 端点**
+//! toiler 把模型的 `baseUrl` 指向**自己的 HTTP 端点**
 //! （`http://127.0.0.1:<port>/qoder-cn/<token>`），由 [`super::proxy`] 调用本模块。
 
 use std::collections::HashMap;

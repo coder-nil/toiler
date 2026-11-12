@@ -1,4 +1,4 @@
-# workman
+# Toiler
 
 基于 [pi-rust (`rpi`)](https://crates.io/crates/rpi-harness) 的桌面编程工作台。
 `rpi` 作为**未修改的 crates.io 依赖**引入，升级只需改版本号。
@@ -8,7 +8,7 @@
 
 当前状态：**阶段 0–5 全部完成**（PoC → v3 会话层 → HTTP 服务 → 全部 route →
 Tauri 单进程 → 回归）。四项关键验证全部通过；560 个真实 pi 会话全量可读、
-可原地续聊，且 pi 自己能复读 workman 追加过的文件。
+可原地续聊，且 pi 自己能复读 toiler 追加过的文件。
 
 ## 四项验证结论
 
@@ -45,24 +45,24 @@ cargo build                   # 若 API 变了，编译器直接告诉你
 tools/frontend/build-release.sh
 
 # 启动：原生窗口，单进程，端口由内核分配
-./target/release/workman-desktop
+./target/release/toiler-desktop
 ```
 
-从 Finder 双击也行（`bundle` 见 `crates/workman-desktop/tauri.conf.json`）。
+从 Finder 双击也行（`bundle` 见 `crates/toiler-desktop/tauri.conf.json`）。
 启动后只监听 `127.0.0.1:<随机端口>`，手机访问要另外在设置页开关。
 
 ### 纯服务（开发 / 远程访问）
 
 ```bash
-cargo build --release -p workman-server
-./target/release/workman-server --port 8787 --cwd /path/to/project
+cargo build --release -p toiler-server
+./target/release/toiler-server --port 8787 --cwd /path/to/project
 ```
 
 打开 `http://127.0.0.1:8787/`。
 
-> `cargo build -p workman-server`（debug）内嵌的是 `crates/workman-server/frontend/`
+> `cargo build -p toiler-server`（debug）内嵌的是 `crates/toiler-server/frontend/`
 > 的占位页 —— API 全可用，但没有界面。要界面必须走
-> `tools/frontend/build-release.sh`（它设 `WORKMAN_FRONTEND_DIR` 后再编译）。
+> `tools/frontend/build-release.sh`（它设 `TOILER_FRONTEND_DIR` 后再编译）。
 
 参数：
 
@@ -70,13 +70,13 @@ cargo build --release -p workman-server
 |---|---|---|
 | `--host` | `127.0.0.1` | 监听地址；改 `0.0.0.0` 会对局域网开放（需自行设密码） |
 | `--port` | `8787` | 端口；`0` = 内核分配 |
-| `--sessions-root` | `~/.agents/workman/sessions` | 会话根 |
+| `--sessions-root` | `~/.agents/toiler/sessions` | 会话根 |
 | `--cwd` | 进程当前目录 | 默认项目目录 |
 
 数据位置（详见 `docs/contracts/README.md`）：
 
 ```
-~/.agents/workman/
+~/.agents/toiler/
 ├── configs/      auth.json / models.json / settings.json / trust.json / desktop-access*
 ├── sessions/     会话
 └── work.sqlite   项目列表
@@ -87,8 +87,8 @@ cargo build --release -p workman-server
 ### 诊断工具
 
 ```bash
-cargo run -p workman-poc --bin workman-poc -- info     # 只做 models.json → rpi 的映射
-cargo run -p workman-poc --bin v3probe                # 扫描 pi 会话的 v3 兼容性
+cargo run -p toiler-poc --bin toiler-poc -- info     # 只做 models.json → rpi 的映射
+cargo run -p toiler-poc --bin v3probe                # 扫描 pi 会话的 v3 兼容性
 ```
 
 ## 关键发现
@@ -165,16 +165,16 @@ if version != 4 {
 | OAuth 登录 | ✅ | 仅扩展内 | 只有 `qoder-cn` 自己实现了（见 `qoder_cn/`） |
 | 内置工具 | read/write/edit/bash/grep/find/ls… | 同左 + powershell | ✅ 够用 |
 
-## 阶段 1：v3 会话层（`crates/workman-session`）
+## 阶段 1：v3 会话层（`crates/toiler-session`）
 
-目标：不迁移、不改格式，**直接读写 pi 的 v3 `.jsonl`**，让 pi 与 workman 并行打开同一份历史。
+目标：不迁移、不改格式，**直接读写 pi 的 v3 `.jsonl`**，让 pi 与 toiler 并行打开同一份历史。
 
 ```bash
-cargo run -p workman-session --bin workman-session -- init      # 初始化 ~/.workman/agent/sessions
-cargo run -p workman-session --bin workman-session -- list       # 列会话
-cargo run -p workman-session --bin workman-session -- load <file>
-cargo run -p workman-session --bin workman-session -- append <file> "文本"   # 追加一轮
-cargo run -p workman-session --bin workman-session -- verify ~/.pi/agent/sessions  # 全量回归
+cargo run -p toiler-session --bin toiler-session -- init      # 初始化 ~/.toiler/agent/sessions
+cargo run -p toiler-session --bin toiler-session -- list       # 列会话
+cargo run -p toiler-session --bin toiler-session -- load <file>
+cargo run -p toiler-session --bin toiler-session -- append <file> "文本"   # 追加一轮
+cargo run -p toiler-session --bin toiler-session -- verify ~/.pi/agent/sessions  # 全量回归
 ```
 
 ### 实现骨架：委托 + 写穿
@@ -210,19 +210,19 @@ cargo run -p workman-session --bin workman-session -- verify ~/.pi/agent/session
 | 项 | 结果 |
 |---|---|
 | 554 个真实 pi 会话全量回放 | 554/554，102,572 条目，0 行跳过 |
-| 复制真实会话到 `~/.workman` | 可列出 / 可加载 / 可追加 |
+| 复制真实会话到 `~/.toiler` | 可列出 / 可加载 / 可追加 |
 | 追加后老字节 | 完全一致（append-only） |
 | pi 侧复读追加后的文件 | `loadEntriesFromFile` 270 条全解析；`buildSessionContext` 纳入追加的两条 |
 
-## 阶段 2：HTTP/SSE 服务（`crates/workman-server`）
+## 阶段 2：HTTP/SSE 服务（`crates/toiler-server`）
 
 把 pi-desktop 的 `/api` 契约用 axum 复刻。**契约从 `.next` 编译产物逐字逆向**，
 结论固化在 [`docs/contracts/README.md`](./docs/contracts/README.md)，逆向工具在
 `tools/pi-contract/extract.py`（可重新抽任意 route / 共享模块）。
 
 ```bash
-cargo run -p workman-server -- --port 8787          # 会话根默认 ~/.pi/agent/sessions
-cargo run -p workman-server --bin catalog-probe     # 只看 models.json → provider 映射
+cargo run -p toiler-server -- --port 8787          # 会话根默认 ~/.pi/agent/sessions
+cargo run -p toiler-server --bin catalog-probe     # 只看 models.json → provider 映射
 ```
 
 ### 关键事实（与直觉相反的两处）
@@ -245,7 +245,7 @@ POST /api/agent/{id} {type:"prompt"}
 ```
 
 默认模型取「上次用的模型」（最近会话里最后一个 `model_change`），可用
-`WORKMAN_MODEL=provider/id` 覆盖。
+`TOILER_MODEL=provider/id` 覆盖。
 
 ### 已验收
 
@@ -263,11 +263,11 @@ POST /api/agent/{id} {type:"prompt"}
 `docs/contracts/README.md` 的「实现进度」表已全量更新。要点：
 
 - **配置自己的目录**：`~/.agents/` 放跨工具通用的东西（`skills/`/`mcp/`/
-  `commands/`/`tools/`），`~/.agents/workman/` 放 workman 专属的
+  `commands/`/`tools/`），`~/.agents/toiler/` 放 toiler 专属的
   `configs/`（auth/models/settings/trust/desktop-access）、`sessions/`、
   `plugins/` 与 `work.sqlite`。首次启动从 `~/.pi/agent` **复制**一份过来
   （旧文件保留不删），之后各管各的。
-- **项目库独立**：`~/.agents/workman/work.sqlite`（`added_projects` /
+- **项目库独立**：`~/.agents/toiler/work.sqlite`（`added_projects` /
   `app_preferences`）；首次创建时从旧的 `~/.pi/agent/pi.sqlite` **只读**
   导入一次，之后两边各自独立演进。
 - **git 走 CLI**：20 个动作、worktree、diff 全部包在 `gitsvc.rs`，每个仓库一把锁；
@@ -279,7 +279,7 @@ POST /api/agent/{id} {type:"prompt"}
 
 ```bash
 cargo test                      # 101 个测试
-cargo run -p workman-server -- --port 8787
+cargo run -p toiler-server -- --port 8787
 curl -s "localhost:8787/api/git?cwd=$PWD" | jq .
 curl -s "localhost:8787/api/auth/providers" | jq .
 ```
@@ -290,37 +290,37 @@ curl -s "localhost:8787/api/auth/providers" | jq .
 计划砍掉）、除 `qoder-cn` 之外的 OAuth 登录（返回 501）。前端联调已在阶段 4 打通（见下）。
 
 `qoder-cn`（Qoder 国内版订阅）是完整移植：设备码登录、COSY 签名、请求体改写、
-SSE 信封解包、15 个内置模型 —— 见 `crates/workman-server/src/qoder_cn/`。
+SSE 信封解包、15 个内置模型 —— 见 `crates/toiler-server/src/qoder_cn/`。
 rpi 的 provider 不允许注入传输层，所以模型的 `baseUrl` 指向本进程的
 `/qoder-cn/<token>/v1/chat/completions`，由它完成改写（等价 pi 的 `withQoderCnFetch`）。
 
 供应商目录（pi 面板里那 44 家）已经补齐：写死在
-`crates/workman-server/src/builtin_providers.rs`（pi SDK 目录 42 家 + pi-desktop
+`crates/toiler-server/src/builtin_providers.rs`（pi SDK 目录 42 家 + pi-desktop
 自注册的 `apisets` / `qoder-cn`），由 `/api/auth/providers`（10 家订阅）
 与 `/api/auth/all-providers`（42 家 API Key）输出。但**内置模型目录仍没带过来**：
 填了 API Key 之后，模型 id 还得自己写进 `models.json`。
 
-## 阶段 4：Tauri 单进程（`crates/workman-desktop`）
+## 阶段 4：Tauri 单进程（`crates/toiler-desktop`）
 
 一个可执行文件里同时跑壳、后端与前端：**没有 node，没有子进程**。
 
 ```bash
 # 不嵌真实前端（二进制里是占位页，API 照常可用）
-cargo run -p workman-desktop
+cargo run -p toiler-desktop
 
 # 嵌 pi 的静态导出产物后构建 release
 tools/frontend/build-release.sh /path/to/pi-desktop/src-tauri/frontend
-./target/release/workman-desktop
+./target/release/toiler-desktop
 ```
 
 ### 结构
 
 | 模块 | 作用 |
 |---|---|
-| `workman_server::boot` | 启动引导：会话根 → 模型目录 → `AppState` → `bind` / `serve`；CLI 与桌面壳共用 |
-| `workman_server::assets` | `include_dir!` 嵌前端；`_next/static` immutable、目录 index、RSC `.txt`、客户端路由兜底 |
-| `workman-desktop::server` | 把 `bind(127.0.0.1:0)` → `tauri::async_runtime::spawn(serve)`，顺手预热会话列表 |
-| `workman-desktop::{lan_proxy,tunnel}` | 从 pi 原样移植的手机访问件（局域网反代 + Cloudflare 隧道） |
+| `toiler_server::boot` | 启动引导：会话根 → 模型目录 → `AppState` → `bind` / `serve`；CLI 与桌面壳共用 |
+| `toiler_server::assets` | `include_dir!` 嵌前端；`_next/static` immutable、目录 index、RSC `.txt`、客户端路由兜底 |
+| `toiler-desktop::server` | 把 `bind(127.0.0.1:0)` → `tauri::async_runtime::spawn(serve)`，顺手预热会话列表 |
+| `toiler-desktop::{lan_proxy,tunnel}` | 从 pi 原样移植的手机访问件（局域网反代 + Cloudflare 隧道） |
 
 三处与 pi 的关键差别：
 

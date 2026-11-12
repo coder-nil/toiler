@@ -1,21 +1,21 @@
 [package]
-name = "workman-desktop"
+name = "toiler-desktop"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "workman 的桌面壳：Tauri 单进程（axum 同进程 + 内嵌前端）"
-default-run = "workman-desktop"
+description = "toiler 的桌面壳：Tauri 单进程（axum 同进程 + 内嵌前端）"
+default-run = "toiler-desktop"
 
 [lib]
-name = "workman_desktop_lib"
+name = "toiler_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-workman-server = { path = "../workman-server" }
+toiler-server = { path = "../toiler-server" }
 tauri = { version = "2.0.0", features = ["unstable"] }
 # pi 前端在 __PI_WEB_DESKTOP__ 为 true 时走 tauri 通知（lib/desktop-notifications.ts）
 tauri-plugin-notification = "2"

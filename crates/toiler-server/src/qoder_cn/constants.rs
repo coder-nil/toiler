@@ -49,7 +49,7 @@ pub const USERINFO_PATH: &str = "/api/v1/userinfo";
 
 /// 模型注册用的 baseUrl。
 ///
-/// 注意：workman 里这个值**不是**常量 —— 它指向本机转发端点
+/// 注意：toiler 里这个值**不是**常量 —— 它指向本机转发端点
 /// （`http://127.0.0.1:<port>/qoder-cn/<token>`），因为 rpi 的 provider 不允许
 /// 注入传输层，只能把请求打到自己的 HTTP 处理里再改写（等价于 pi 的
 /// `withQoderCnFetch()`）。

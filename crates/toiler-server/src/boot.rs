@@ -1,8 +1,8 @@
 //! 服务引导：把「会话根 → 模型目录 → `AppState` → 监听」这套启动流程从 `main.rs`
 //! 抽出来，供两种宿主共用：
 //!
-//! * `workman-server` CLI（`main.rs`）
-//! * `workman-desktop` 的 Tauri 单进程壳（阶段 4，跑在 Tauri 自己的 tokio runtime 上）
+//! * `toiler-server` CLI（`main.rs`）
+//! * `toiler-desktop` 的 Tauri 单进程壳（阶段 4，跑在 Tauri 自己的 tokio runtime 上）
 //!
 //! 这里只做与协议无关的事：路径、默认值、state 组装、端口绑定、优雅退出。
 //! 路由（含静态资源）由宿主自己组合，见 [`crate::routes::router`]。
@@ -17,10 +17,10 @@ use tokio::sync::oneshot;
 use crate::catalog::ModelCatalog;
 use crate::state::AppState;
 
-/// 默认会话根：`<workmanHome>/sessions`（即 `~/.agents/workman/sessions`）。
+/// 默认会话根：`<toilerHome>/sessions`（即 `~/.agents/toiler/sessions`）。
 ///
 /// 首次启动时 [`crate::paths::seed_from_pi_if_needed`] 会把 pi 的会话复制一份
-/// 过来，所以「历史会话立刻可见」这一点不变，只是副本归 workman 自己管。
+/// 过来，所以「历史会话立刻可见」这一点不变，只是副本归 toiler 自己管。
 pub fn default_sessions_root() -> Result<PathBuf> {
     Ok(crate::paths::sessions_dir())
 }
@@ -97,7 +97,7 @@ pub struct BootOptions {
 }
 
 impl BootOptions {
-    /// 从环境变量推导（`WORKMAN_SESSIONS_ROOT`，其余同 CLI 默认）。
+    /// 从环境变量推导（`TOILER_SESSIONS_ROOT`，其余同 CLI 默认）。
     pub fn from_env() -> Result<Self> {
         Ok(Self {
             sessions_root: sessions_root_from_env()?,
@@ -110,7 +110,7 @@ impl BootOptions {
 ///
 /// 这是唯一一处创建会话根的地方：桌面壳与 CLI 都走它，避免两边各建一次。
 pub fn prepare_state(options: &BootOptions) -> Result<AppState> {
-    // 首次启动：把 pi 的配置与会话复制一份到 `~/.agents/workman/`。
+    // 首次启动：把 pi 的配置与会话复制一份到 `~/.agents/toiler/`。
     //
     // 必须在载入 models.json 之前做 —— 否则第一次启动会读到空的配置目录，
     // 表现为「模型列表是空的、要重填 API Key」。
@@ -119,7 +119,7 @@ pub fn prepare_state(options: &BootOptions) -> Result<AppState> {
             tracing::info!(
                 "已从 {} 初始化 {}（配置 {} 个、会话 {} 个；旧文件保留）",
                 crate::paths::legacy_pi_agent_dir().display(),
-                crate::paths::workman_home().display(),
+                crate::paths::toiler_home().display(),
                 report.configs.len(),
                 report.sessions
             );
@@ -180,7 +180,7 @@ pub async fn serve(
 /// 打包好的日志（CLI 与桌面壳共用同一套 tracing 过滤规则）。
 pub fn init_tracing() {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "workman_server=info,tower_http=warn".into());
+        .unwrap_or_else(|_| "toiler_server=info,tower_http=warn".into());
     let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }
 
@@ -189,16 +189,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_sessions_root_lives_under_workman_home() {
+    fn default_sessions_root_lives_under_toiler_home() {
         // 只测纯函数分支，避免改进程环境导致并发测试互相影响。
         let root = default_sessions_root().unwrap();
         assert_eq!(root.file_name().unwrap(), "sessions");
-        assert_eq!(root.parent().unwrap(), crate::paths::workman_home());
+        assert_eq!(root.parent().unwrap(), crate::paths::toiler_home());
     }
 
     #[test]
     fn prepare_state_creates_sessions_root() {
-        let dir = std::env::temp_dir().join(format!("workman-boot-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-boot-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let options = BootOptions {
             sessions_root: dir.clone(),

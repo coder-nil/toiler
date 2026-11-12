@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "workman",
+  "productName": "Toiler",
   "version": "0.1.0",
-  "identifier": "com.workman.desktop",
+  "identifier": "com.toiler.desktop",
   "build": {
     "frontendDist": "frontend"
   },

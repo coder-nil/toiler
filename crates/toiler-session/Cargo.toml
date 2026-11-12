@@ -1,10 +1,10 @@
 [package]
-name = "workman-session"
+name = "toiler-session"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "workman 的会话层：直接读写 pi 的 v3 会话文件（SessionStorage 实现）"
+description = "toiler 的会话层：直接读写 pi 的 v3 会话文件（SessionStorage 实现）"
 
 [dependencies]
 rpi-harness = { workspace = true }

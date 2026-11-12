@@ -8,7 +8,7 @@
 #   tools/run-desktop.sh --foreground         # 前台运行，日志直接打到终端
 #
 # 为什么必须先编译再启动：
-# `workman-desktop` 是单二进制 —— pi 的前端产物和 axum 服务都 `include_dir!`
+# `toiler-desktop` 是单二进制 —— pi 的前端产物和 axum 服务都 `include_dir!`
 # 嵌在里面。改了 Rust 代码（或换了前端产物）却不重编，跑的还是旧代码，表现
 # 就是「明明修了却还是老 bug」。本脚本默认每次都走一遍增量编译，就是为了
 # 把这个坑堵死；编译失败时**绝不**去启动旧二进制。
@@ -18,8 +18,8 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-bin="$root/target/release/workman-desktop"
-log_dir="$root/.workman-local"
+bin="$root/target/release/toiler-desktop"
+log_dir="$root/.toiler-local"
 log="$log_dir/desktop.log"
 
 build=1
@@ -83,7 +83,7 @@ fi
 # ---------------------------------------------------------------------------
 # 不先停会同时开出两个窗口，而旧窗口跑的是旧代码 —— 正是「改了没生效」的
 # 经典错觉。用 SIGTERM 优雅退出：desktop 侧会回收 axum 服务、手机访问代理与
-# 隧道（见 `workman-desktop/src/lib.rs::shutdown`），会话文件是 append-only，
+# 隧道（见 `toiler-desktop/src/lib.rs::shutdown`），会话文件是 append-only，
 # 不会因此损坏。
 existing="$(pgrep -f "$bin" 2>/dev/null || true)"
 if [[ -n "$existing" ]]; then

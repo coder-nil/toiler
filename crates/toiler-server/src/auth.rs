@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn stores_and_removes_api_key() {
-        let dir = std::env::temp_dir().join(format!("workman-auth-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-auth-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = AuthStore::new(dir.join("auth.json"));
 
@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn file_mode_is_0600() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("workman-auth-mode-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-auth-mode-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = AuthStore::new(dir.join("auth.json"));
         store
@@ -436,13 +436,13 @@ mod tests {
 
     #[test]
     fn resolves_env_templates() {
-        std::env::set_var("WORKMAN_TEST_KEY", "abc123");
+        std::env::set_var("TOILER_TEST_KEY", "abc123");
         assert!(matches!(
-            resolve_key_config(&serde_json::json!("$WORKMAN_TEST_KEY")),
+            resolve_key_config(&serde_json::json!("$TOILER_TEST_KEY")),
             ResolvedKey::Literal(v) if v == "abc123"
         ));
         assert!(matches!(
-            resolve_key_config(&serde_json::json!("x-${WORKMAN_TEST_KEY}-y")),
+            resolve_key_config(&serde_json::json!("x-${TOILER_TEST_KEY}-y")),
             ResolvedKey::Literal(v) if v == "x-abc123-y"
         ));
         assert!(matches!(
@@ -450,14 +450,14 @@ mod tests {
             ResolvedKey::Command(c) if c == "op read key"
         ));
         assert!(matches!(
-            resolve_key_config(&serde_json::json!("$WORKMAN_NOPE_MISSING")),
+            resolve_key_config(&serde_json::json!("$TOILER_NOPE_MISSING")),
             ResolvedKey::Missing
         ));
     }
 
     #[test]
     fn status_prefers_stored_then_models_json() {
-        let dir = std::env::temp_dir().join(format!("workman-auth-status-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-auth-status-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = AuthStore::new(dir.join("auth.json"));
 

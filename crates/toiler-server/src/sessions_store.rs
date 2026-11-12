@@ -9,7 +9,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use workman_session::V3Header;
+use toiler_session::V3Header;
 
 use crate::session_view;
 
@@ -58,7 +58,7 @@ impl RawSession {
             let ts = entry
                 .get("timestamp")
                 .and_then(|v| match v {
-                    Value::String(s) => workman_session::iso_to_ms(s),
+                    Value::String(s) => toiler_session::iso_to_ms(s),
                     Value::Number(n) => n.as_i64(),
                     _ => None,
                 })
@@ -299,11 +299,11 @@ impl SessionList {
                 obj.insert("name".into(), json!(s.name()));
                 obj.insert(
                     "created".into(),
-                    json!(workman_session::ms_to_iso(s.header.created_at)),
+                    json!(toiler_session::ms_to_iso(s.header.created_at)),
                 );
                 obj.insert(
                     "modified".into(),
-                    json!(workman_session::ms_to_iso(s.mtime_ms)),
+                    json!(toiler_session::ms_to_iso(s.mtime_ms)),
                 );
                 obj.insert("messageCount".into(), json!(s.message_count()));
                 obj.insert(
@@ -349,7 +349,7 @@ impl SessionList {
                     continue;
                 }
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if workman_session::home::session_id_from_file_name(name) == Some(id) {
+                    if toiler_session::home::session_id_from_file_name(name) == Some(id) {
                         return Some(path);
                     }
                 }
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn reads_a_real_session_shape() {
-        let dir = std::env::temp_dir().join(format!("workman-list-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-list-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let session_dir = dir.join("--tmp-demo--");
         std::fs::create_dir_all(&session_dir).unwrap();

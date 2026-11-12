@@ -4,6 +4,7 @@ pub mod auth;
 pub mod boot;
 pub mod builtin_providers;
 pub mod catalog;
+pub mod desktop_tools;
 pub mod docx;
 pub mod filemeta;
 pub mod gitsvc;
@@ -25,10 +26,10 @@ pub mod tools;
 pub mod trust;
 
 /// 当前时间的 ISO-8601（毫秒精度，`Z` 结尾）——与 pi 写进文件的时间戳同格式。
-pub fn workman_now_iso() -> String {
+pub fn toiler_now_iso() -> String {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    workman_session::ms_to_iso(ms)
+    toiler_session::ms_to_iso(ms)
 }

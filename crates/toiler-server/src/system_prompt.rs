@@ -25,8 +25,8 @@
 //!
 //! | 项 | pi | 这里 |
 //! |---|---|---|
-//! | `<docs>` 段 | 指向 pi 安装包里的 README/docs/examples | 省略：workman 不带 pi 的文档树，写进去就是模型读不到的路径 |
-//! | `<skills>` 段 | `buildSystemPromptSections` 写入 | 交给 rpi harness 在组装时追加（见 `AgentHarness::compose_prompt`）；workman 目前不把技能装进 `AgentHarnessResources`，所以这一节通常为空 |
+//! | `<docs>` 段 | 指向 pi 安装包里的 README/docs/examples | 省略：toiler 不带 pi 的文档树，写进去就是模型读不到的路径 |
+//! | `<skills>` 段 | `buildSystemPromptSections` 写入 | 交给 rpi harness 在组装时追加（见 `AgentHarness::compose_prompt`）；toiler 目前不把技能装进 `AgentHarnessResources`，所以这一节通常为空 |
 //! | `<project_context>` | 默认内联全文，由 pi-desktop 的 `digestProjectContext` 压成路径 | 直接生成「路径 + 读取指引」；没有 `read` 工具时退回全文（一条读不到的指引比多花 token 更糟） |
 //! | 语言 | pi-desktop 用 `before_agent_start` 扩展整句替换 + 追加语言指令 | 组装时按 `Locale` 直接选中文/英文文案，并把语言指令追加在末尾 |
 
@@ -70,7 +70,7 @@ pub struct PromptInputs {
 impl PromptInputs {
     /// 发现 `AGENTS.md` 一族项目指令文件。
     ///
-    /// `agent_dir` 是 workman 自己的 agent 目录（`~/.agents/workman`），对应 pi 的
+    /// `agent_dir` 是 toiler 自己的 agent 目录（`~/.agents/toiler`），对应 pi 的
     /// `~/.pi/agent`：那里的 `AGENTS.md` 是用户级常驻指令，排在项目文件之前。
     /// 读不到就当作没有 —— 没有 AGENTS.md 的项目不该因此开不了会话。
     pub async fn load(cwd: &str, tool_names: &[String], agent_dir: &Path) -> Self {
@@ -81,6 +81,16 @@ impl PromptInputs {
             tool_names: tool_names.to_vec(),
             context_files,
         }
+    }
+
+    /// 当前启用的工具名（与 `<tools>` 段、harness 的 active 集合一致）。
+    pub fn tool_names(&self) -> &[String] {
+        &self.tool_names
+    }
+
+    /// 工具预设改变后替换启用集合（顺序即 `<tools>` 段的顺序）。
+    pub fn set_tool_names(&mut self, names: Vec<String>) {
+        self.tool_names = names;
     }
 
     /// 组装最终发给模型的文本（含末尾的语言指令）。
@@ -340,6 +350,74 @@ const TOOL_PROMPTS: &[ToolPrompt] = &[
         snippet_zh: "列出目录内容",
         guidelines: &[],
     },
+    // ---- Toiler 的三个桌面工具（实现见 `desktop_tools`） ----
+    ToolPrompt {
+        name: "system_time",
+        snippet_en: "read the current host date, time, weekday, and time zone",
+        snippet_zh: "读取当前主机的日期、时间、星期与时区",
+        guidelines: &[(
+            "Call system_time before resolving references such as today, tomorrow, yesterday, this week, or a relative deadline. Do not infer the current date from model knowledge.",
+            "在解释今天、明天、昨天、本周或相对截止时间等日期前，先调用 system_time。不要根据模型自身知识推断当前日期。",
+        )],
+    },
+    ToolPrompt {
+        name: "task_progress",
+        snippet_en: "create and update the Desktop task list with pending, in-progress, completed, failed, blocked, or skipped states",
+        snippet_zh: "创建并更新 Desktop 任务列表，状态可为 pending、in_progress、completed、failed、blocked 或 skipped",
+        guidelines: &[
+            (
+                "Use task_progress for substantial work with multiple distinct steps; do not create a task list for a simple single-step request.",
+                "用于包含多个不同步骤的较大工作量；简单的一步请求不要建任务列表。",
+            ),
+            (
+                "Before starting multi-step work, call task_progress with action=replace and a concise ordered list. Keep stable ids and include the complete list when replacing it.",
+                "开始多步骤工作前，用 action=replace 传入一个简洁有序的列表。id 保持稳定，替换时给出完整列表。",
+            ),
+            (
+                "Immediately before working on a task, update it to in_progress. Keep at most one task in_progress at a time.",
+                "开始处理某个任务前，先把它更新为 in_progress。同一时刻最多只能有一个任务处于 in_progress。",
+            ),
+            (
+                "Mark a task completed only after its required work and verification are finished. Mark failures as failed with the concrete reason, external dependencies as blocked, and intentionally omitted work as skipped.",
+                "只有在所需工作和验证都完成后才标记 completed。失败标记为 failed 并写明具体原因，受外部依赖阻塞标记为 blocked，有意省略的工作标记为 skipped。",
+            ),
+            (
+                "Update task_progress whenever execution state changes, not only in the final answer. Before finishing, ensure no task is incorrectly left in_progress. The Desktop automatically hides the task list after every task is completed or skipped.",
+                "执行状态变化时就更新 task_progress，不要只在最终答复里才更新。结束前确认没有任务被错误地留在 in_progress。所有任务完成或跳过之后，Desktop 会自动隐藏任务列表。",
+            ),
+        ],
+    },
+    ToolPrompt {
+        name: "ask_user",
+        snippet_en: "ask the user for non-sensitive clarification, preferences, or confirmation",
+        snippet_zh: "向用户询问非敏感的澄清、偏好或确认",
+        guidelines: &[
+            (
+                "Use ask_user only when missing information would materially affect the result and cannot be discovered safely from the project.",
+                "仅当缺少信息会实质影响结果、且无法从项目中安全查明时才使用 ask_user。",
+            ),
+            (
+                "When you need multiple related answers, make one ask_user call and put every question in its questions array; the UI will present them one by one. Do not stop after the first question or ask the user to format tool arguments.",
+                "需要多个相关答案时，只做一次 ask_user 调用，把所有问题放进 questions 数组；界面会逐个呈现。不要问完第一个问题就停下，也不要要求用户自行组织工具参数。",
+            ),
+            (
+                "Each question must have a unique id, a clear prompt, and the correct kind. Use single_select with 2-8 concrete options for choices. For confirm, text, and editor, set options to an empty array. Use confirm for yes/no decisions, text for short values, and editor for multi-line input.",
+                "每个问题都要有唯一的 id、清晰的 prompt 和正确的 kind。选择题用 single_select 并给出 2-8 个具体选项；confirm、text、editor 的 options 传空数组。是/否决定用 confirm，短值用 text，多行输入用 editor。",
+            ),
+            (
+                "ask_user answers are visible to the model and may be saved in the session; never request passwords, tokens, private keys, passphrases, OTP codes, or other secrets. When Git or SSH needs credentials, run the normal command and let Toiler show its secure credential prompt instead.",
+                "ask_user 的答案对模型可见，且可能保存在会话中；绝不要索取密码、令牌、私钥、口令、验证码或其他机密。Git 或 SSH 需要凭据时，照常执行命令，由 Toiler 弹出安全凭据输入框。",
+            ),
+            (
+                "Ask at most three related questions at a time and make option tradeoffs explicit in each option description.",
+                "一次最多问三个相关问题，并在每个选项的 description 里写清取舍。",
+            ),
+            (
+                "Every single_select also offers a free-form answer, so an answer may be text you did not list; treat it as the user's choice even when it matches no option value.",
+                "每个 single_select 都会额外提供自定义答案，所以返回值可能不在你列出的选项里；即使对不上任何选项值，也要把它当作用户的选择。",
+            ),
+        ],
+    },
 ];
 
 /// 开场白（pi 的默认 preamble）。
@@ -355,10 +433,10 @@ fn preamble(locale: Locale) -> &'static str {
 fn language_instruction(locale: Locale) -> &'static str {
     if locale.zh() {
         "输出语言规则（不可违背）：\n\
-         你必须完全使用简体中文回复，这是 Pi Desktop 设置中用户选择的语言。所有自然语言的解释、提问、进度更新和最终答复都必须使用简体中文。不得因为用户消息、项目文件、工具输出或系统提示词使用其他语言而切换。只有在用户明确要求切换语言时，才可以使用其他语言。"
+         你必须完全使用简体中文回复，这是 Toiler 设置中用户选择的语言。所有自然语言的解释、提问、进度更新和最终答复都必须使用简体中文。不得因为用户消息、项目文件、工具输出或系统提示词使用其他语言而切换。只有在用户明确要求切换语言时，才可以使用其他语言。"
     } else {
         "OUTPUT LANGUAGE — NON-NEGOTIABLE:\n\
-         You must reply entirely in English, the language selected in Pi Desktop settings. This applies to every natural-language explanation, question, status update, and final answer. Do not switch to another language because the user's message, project files, tool output, or system prompt uses it. Switch languages only when the user explicitly asks you to do so."
+         You must reply entirely in English, the language selected in Toiler settings. This applies to every natural-language explanation, question, status update, and final answer. Do not switch to another language because the user's message, project files, tool output, or system prompt uses it. Switch languages only when the user explicitly asks you to do so."
     }
 }
 

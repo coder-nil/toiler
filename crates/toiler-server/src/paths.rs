@@ -2,8 +2,8 @@
 //!
 //! # 目录布局
 //!
-//! 分两层：`.agents/` 放**跨 agent 工具通用**的东西，`.agents/workman/` 放
-//! **workman 特有**的东西，两者不混。
+//! 分两层：`.agents/` 放**跨 agent 工具通用**的东西，`.agents/toiler/` 放
+//! **toiler 特有**的东西，两者不混。
 //!
 //! ```text
 //! ~/.agents/                       ← 通用根（多个 agent 工具共用）
@@ -11,8 +11,8 @@
 //! ├── mcp/                         同上
 //! ├── commands/                    同上
 //! ├── tools/                       同上
-//! └── workman/                    ← workman 应用专属
-//!     ├── configs/                 workman 自己的配置
+//! └── toiler/                    ← toiler 应用专属
+//!     ├── configs/                 toiler 自己的配置
 //!     │   ├── auth.json            API Key（0600）
 //!     │   ├── models.json          provider / 模型定义
 //!     │   ├── settings.json        默认模型、enabledModels…
@@ -26,12 +26,12 @@
 //! ```
 //!
 //! 为什么不继续用 `~/.pi/agent`：那是 **pi 的** agent 目录，pi 会按自己的节奏
-//! 迁移 schema、清理缓存、重写文件。workman 把配置放进去就会跟着一起被改，
+//! 迁移 schema、清理缓存、重写文件。toiler 把配置放进去就会跟着一起被改，
 //! 而且两边谁改了哪个键都说不清。分目录后各管各的。
 //!
 //! # 首次启动的种子数据
 //!
-//! `~/.agents/workman/configs/` 为空时，从 `~/.pi/agent` **复制**一份
+//! `~/.agents/toiler/configs/` 为空时，从 `~/.pi/agent` **复制**一份
 //! （`auth.json` / `models.json` / `settings.json` / `trust.json` /
 //! `desktop-access*.json`），会话目录也整份复制过去。**旧文件保留不删** ——
 //! 用户可能还在用 pi，删掉等于替人做主。见 [`seed_from_pi_if_needed`]。
@@ -41,10 +41,10 @@
 //! | 变量 | 作用 |
 //! |---|---|
 //! | `AGENTS_HOME` | 改通用根（默认 `~/.agents`） |
-//! | `WORKMAN_HOME` | 改 workman 专属目录（默认 `<agentsHome>/workman`） |
-//! | `WORKMAN_AGENT_DIR` | 改「配置 + 会话」的根（测试用，等价于旧语义） |
-//! | `WORKMAN_SESSIONS_ROOT` | 只改会话根 |
-//! | `WORKMAN_MODELS` | 只改模型目录 |
+//! | `TOILER_HOME` | 改 toiler 专属目录（默认 `<agentsHome>/toiler`） |
+//! | `TOILER_AGENT_DIR` | 改「配置 + 会话」的根（测试用，等价于旧语义） |
+//! | `TOILER_SESSIONS_ROOT` | 只改会话根 |
+//! | `TOILER_MODELS` | 只改模型目录 |
 //!
 //! # 允许的根目录
 //!
@@ -86,24 +86,24 @@ pub fn agents_home() -> PathBuf {
     home_dir().join(".agents")
 }
 
-/// workman 专属根：`$WORKMAN_HOME` > `$WORKMAN_AGENT_DIR` > `<agentsHome>/workman`。
+/// toiler 专属根：`$TOILER_HOME` > `$TOILER_AGENT_DIR` > `<agentsHome>/toiler`。
 ///
 /// 用一个带 `agent` 名字的变量兼容旧语义：老调用方与测试把
-/// `WORKMAN_AGENT_DIR` 当成「配置 + 会话所在的目录」，现在它指的就是这个根。
-pub fn workman_home() -> PathBuf {
-    for key in ["WORKMAN_HOME", "WORKMAN_AGENT_DIR"] {
+/// `TOILER_AGENT_DIR` 当成「配置 + 会话所在的目录」，现在它指的就是这个根。
+pub fn toiler_home() -> PathBuf {
+    for key in ["TOILER_HOME", "TOILER_AGENT_DIR"] {
         if let Some(dir) = std::env::var_os(key) {
             if !dir.is_empty() {
                 return PathBuf::from(dir);
             }
         }
     }
-    agents_home().join("workman")
+    agents_home().join("toiler")
 }
 
-/// 配置目录：`<workmanHome>/configs`。
+/// 配置目录：`<toilerHome>/configs`。
 pub fn configs_dir() -> PathBuf {
-    workman_home().join("configs")
+    toiler_home().join("configs")
 }
 
 /// 配置目录下的一个文件。
@@ -111,33 +111,33 @@ pub fn config_file(name: &str) -> PathBuf {
     configs_dir().join(name)
 }
 
-/// 会话根：`$WORKMAN_SESSIONS_ROOT` > `<workmanHome>/sessions`。
+/// 会话根：`$TOILER_SESSIONS_ROOT` > `<toilerHome>/sessions`。
 pub fn sessions_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("WORKMAN_SESSIONS_ROOT") {
+    if let Some(dir) = std::env::var_os("TOILER_SESSIONS_ROOT") {
         if !dir.is_empty() {
             return PathBuf::from(dir);
         }
     }
-    workman_home().join("sessions")
+    toiler_home().join("sessions")
 }
 
-/// 插件安装根：`<workmanHome>/plugins`。
+/// 插件安装根：`<toilerHome>/plugins`。
 ///
 /// `settings.json` 的 `packages` 里的全局包都装在这里（内部按来源分子目录，见
-/// `routes/plugins.rs` 的模块文档）。**不**用 `<workmanHome>/npm`：那是 pi 的布局
-/// （`<agentDir>/npm`），workman 的根目录留给配置 / 会话 / 项目库，插件单开一层。
+/// `routes/plugins.rs` 的模块文档）。**不**用 `<toilerHome>/npm`：那是 pi 的布局
+/// （`<agentDir>/npm`），toiler 的根目录留给配置 / 会话 / 项目库，插件单开一层。
 pub fn plugins_dir() -> PathBuf {
-    workman_home().join("plugins")
+    toiler_home().join("plugins")
 }
 
-/// 项目库：`<workmanHome>/work.sqlite`。
+/// 项目库：`<toilerHome>/work.sqlite`。
 pub fn project_db() -> PathBuf {
-    workman_home().join("work.sqlite")
+    toiler_home().join("work.sqlite")
 }
 
 /// 旧位置：pi 的 agent 目录（`$PI_CODING_AGENT_DIR` > `~/.pi/agent`）。
 ///
-/// **只读**：播种数据时从这里复制，之后 workman 不再写它。
+/// **只读**：播种数据时从这里复制，之后 toiler 不再写它。
 pub fn legacy_pi_agent_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("PI_CODING_AGENT_DIR") {
         if !dir.is_empty() {
@@ -158,7 +158,7 @@ pub fn legacy_project_db() -> PathBuf {
 
 /// 需要从 pi 的 agent 目录搬过来的配置文件。
 ///
-/// 只搬 workman 真正用到的；`mcp.json` / `mcp-cache.json` / `models-store.json` /
+/// 只搬 toiler 真正用到的；`mcp.json` / `mcp-cache.json` / `models-store.json` /
 /// `web-push.json` 等属于 pi 自己的缓存与状态，不搬（搬了反而变成陈旧副本）。
 pub const SEEDED_CONFIG_FILES: [&str; 4] =
     ["auth.json", "models.json", "settings.json", "trust.json"];
@@ -194,12 +194,12 @@ pub struct SeedReport {
 ///
 /// 会话逐个文件复制，已存在的不覆盖。返回复制了多少个。
 pub fn seed_from_pi_if_needed() -> std::io::Result<SeedReport> {
-    seed_into(&legacy_pi_agent_dir(), &workman_home())
+    seed_into(&legacy_pi_agent_dir(), &toiler_home())
 }
 
 /// [`seed_from_pi_if_needed`] 的可注入版本（测试用）。
 ///
-/// `source` 是 pi 的 agent 目录（只读），`target` 是 workman 专属根。
+/// `source` 是 pi 的 agent 目录（只读），`target` 是 toiler 专属根。
 fn seed_into(source: &Path, target_root: &Path) -> std::io::Result<SeedReport> {
     let mut report = SeedReport::default();
     if !source.is_dir() {
@@ -478,7 +478,7 @@ mod tests {
         assert!(!is_pi_cwd_dir_name("pi-cwd-abcdefgh"));
     }
 
-    /// 目录布局：通用根 / workman 专属根 / 各自的子目录。
+    /// 目录布局：通用根 / toiler 专属根 / 各自的子目录。
     ///
     /// 这些断言不改进程环境（并行测试共享环境变量，改了会互相干扰），
     /// 只验证「在默认环境下的相对关系」。
@@ -486,21 +486,17 @@ mod tests {
     fn layout_separates_shared_and_app_specific_state() {
         // 若外层设置了这些变量，跳过相对断言（CI 里可能有）
         if std::env::var_os("AGENTS_HOME").is_some()
-            || std::env::var_os("WORKMAN_HOME").is_some()
-            || std::env::var_os("WORKMAN_AGENT_DIR").is_some()
+            || std::env::var_os("TOILER_HOME").is_some()
+            || std::env::var_os("TOILER_AGENT_DIR").is_some()
         {
             return;
         }
         let agents = agents_home();
-        let workman = workman_home();
+        let toiler = toiler_home();
         assert_eq!(agents, home_dir().join(".agents"));
-        assert_eq!(
-            workman,
-            agents.join("workman"),
-            "workman 专属目录在通用根下"
-        );
+        assert_eq!(toiler, agents.join("toiler"), "toiler 专属目录在通用根下");
 
-        // workman 特有的东西都在自己的目录里
+        // toiler 特有的东西都在自己的目录里
         for (name, path) in [
             ("configs", configs_dir()),
             ("sessions", sessions_dir()),
@@ -508,26 +504,26 @@ mod tests {
             ("work.sqlite", project_db()),
         ] {
             assert!(
-                path.starts_with(&workman),
+                path.starts_with(&toiler),
                 "{name} 应在 {} 下，实际 {}",
-                workman.display(),
+                toiler.display(),
                 path.display()
             );
         }
         assert_eq!(config_file("auth.json"), configs_dir().join("auth.json"));
         assert_eq!(project_db().file_name().unwrap(), "work.sqlite");
 
-        // 通用根下不该出现 workman 的私有文件
+        // 通用根下不该出现 toiler 的私有文件
         assert!(!agents.join("work.sqlite").exists());
     }
 
     /// 首次启动把 pi 的配置与会话复制过来：旧文件必须留着，新副本 0600。
     #[test]
     fn seeding_copies_configs_and_sessions_without_touching_the_source() {
-        let dir = std::env::temp_dir().join(format!("workman-seed-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-seed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let source = dir.join("pi/agent");
-        let target = dir.join("agents/workman");
+        let target = dir.join("agents/toiler");
         std::fs::create_dir_all(source.join("sessions/--a--")).unwrap();
         std::fs::create_dir_all(&target).unwrap();
 
@@ -593,7 +589,7 @@ mod tests {
     /// 源目录不存在时安静地什么都不做（全新机器、没装过 pi）。
     #[test]
     fn seeding_without_a_source_is_a_noop() {
-        let dir = std::env::temp_dir().join(format!("workman-seed-none-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("toiler-seed-none-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let report = seed_into(&dir.join("missing"), &dir.join("target")).unwrap();
         assert_eq!(report, SeedReport::default());

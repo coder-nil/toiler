@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>workman</title>
+<title>Toiler</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
   :root { color-scheme: light dark; }
@@ -15,7 +15,7 @@
   ul { padding-left: 1.2rem; }
   .hint { opacity: 0.72; font-size: 0.94em; }
 </style>
-<h1>workman</h1>
+<h1>Toiler</h1>
 <p>这是内置的占位页：二进制里没有嵌入真实前端产物。</p>
 <p>后端已经完全可用，接口同源挂在 <code>/api</code> 下：</p>
 <ul>
@@ -24,6 +24,6 @@
   <li><a href="/api/mobile/state">GET /api/mobile/state</a> — 手机访问状态</li>
 </ul>
 <p class="hint">要嵌入真实前端，构建时指定产物目录后重新编译：</p>
-<pre>WORKMAN_FRONTEND_DIR=/path/to/frontend cargo build -p workman-desktop --release</pre>
+<pre>TOILER_FRONTEND_DIR=/path/to/frontend cargo build -p toiler-desktop --release</pre>
 <p class="hint">产物需包含 <code>index.html</code>（pi 的 Next 静态导出形状：
 <code>index.html</code> / <code>index.txt</code> / <code>_next/</code> / <code>icons/</code>）。</p>
