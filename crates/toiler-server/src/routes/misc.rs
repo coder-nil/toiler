@@ -218,16 +218,22 @@ pub async fn mobile_state(
         .unwrap_or_default()
         .to_string();
 
-    // 活 agent 的排队信息 + 流式状态
+    // 活 agent 的排队信息 + 流式状态。
+    //
+    // `queue` 是**数量**（手机端只显示「N queued」），与桌面端 `get_state` 的
+    // `queuedMessages`（文本数组）不是同一个形状 —— 各自按各自的消费方给。
     let (status, queue) = match state.live().get(&id) {
         Some(agent) => {
-            let state_json = agent.state_json().await.unwrap_or(Value::Null);
+            let (steering, follow_up) = agent.queued_counts().await;
             let status = if agent.is_streaming() {
                 "running"
             } else {
                 "idle"
             };
-            (status, state_json.get("queuedMessages").cloned())
+            (
+                status,
+                Some(json!({ "steering": steering, "followUp": follow_up })),
+            )
         }
         None => ("idle", None),
     };

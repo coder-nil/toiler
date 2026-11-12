@@ -51,7 +51,10 @@ const MobileCodeBlock = memo(function MobileCodeBlock({ code, lang }: { code: st
       </div>
       <pre
         style={{
-          margin: 0, padding: "11px 13px", fontSize: 12, lineHeight: 1.55,
+          // 与桌面端一致：margin 取 globals.css 的变量（内联优先于样式表），
+          // 圆角交给 .markdown-code-block > pre。
+          margin: "var(--code-block-inset, 0.2em)",
+          padding: "11px 13px", fontSize: 12, lineHeight: 1.55,
           overflowX: "auto", background: "color-mix(in srgb, var(--bg) 92%, var(--bg-panel))",
         }}
       >

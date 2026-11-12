@@ -89,7 +89,13 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 ## POST /api/agent/[id]
 
 请求体是 pi 的 agent command：`{"type":"prompt", …}`、`{"type":"set_model","provider":…,"modelId":…}`、
-`{"type":"get_state"}`、`{"type":"abort"}` …（形状见 `rpi-agent` 的 command 层）。
+`{"type":"get_state"}`、`{"type":"clear_queue"}`、`{"type":"abort"}` …（形状见 `rpi-agent` 的 command 层）。
+
+`prompt` 的 `streamingBehavior`（`"steer"` | `"followUp"`，缺省 `steer`）在会话运行中
+决定进哪条队列：`steer` 在工具批处理之后注入，`followUp` 等本轮结束再投递。
+
+`clear_queue` 清空两条队列并返回**被清掉的文本**（`{steering:[…], followUp:[…]}`），
+前端的「撤回排队」按钮拿它回填输入框；空队列返回两个空数组（不是 `null`）。
 
 `set_model` 与 pi 一致：按 `provider/modelId` 查模型目录，追加一条 `model_change`
 到 v3 会话文件（前端切完的 `loadSession` 靠它回显模型），返回 `{id, provider}`；
@@ -100,9 +106,18 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 面板；它同时把提示词换成对应语言（preamble / 工具说明 / 行为准则 / 语言指令）。
 
 `get_state` 的响应里含 `systemPrompt`、`extensionStatuses`、`extensionWidgets`、
-`pendingUiRequests`。前两项是 `task_progress` 的任务框/状态栏镜像（前端渲染任务列表
-读的就是它们；只发事件的话刷新一次界面就没了），第三项是还没回答的 `ask_user`
-请求，前端重连后靠它恢复弹窗。`systemPrompt` 的值是**实际发给模型的那一份**提示词：
+`pendingUiRequests`，以及 `queuedMessages`。`queuedMessages` 是**文本数组**：
+
+```jsonc
+"queuedMessages": { "steering": ["第一条"], "followUp": [] }   // 空时为 []
+```
+
+前端排队条（`ChatInput`）按条渲染并数 `.length`，撤回按钮把文本回填输入框 ——
+发数量（`0`）会让排队条永远不出现、撤回拿不到内容。手机端 `/api/mobile/state`
+的 `queue` 则是**数量**（只显示「N queued」），两者形状不同是故意的。
+
+`systemPrompt`、`extensionStatuses`、`extensionWidgets`、
+`pendingUiRequests` 的含义：`systemPrompt` 的值是**实际发给模型的那一份**提示词：
 `preamble → <tools> → <rules> → <project_context> → <cwd>` 分节
 （`system_prompt.rs`），与 pi 的 `effectiveSystemPrompt()` 同义。缺了它前端面板
 会一直显示「系统提示词尚未加载」，所以它是契约的一部分，不是可选字段。
@@ -127,6 +142,13 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 **移到**目标条目上（不是它的父节点），返回 `{cancelled, leafId}`。前端三个入口都发它：
 消息上的「从此处编辑」、消息树点节点、分支下拉切换叶子。拿到 `leafId` 后前端一定跟一次
 `GET /api/sessions/{id}/context?leafId=…` 重载分支，所以返回值必须是**导航后**的叶子。
+
+`hideTarget: true`（仅「从此处编辑」带）：叶子退到目标条目的**父节点**，目标条目与它之后
+的内容一起从分支上消失（用户改完重发，新消息挂在父节点下、旧消息留在旧分支）。
+目标条目是第一条消息时父节点为 `null`，此时返回 `leafId: null`，前端据这个值
+**不请求 context** 而是直接清空对话区（不带 `leafId` 请求会退回文件最后一条，
+那正是「编辑了但列表没变」的老毛病）。
+
 v3 文件里没有 leaf 记录（pi 也没有）：只挪内存指针，重开会话时叶子退回最后一条条目；
 真在新分支上续聊时新条目带 `parentId` 落盘，那一行自己就成了叶子。
 目标条目不存在时 `500`（pi 抛 `Entry <id> not found`）。
@@ -159,6 +181,9 @@ v3 文件里没有 leaf 记录（pi 也没有）：只挪内存指针，重开�
 3. 扩展 UI 请求：`{"type":"extension_ui_request","id":…,"method":"select"|"confirm"|"input"|"editor",…}`，
    请求作废（回答/超时/中止）时补一帧 `{"type":"extension_ui_resolved","id":…}`；
    `method` 还有 `setStatus` / `setWidget`（`task_progress` 的展示，非阻塞）。
+3.5 排队变化：`{"type":"queue_update","steering":["<文本>"],"followUp":[]}`。
+   入队（`prompt` 运行中 / `steer` / `follow_up`）、清空（`clear_queue` / `abort`）
+   与一轮结束时各推一帧；桌面端据此刷新排队条，手机端收到后重拉一次快照。
 4. 启动失败：`{"type":"startup_error","errorMessage":"Failed to start agent: …"}` 后关闭
 
 会话不存在：`404 Session not found`；请求已中断：`204`。
@@ -313,7 +338,7 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 | `DELETE /api/sessions/{id}` | ✅ | 关活 agent + 删文件 |
 | `GET /api/sessions/{id}/state` | ✅ | 与 `GET /api/agent/{id}` 同实现 |
 | `GET /api/sessions/search` | ✅ | 元数据 + 文本块 + compaction.summary，58 字符 snippet |
-| `POST /api/agent/{id}` | ✅ | `prompt`/`steer`/`follow_up`/`abort`/`get_state`/`set_model`/`navigate_tree`/`set_steering_mode`/`set_follow_up_mode`（后两个只落盘，`applied:false`，新会话生效；见 `GET/PUT /api/queue-modes`） |
+| `POST /api/agent/{id}` | ✅ | `prompt`/`steer`/`follow_up`/`clear_queue`/`abort`/`get_state`/`set_model`/`navigate_tree`/`set_steering_mode`/`set_follow_up_mode`（后两个只落盘，`applied:false`，新会话生效；见 `GET/PUT /api/queue-modes`） |
 | `GET /api/agent/{id}` | ✅ | `{running}` / `{running, state}` |
 | `GET /api/agent/{id}/events` | ✅ | SSE，裁剪规则与 pi 逐条对齐 |
 | `POST /api/agent/new` | ✅ | 建 v3 会话 + 登记项目 + 执行 body 里的命令；`{success,sessionId,data,model,thinkingLevel}`。body 的 `toolNames`（前端工具预设，默认 `read/bash/edit/write`，桌面工具始终启用）与 `uiLocale` 也在建会话时应用 |
@@ -352,7 +377,7 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 | `GET /api/models-config` | ✅ | 原样返回 `models.json` |
 | `PUT /api/models-config` | ✅ | 保留 `$schema`、清洗无 id 的模型、`cost` 缺项补 0 |
 | `DELETE /api/models-config` | ✅ | `{kind:"provider"\|"model", provider, modelId?}`，顺手清 `enabledModels` |
-| `GET /api/models-config/enabled?provider=` | ✅ | `{provider,models[],enabledModels,unscoped,warnings:string[],refreshing}`；`warnings` 是**字符串数组**（pi 取 `resolveModelScopeWithDiagnostics` 的 `diagnostics.map(d => d.message)`），前端逐条当文本渲染，给对象会整页崩 |
+| `GET /api/models-config/enabled?provider=` | ✅ | `{provider,models[],enabledModels,unscoped,warnings:string[],refreshing}`；`warnings` 是**字符串数组**（pi 取 `resolveModelScopeWithDiagnostics` 的 `diagnostics.map(d => d.message)`），前端逐条当文本渲染，给对象会整页崩。`apisets`（Coding）的清单来自远端目录缓存，空列表时会顺手发起一次后台刷新并回 `refreshing:true`（见差异 21） |
 | `PUT /api/models-config/enabled` | ✅ | `{provider,modelIds}` → 折叠成 `provider/*` 或逐条写 `settings.json` |
 | `POST /api/models-config/discover` | ✅ | 打上游 `/models` 并按 pi 的字段兼容表解析 → `{models,endpoint}` |
 | `POST /api/models-config/test` | ✅ | 真跑一次补全 → `{ok,latencyMs,status,responseText}` |
@@ -422,9 +447,10 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
    `modelCount` 取内置目录的 chat 模型数，加上 `models.json` 同名 provider 的模型并去重。
 
    仍然缺的部分：
-   - **内置模型目录没带过来**：`/api/models` 依旧只读 `models.json`，所以选中内置
-     供应商、填了 API Key 之后，还得自己把模型 id 写进 `models.json`（面板上的
-     「N models」只是 pi 目录里的条数）。
+   - **内置模型目录没带过来**：`/api/models` 依旧只读 `models.json` + 内置静态目录
+     （`qoder-cn` 的快照、`apisets` 的远端缓存，见差异 21），pi 目录里其余 40 家的
+     模型清单没搬，所以选中那些供应商、填了 API Key 之后，还得自己把模型 id 写进
+     `models.json`。
    - **OAuth 登录**（差异 7）：`/api/auth/providers` 里那 10 家照样列出来。
      `qoder-cn` 可以真的登录（设备码 + COSY 签名全部移植，模型能直接对话）；
      其余 9 家点「Login」只会拿到一条「OAuth 登录未实现」的 SSE 错误，其中 8 家是
@@ -496,6 +522,24 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
     `<configs>/mcp.json`（`~/.agents/toiler/configs/mcp.json`，与 `models.json` 同目录），
     而不是 pi 的 `~/.pi/agent/mcp.json`。缺这组路由时 MCP 页会落到静态兜底拿
     404 `{"error":"Not found"}`，页面上直接显示成红字。
+21. **`apisets`（面板里叫 Coding）的模型目录是远端拉取 + 本地缓存**：pi 在
+    `lib/desktop-providers.ts` 里给它 `registerProvider` 了一个 `refreshModels`，
+    打上游 `GET https://coding.apisets.com/v1/models` 并持久化到
+    `models-store.json`；toiler 的等价实现是 `crates/toiler-server/src/apisets.rs`：
+
+    | 环节 | pi | toiler |
+    |---|---|---|
+    | 缓存文件 | `<agentDir>/models-store.json` | `<configs>/models-store.json`（与 `models.json` 同目录，格式逐字一致） |
+    | 格式版本 | `etag: "apisets-models-api-v2"` | 同名常量，对不上就整份作废 |
+    | 有效期 | 30 分钟 | `CACHE_TTL`（30 分钟；过期仍可离线用缓存） |
+    | 拉取条件 | `credential.type === "api_key"` 且有 key | 同左（没 key 时保持旧缓存，不清空） |
+    | 协议 | 每条模型自带 `api`（`gpt-*` → Responses，其余 → Anthropic Messages） | 同左；rpi 只按 `model.provider` 解析 provider，所以用 `ApiSetsProvider` 按 `model.api` 分发 |
+
+    `GET /api/models-config/enabled?provider=apisets` 在列表为空时会发起一次后台刷新并
+    回 `refreshing:true`（前端隔 1.5s 重试两次 / 用户点「重试」）；另外
+    `POST/DELETE /api/auth/api-key/apisets` 之后会重建内置目录。
+    **还没做的**：`deepseek` / `openrouter` 两家在 pi 侧同样有 `refreshModels`
+    （走 models.dev 目录），toiler 仍只读 `models.json`。
 
 ### 目录与文件
 
@@ -509,7 +553,8 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 ├── tools/
 └── toiler/                     ← toiler 专属
     ├── configs/                 auth.json / models.json / settings.json /
-    │                            trust.json / desktop-access*.json
+    │                            trust.json / desktop-access*.json /
+    │                            models-store.json（apisets 远端目录缓存）
     ├── sessions/                v3 会话（`--<cwd>--/<ISO>_<id>.jsonl`）
     ├── plugins/                 （预留）
     └── work.sqlite              项目列表 + 选中项

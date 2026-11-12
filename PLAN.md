@@ -262,6 +262,41 @@ toiler 不再把状态写进 pi 的 `~/.pi/agent`。
 回显 / `pwd` / `stty size` 反映 resize（`30 100`），`dropping_a_session_kills_the_shell`
 验证关面板会杀进程——这两条守的正是「PTY 接错了」这类只在真实进程里暴露的问题。
 
+## 阶段 8 — `apisets`（Coding）的远端模型目录 ✅ 已完成
+
+修的是设置页一个具体 bug：`设置 → 模型 → Coding` 下写着「该服务商还没有已知模型」，
+旁边还挂着 8 条 `No models match pattern "apisets/…"`。
+
+根因不在前端：`apisets` 在 `builtin_providers.rs` 里只有 `name`/`base_url`，
+`models` 是空表（它的清单本来就不在静态表里），而 toiler 没有实现 pi 那套
+「远端目录 + 缓存」——`GET /api/models-config/enabled?provider=apisets` 自然一条
+data 都凑不出来，`enabledModels` 里的 `apisets/*` 模式也就全部落空。
+
+交付物：`crates/toiler-server/src/apisets.rs`（约 600 行，含 9 个单元测试）
+
+- [x] `models-store.json` 读写（`<configs>/models-store.json`，格式与 pi 逐字一致）：
+      `etag = apisets-models-api-v2`、`checkedAt` 30 分钟有效期、只动 `apisets` 这一段
+      （pi 写的别家原样保留），0600 + 临时文件原子替换
+- [x] `refresh()`：`GET https://coding.apisets.com/v1/models`（Bearer key，20s 超时），
+      解析后按 pi 的 `apiSetsModels()` 映射（`gpt-*` → `openai-responses`，其余 →
+      `anthropic-messages`；`glm-5.3` 带 `compat.allowEmptySignature`）
+- [x] `ApiSetsProvider`：rpi 只按 `model.provider` 解析 provider（一个 id 一个实例、
+      一种协议），所以这里按 `model.api` 分发到 `AnthropicProvider` /
+      `OpenAiResponsesProvider` 两套实现——等价于 pi 的「按 model.api 选流式实现」
+- [x] `ModelCatalog::with_apisets` / `without_provider`：注入是**替换**语义
+      （刷新后模型会变，只 add 不 remove 会出现同一个 id 两次）
+- [x] `AppState::attach_apisets` / `attach_builtin_providers` / `spawn_apisets_refresh` /
+      `warm_apisets_catalog`：登录、存删 API Key、启动预热、设置页看到空列表时自动刷新
+      （并发去重；用户自己在 `models.json` 写同名 provider 时不插手——与 `qoder-cn` 同规则）
+- [x] 卡片上的「N models」也数 catalog（`/api/auth/all-providers`），不再是 0
+
+**验收**：新增 4 条回归用例（缓存注入 + 白名单不再报假警告 + 卡片计数 + 删 key 后
+模型下架 / 无 key 不联网 / 旧 etag 作废 / `models.json` 覆盖优先）；`cargo test` 全绿、
+`cargo clippy --all-targets` 0 warning。
+
+**边界**：`deepseek` / `openrouter` 在 pi 侧也各有一条 `refreshModels`（走 models.dev
+目录），toiler 仍只读 `models.json`——那两家属于「内置模型目录」这个大缺口，不在本次范围。
+
 ## 明确不做的
 
 | 项 | 原因 |

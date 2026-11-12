@@ -157,13 +157,13 @@ impl AuthStore {
 }
 
 #[cfg(unix)]
-fn set_mode_600(path: &Path) -> std::io::Result<()> {
+pub(crate) fn set_mode_600(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 
 #[cfg(not(unix))]
-fn set_mode_600(_path: &Path) -> std::io::Result<()> {
+pub(crate) fn set_mode_600(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 

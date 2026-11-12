@@ -323,7 +323,15 @@ rpi 的 provider 不允许注入传输层，所以模型的 `baseUrl` 指向本�
 `crates/toiler-server/src/builtin_providers.rs`（pi SDK 目录 42 家 + pi-desktop
 自注册的 `apisets` / `qoder-cn`），由 `/api/auth/providers`（10 家订阅）
 与 `/api/auth/all-providers`（42 家 API Key）输出。但**内置模型目录仍没带过来**：
-填了 API Key 之后，模型 id 还得自己写进 `models.json`。
+除 `qoder-cn`（静态快照）与 `apisets`（远端目录，见下）之外的 40 家，填了 API Key
+之后模型 id 还得自己写进 `models.json`。
+
+`apisets`（设置页里显示为 **Coding**，`https://coding.apisets.com`）的模型清单**不在
+静态表里**，而是运行时拉上游 `GET /v1/models` 并缓存在 `<configs>/models-store.json`
+（格式与 pi 逐字一致：`etag = apisets-models-api-v2`、30 分钟有效期）—— 见
+`crates/toiler-server/src/apisets.rs`。它的 18 个模型横跳两套协议（`gpt-*` →
+`openai-responses`，其余 → `anthropic-messages`），而 rpi 只按 `model.provider`
+解析 provider，所以那里另有一个按 `model.api` 分发的 `ApiSetsProvider`。
 
 ## 阶段 4：Tauri 单进程（`crates/toiler-desktop`）
 

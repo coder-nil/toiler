@@ -160,6 +160,12 @@ pub async fn enabled(
     let warnings = pattern_warnings(patterns.as_deref(), &all);
 
     let available = available_models(&state, &provider);
+    // `apisets`（设置页的 Coding）的清单来自远端目录：缓存还没拉到时列表必然是空的。
+    // 这里发一次后台刷新，前端拿到 `refreshing: true` 会隔 1.5s 重试两次（
+    // `EnabledModelsPicker` 的「重试」），刷完就能列出来。
+    if available.is_empty() && provider == crate::apisets::PROVIDER_ID {
+        state.spawn_apisets_refresh();
+    }
     let visible_keys: std::collections::BTreeSet<String> = visible
         .iter()
         .map(|m| format!("{}/{}", m.provider, m.id))
@@ -170,7 +176,7 @@ pub async fn enabled(
         .map(|model| {
             json!({
                 "id": model.id,
-                "name": model_name(&models_file, &model.provider, &model.id),
+                "name": model_name(&state, &models_file, &model.provider, &model.id),
                 "selected": visible_keys.contains(&format!("{}/{}", model.provider, model.id)),
             })
         })
@@ -527,14 +533,27 @@ fn available_models(state: &AppState, provider: &str) -> Vec<ModelRef> {
         .collect()
 }
 
-/// 模型的显示名：`models.json` 里的 `name` 优先，其次目录里的名字，最后用 id。
-fn model_name(root: &Value, provider: &str, id: &str) -> String {
+/// 模型的显示名：`models.json` 里的 `name` 优先，其次真正模型目录里的名字，最后用 id。
+///
+/// 目录那一层必须有：`apisets`（Coding）的清单来自远端缓存（`name` 形如
+/// `GLM 5.3`），不查目录的话设置面板只能拿 id 顶替，和对话里那个模型下拉对不上。
+fn model_name(state: &AppState, root: &Value, provider: &str, id: &str) -> String {
     if let Some(name) = models_json_name(root, provider, id) {
         return name;
     }
-    crate::qoder_cn::constants::catalog_entry(id)
+    if let Some(name) = crate::qoder_cn::constants::catalog_entry(id)
         .filter(|_| provider == crate::qoder_cn::PROVIDER_ID)
         .map(|entry| entry.display_name.to_string())
+    {
+        return name;
+    }
+    state
+        .catalog()
+        .entries
+        .iter()
+        .find(|entry| entry.provider == provider && entry.id == id)
+        .map(|entry| entry.name.clone())
+        .filter(|name| !name.is_empty())
         .unwrap_or_else(|| id.to_string())
 }
 

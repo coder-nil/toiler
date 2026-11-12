@@ -54,6 +54,8 @@ tools/
 | `session_view.rs` | 会话投影：tree / 分页 / `totalActiveMs` |
 | `agent_runtime.rs` | 活会话（`LiveAgent`）、事件广播、SSE |
 | `gitsvc.rs` | git：status / diff / worktree / 20 个白名单动作 |
+| `apisets.rs` | Coding（`apisets`）的远端模型目录：`models-store.json` 缓存 + 上游 `/v1/models` + 按 `model.api` 分发的 provider（rpi 一个 provider id 只能一种协议） |
+| `builtin_providers.rs` | 写死的 provider 目录（44 家），卡片 / `modelCount` / 登录方式都靠它 |
 | `assets.rs` + `boot.rs` | 静态托管、`port=0` 绑定、CLI 与桌面壳共用启动路径 |
 | `mobile_view.rs` / `mobile_access.rs` | 手机端消息投影与配对地址 |
 | `desktop_tools/` | 桌面自带工具（`system_time` / `task_progress` / `ask_user`），以及 `ask_user` 的 UI 往返桥（SSE `extension_ui_request` ⇄ 命令 `extension_ui_response`） |

@@ -265,7 +265,9 @@ export const CodeBlock = memo(function CodeBlock({ code, lang, headerAction, isS
       {isStreaming ? (
         <pre
           style={{
-            margin: 0,
+            // 与高亮分支保持同一套间距：margin 取 globals.css 的变量，
+            // borderRadius 交给 .markdown-code-block > pre。
+            margin: "var(--code-block-inset, 0.2em)",
             padding: "11px 13px",
             fontSize: 12,
             lineHeight: 1.55,
@@ -289,11 +291,15 @@ export const CodeBlock = memo(function CodeBlock({ code, lang, headerAction, isS
             WebkitUserSelect: "none",
           }}
           customStyle={{
-            margin: 0,
+            // 必须显式写 margin：主题（vs / vscDarkPlus）里的 pre 规则带
+            // margin: .5em 0，react-syntax-highlighter 会把它内联到 <pre> 上
+            //（它把主题的 pre 样式与 customStyle 合并后写进 style），内联优先级
+            // 高于 globals.css 的 .markdown-code-block > pre，不覆盖就轮不到我们管。
+            // 值仍取 globals.css 的变量，保持单一来源。
+            margin: "var(--code-block-inset, 0.2em)",
             padding: "11px 13px",
             fontSize: 12,
             lineHeight: 1.55,
-            borderRadius: 0,
             border: 0,
             boxShadow: "none",
             backgroundColor: "color-mix(in srgb, var(--bg) 92%, var(--bg-panel))",

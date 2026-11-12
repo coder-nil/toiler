@@ -1708,6 +1708,256 @@ async fn qoder_cn_models_come_from_the_builtin_catalog() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// `apisets`（设置页里的 **Coding**）的一套缓存 + 凭据。
+///
+/// 形状逐字对齐 pi 写的 `models-store.json`：`models` 里的每一条都带 `provider` /
+/// `api` / `baseUrl`（恢复缓存时要按 `provider` 过滤，`api` 决定走哪套线协议）。
+fn seed_apisets(agent: &Path, models: &[(&str, &str)], checked_at: i64) {
+    let defs: Vec<Value> = models
+        .iter()
+        .map(|(id, api)| {
+            json!({
+                "id": id,
+                "name": id.to_uppercase(),
+                "provider": "apisets",
+                "api": api,
+                "baseUrl": "https://coding.apisets.com",
+                "reasoning": true,
+                "input": ["text", "image"],
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "contextWindow": 1_048_576,
+                "maxTokens": 131_072,
+            })
+        })
+        .collect();
+    std::fs::write(
+        agent.join("models-store.json"),
+        json!({
+            // pi 写的另一家：读的时候不能把它当成我们的
+            "deepseek": { "models": [], "checkedAt": 1, "etag": "models.dev" },
+            "apisets": {
+                "models": defs,
+                "checkedAt": checked_at,
+                "etag": "apisets-models-api-v2",
+            },
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[tokio::test]
+async fn apisets_models_come_from_the_remote_catalog_cache() {
+    // 对应真实 bug：设置 → 模型 → Coding（`apisets`）显示「该服务商还没有已知模型」，
+    // 旁边还挂着 8 条 `No models match pattern "apisets/…"`。
+    //
+    // 根因是 toiler 只把 `apisets` 当「API Key 服务商」写进了内置表（`models: &[]`），
+    // 却没实现 pi 的远端目录（缓存 `models-store.json` + 上游 `/v1/models`）。
+    // 这里锁住三件事：缓存能读进来、目录能注入、白名单不再报假警告。
+    let root = fixture_root("apisets-catalog");
+    let agent = root.join("agent");
+    std::fs::create_dir_all(&agent).unwrap();
+    seed_apisets(
+        &agent,
+        &[
+            ("glm-5.3", "anthropic-messages"),
+            ("gpt-6-sol", "openai-responses"),
+        ],
+        now_ms(),
+    );
+    std::fs::write(
+        agent.join("auth.json"),
+        r#"{"apisets":{"type":"api_key","key":"sk-test"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        agent.join("settings.json"),
+        r#"{"enabledModels":["apisets/glm-5.3","apisets/gpt-6-sol"]}"#,
+    )
+    .unwrap();
+
+    let state = state_with_agent_dir(&root, &root, &agent);
+    assert!(state.attach_apisets(), "有缓存 + 有 key 时应当注入目录");
+    // 幂等，且刷新后旧清单要被替换而不是叠加
+    assert!(state.attach_apisets());
+
+    let catalog = state.catalog();
+    let entries: Vec<&toiler_server::catalog::ModelEntry> = catalog
+        .entries
+        .iter()
+        .filter(|entry| entry.provider == "apisets")
+        .collect();
+    assert_eq!(entries.len(), 2, "两次注入不能变成 4 条：{entries:?}");
+    // 两套协议各自一个 api，不能都落成同一个
+    let apis: Vec<&str> = entries.iter().map(|entry| entry.api.as_str()).collect();
+    assert!(apis.contains(&"anthropic-messages"));
+    assert!(apis.contains(&"openai-responses"));
+    assert_eq!(
+        catalog
+            .models
+            .iter()
+            .filter(|model| model.provider.as_str() == "apisets")
+            .count(),
+        2
+    );
+    assert!(catalog.providers.iter().any(|p| p.id() == "apisets"));
+
+    // 设置页那个「模型选择列表」：现在应当列出 2 个且都能勾
+    let body = get(
+        routes::router(state.clone()),
+        "/api/models-config/enabled?provider=apisets",
+    )
+    .await
+    .json();
+    let models = body["models"].as_array().expect("models 必须是数组");
+    assert_eq!(models.len(), 2, "{body}");
+    // 显示名取目录里的（pi 用 model.name），不是 id
+    assert!(
+        models
+            .iter()
+            .any(|row| row["name"] == "GLM-5.3" || row["name"] == "GPT-6-SOL"),
+        "面板上的显示名应当来自目录：{body}"
+    );
+    assert_eq!(body["refreshing"], false, "有缓存时不该再说「正在拉」");
+    assert_eq!(
+        body["warnings"].as_array().map(Vec::len),
+        Some(0),
+        "白名单里的 apisets/* 现在都能匹配上，不该再有 no-match 警告：{body}"
+    );
+    assert!(
+        models.iter().all(|row| row["selected"] == true),
+        "enabledModels 里的两条都该是勾上的：{body}"
+    );
+
+    // 卡片上的「N models」也不能还是 0
+    let listing = get(routes::router(state.clone()), "/api/auth/all-providers")
+        .await
+        .json();
+    let card = listing["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "apisets")
+        .expect("apisets 卡片");
+    assert_eq!(card["displayName"], "Coding");
+    assert_eq!(card["modelCount"], 2, "{card}");
+
+    // 删掉 API Key → 模型不该再挂在目录里（不然模型下拉里会有发不出去的模型）
+    let reply = call(
+        routes::router(state.clone()),
+        "DELETE",
+        "/api/auth/api-key/apisets",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    assert!(
+        state
+            .catalog()
+            .entries
+            .iter()
+            .all(|entry| entry.provider != "apisets"),
+        "key 没了，目录里的 apisets 模型也该没"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn apisets_without_key_or_cache_stays_empty_instead_of_inventing_models() {
+    // 没 key：既不能注入目录，也不能联网（`spawn_apisets_refresh` 直接放弃）。
+    // 设置页这时候显示「该服务商还没有已知模型」是**对的** —— 用户要先去填 key。
+    let root = fixture_root("apisets-empty");
+    let agent = root.join("agent");
+    std::fs::create_dir_all(&agent).unwrap();
+    seed_apisets(&agent, &[("glm-5.3", "anthropic-messages")], now_ms());
+    // 只有缓存、没有 auth.json
+    let state = state_with_agent_dir(&root, &root, &agent);
+    assert!(!state.attach_apisets(), "没 key 时不该注入");
+    assert!(!state.spawn_apisets_refresh(), "没 key 时不该发网络请求");
+
+    let body = get(
+        routes::router(state.clone()),
+        "/api/models-config/enabled?provider=apisets",
+    )
+    .await
+    .json();
+    assert_eq!(body["models"].as_array().map(Vec::len), Some(0), "{body}");
+    // 前端靠 `refreshing` 决定要不要自动重试（`EnabledModelsPicker` 的 1.5s ×2）
+    assert_eq!(body["refreshing"], true, "{body}");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn apisets_cache_from_an_older_etag_is_ignored() {
+    // pi 的常量是 `apisets-models-api-v2`，对不上就整份作废（v1 只有 chat 之外的
+    // 半截数据）。这里即使有 key，也不能把旧格式的条目当成目录。
+    let root = fixture_root("apisets-etag");
+    let agent = root.join("agent");
+    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::write(
+        agent.join("models-store.json"),
+        json!({
+            "apisets": {
+                "models": [{ "id": "glm-5.3", "provider": "apisets", "api": "anthropic-messages" }],
+                "checkedAt": now_ms(),
+                "etag": "apisets-models-api-v1",
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        agent.join("auth.json"),
+        r#"{"apisets":{"type":"api_key","key":"sk-test"}}"#,
+    )
+    .unwrap();
+
+    let state = state_with_agent_dir(&root, &root, &agent);
+    assert!(!state.attach_apisets(), "旧 etag 的缓存必须整份作废");
+    assert!(state
+        .catalog()
+        .entries
+        .iter()
+        .all(|entry| entry.provider != "apisets"));
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn apisets_yields_to_a_user_defined_models_json_provider() {
+    // 用户自己在 `models.json` 里写了 `apisets`（指向自己的代理）时，内置目录不能
+    // 插手 —— 与 `qoder-cn` 同一条规则。
+    let root = fixture_root("apisets-override");
+    let agent = root.join("agent");
+    std::fs::create_dir_all(&agent).unwrap();
+    seed_apisets(&agent, &[("glm-5.3", "anthropic-messages")], now_ms());
+    std::fs::write(
+        agent.join("auth.json"),
+        r#"{"apisets":{"type":"api_key","key":"sk-test"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        agent.join("models.json"),
+        r#"{"providers":{"apisets":{"api":"anthropic-messages","baseUrl":"https://my-proxy.test","apiKey":"k","models":[{"id":"glm-5.3"}]}}}"#,
+    )
+    .unwrap();
+
+    let state = state_with_agent_dir(&root, &root, &agent);
+    assert!(
+        !state.attach_apisets(),
+        "用户自己定义了同名 provider 时不注入"
+    );
+    assert!(!state.warm_apisets_catalog(), "也不该擅自联网");
+    std::fs::remove_dir_all(&root).ok();
+}
+
 #[tokio::test]
 async fn models_config_enabled_warnings_are_strings() {
     // 对应设置面板的模型页（`ModelSettings`）对 `warnings` 的渲染：pi 的
@@ -3669,4 +3919,196 @@ fn read_settings_file(path: &Path) -> Value {
     let text =
         std::fs::read_to_string(path).unwrap_or_else(|error| panic!("读 {path:?} 失败：{error}"));
     serde_json::from_str(&text).unwrap_or_else(|error| panic!("解析 {path:?} 失败：{error}"))
+}
+
+/// 排队消息的三个消费方必须各自拿到对得上的形状。
+///
+/// 阶段 6 走查「排队没生效」时发现的是一串同源缺陷：
+/// 1. `get_state.queuedMessages` 发的是**数量**（`usize`），而桌面端排队条
+///    （`ChatInput` 的 `queuedMessages?.steering.length`）与撤回按钮都按
+///    **文本数组**消费 —— `.length` 恒 `undefined`，排队条永远空白；
+/// 2. `clear_queue` 没实现，前端撤回按钮拿到 500，只弹一句
+///    「Failed to recall queued messages」；
+/// 3. `prompt.streamingBehavior` 没进 `deliver_as`，运行中发的 follow-up
+///    被当成 steer 立刻注入。
+///
+/// 这里守着 1 与 2 的形状：`queuedMessages` 是数组（空时也是 `[]`），
+/// `clear_queue` 返回被清掉的文本而不是报错。手机端 `/api/mobile/state`
+/// 的 `queue` 仍然是数量（`http_contract.rs` 的用例守着）。
+#[tokio::test]
+// 串行锁跨 await 持有是故意的，理由同 `new_session_honours_tool_names_and_bash_rule`。
+#[allow(clippy::await_holding_lock)]
+async fn queued_messages_are_text_arrays_and_clear_queue_round_trips() {
+    let _env = env_guard();
+    let root = fixture_root("queue-shape");
+    let agent_dir = fixture_root("queue-shape-agent");
+    let project = fixture_root("queue-shape-project");
+    let previous = std::env::var("TOILER_AGENT_DIR").ok();
+    std::env::set_var("TOILER_AGENT_DIR", &agent_dir);
+    let router = app_with_two_models(&root, &project, &agent_dir);
+
+    let body = json!({ "cwd": project.to_string_lossy(), "type": "ensure_session" }).to_string();
+    let created = call(
+        router.clone(),
+        "POST",
+        "/api/agent/new",
+        Some(body.as_str()),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let sid = created.json()["sessionId"].as_str().unwrap().to_string();
+
+    // 1) `get_state.queuedMessages`：两条队列都得是数组，不能是数字。
+    let state = call(
+        router.clone(),
+        "POST",
+        &format!("/api/agent/{sid}"),
+        Some(r#"{"type":"get_state"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(state.status, StatusCode::OK, "{}", state.text());
+    let data = state.json()["data"].clone();
+    for key in ["steering", "followUp"] {
+        assert!(
+            data["queuedMessages"][key].is_array(),
+            "queuedMessages.{key} 必须是文本数组（前端读 .length）：{data}"
+        );
+        assert!(
+            data["queuedMessages"][key].as_array().unwrap().is_empty(),
+            "新会话没有排队消息：{data}"
+        );
+    }
+
+    // 2) `clear_queue`：空队列也返回 `{steering:[], followUp:[]}`，
+    //    以前这条命令不存在，前端撤回直接 500。
+    let cleared = call(
+        router.clone(),
+        "POST",
+        &format!("/api/agent/{sid}"),
+        Some(r#"{"type":"clear_queue"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text());
+    let cleared = cleared.json()["data"].clone();
+    assert_eq!(cleared["steering"], json!([]), "{cleared}");
+    assert_eq!(cleared["followUp"], json!([]), "{cleared}");
+
+    // 3) `/api/mobile/state.queue` 仍是数量：与桌面端形状不同是故意的。
+    let mobile = call(
+        router.clone(),
+        "GET",
+        &format!("/api/mobile/state?session={sid}"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(mobile.status, StatusCode::OK, "{}", mobile.text());
+    let mobile = mobile.json();
+    assert_eq!(mobile["queue"]["steering"], 0, "{mobile}");
+    assert_eq!(mobile["queue"]["followUp"], 0, "{mobile}");
+
+    match previous {
+        Some(value) => std::env::set_var("TOILER_AGENT_DIR", value),
+        None => std::env::remove_var("TOILER_AGENT_DIR"),
+    }
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+    std::fs::remove_dir_all(&project).ok();
+}
+
+/// 「从此处编辑」：被编辑的那条消息**连同它之后的内容**一起从分支上消失，
+/// 之后重发的新消息挂在父节点下（旧消息留在旧分支）。
+///
+/// 前端 `MessageView` 的编辑按钮发 `navigate_tree` 时带 `hideTarget: true`。
+/// 以前它和其他两个导航入口一样只把叶子移到条目**自己**上，于是列表里那条
+/// 消息原样留着 —— 用户看到的是「点了编辑，但对话没变」。
+#[tokio::test]
+// 依赖进程级 TOILER_AGENT_DIR，理由同其他串行用例。
+#[allow(clippy::await_holding_lock)]
+async fn edit_from_here_hides_target_and_everything_after_it() {
+    let _env = env_guard();
+    let root = fixture_root("edithere");
+    let agent_dir = fixture_root("edithere-agent");
+    let previous = std::env::var("TOILER_AGENT_DIR").ok();
+    std::env::set_var("TOILER_AGENT_DIR", &agent_dir);
+    write_session(
+        &root,
+        &[
+            r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","message":{"role":"user","content":[{"type":"text","text":"第一个问题"}],"timestamp":1794292905000}}"#,
+            r#"{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-11-10T06:41:46.000Z","message":{"role":"assistant","content":[{"type":"text","text":"第一个回答"}],"api":"openai-completions","provider":"first","model":"model-a","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1794292906000}}"#,
+            r#"{"type":"message","id":"m3","parentId":"m2","timestamp":"2026-11-10T06:41:47.000Z","message":{"role":"user","content":[{"type":"text","text":"要改的问题"}],"timestamp":1794292907000}}"#,
+            r#"{"type":"message","id":"m4","parentId":"m3","timestamp":"2026-11-10T06:41:48.000Z","message":{"role":"assistant","content":[{"type":"text","text":"要丢弃的回答"}],"api":"openai-completions","provider":"first","model":"model-a","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1794292908000}}"#,
+        ],
+    );
+    let router = app_with_two_models(&root, Path::new("/tmp/demo"), &agent_dir);
+
+    // 1) 编辑 m3：叶子退到 m2，m3 与 m4 都不在分支上。
+    let edited = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"navigate_tree","targetId":"m3","hideTarget":true}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(edited.status, StatusCode::OK, "{}", edited.text());
+    let edited = edited.json()["data"].clone();
+    assert_eq!(edited["cancelled"], false, "{edited}");
+    assert_eq!(edited["leafId"], "m2", "叶子应退到父节点：{edited}");
+
+    let hidden = call(
+        router.clone(),
+        "GET",
+        "/api/sessions/sess-a/context?leafId=m2",
+        None,
+        &[],
+    )
+    .await;
+    let hidden = hidden.json();
+    let texts: Vec<&str> = hidden["context"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["content"][0]["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(texts, vec!["第一个问题", "第一个回答"], "{hidden}");
+
+    // 2) 对照：不带 `hideTarget` 的导航（消息树点节点）仍把叶子放在条目自己上。
+    let navigated = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"navigate_tree","targetId":"m3"}"#),
+        &[],
+    )
+    .await;
+    let navigated = navigated.json()["data"].clone();
+    assert_eq!(navigated["leafId"], "m3", "{navigated}");
+
+    // 3) 编辑第一条消息：父节点是 null，叶子移到「无」。
+    let root_edit = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"navigate_tree","targetId":"m1","hideTarget":true}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(root_edit.status, StatusCode::OK, "{}", root_edit.text());
+    assert_eq!(
+        root_edit.json()["data"]["leafId"],
+        Value::Null,
+        "{}",
+        root_edit.text()
+    );
+
+    match previous {
+        Some(value) => std::env::set_var("TOILER_AGENT_DIR", value),
+        None => std::env::remove_var("TOILER_AGENT_DIR"),
+    }
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
 }

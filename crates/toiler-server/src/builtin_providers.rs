@@ -2030,7 +2030,7 @@ pub const PROVIDERS: &[BuiltinProvider] = &[
 ///
 /// | id | 面板名字 | 登录方式 | 模型来源 |
 /// |---|---|---|---|
-/// | `apisets` | Coding | API Key | 只认上游 `/v1/models`（无静态表） |
+/// | `apisets` | Coding | API Key | 只认上游 `/v1/models`（无静态表，缓存在 `models-store.json`，见 [`crate::apisets`]） |
 /// | `qoder-cn` | Qoder CN (subscription) | OAuth（设备码） | 静态目录 15 条 |
 ///
 /// 其它“桌面端定制”不改 provider 数量：`deepseek` 只是把模型目录换成 models.dev
@@ -2045,7 +2045,8 @@ pub const DESKTOP_PROVIDERS: &[BuiltinProvider] = &[
         base_url: Some("https://coding.apisets.com"),
         api_key: true,
         oauth: None,
-        // 目录由上游 `/v1/models` 决定（pi 缓存在 models-store.json），没有静态清单
+        // 目录由上游 `/v1/models` 决定（缓存在 `models-store.json`），没有静态清单。
+        // 注入与刷新在 `crates/toiler-server/src/apisets.rs` + `AppState::attach_apisets`。
         models: &[],
     },
     BuiltinProvider {

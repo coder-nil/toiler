@@ -23,10 +23,12 @@ use rpi_agent::events::{AgentEmitter, AgentEvent};
 use rpi_agent::message::{assistant_json, AgentMessage};
 use rpi_agent::types::AgentToolResult;
 use rpi_ai::types::AssistantMessageEvent;
-use rpi_harness::agent_harness::{AgentHarness, AgentLane, NavigationOutcome};
+use rpi_harness::agent_harness::{
+    AgentHarness, AgentLane, NavigationOutcome, QueuedMessages, SendMessageResult,
+};
 use rpi_harness::session::types::{ProvisionedEntry, ProvisionedKind};
 use rpi_harness::session::Session;
-use rpi_harness::types::{AgentHarnessOptions, SendMessageOptions};
+use rpi_harness::types::{AgentHarnessOptions, MessageDelivery, SendMessageOptions};
 use serde_json::{json, Value};
 use toiler_session::V3SessionStorage;
 use tokio::sync::broadcast;
@@ -217,6 +219,11 @@ impl LiveAgent {
             "get_state" => self.state_json().await,
             "prompt" => {
                 let message = prompt_message(command)?;
+                // pi 的 `prompt` 在运行中按 `streamingBehavior` 决定投递方式：
+                // `steer` 在工具批处理之后注入，`followUp` 等本轮跑完再投递。
+                // 不映射的话运行中的 follow-up 会被当成 steer 提前塞进去 ——
+                // 排队顺序与语义都不对（见 `docs/contracts/README.md`）。
+                let deliver_as = streaming_delivery(command);
                 let this = Arc::clone(self);
                 this.running.store(true, Ordering::Relaxed);
                 tokio::spawn(async move {
@@ -226,15 +233,23 @@ impl LiveAgent {
                             message,
                             SendMessageOptions {
                                 trigger_turn: Some(true),
-                                ..Default::default()
+                                deliver_as,
                             },
                         )
                         .await;
-                    this.running.store(false, Ordering::Relaxed);
-                    this.notify_running_changed();
+                    let queued = matches!(result, Ok(SendMessageResult::Queued { .. }));
+                    // 运行中排队时这一轮**没有**开起来：此时清 running 会让
+                    // `GET /api/agent/{id}` 报 idle，前端连排队条一起清空。
+                    if !queued {
+                        this.running.store(false, Ordering::Relaxed);
+                        this.notify_running_changed();
+                    }
+                    // 入队 / 出队（本轮结束）都推一帧，前端排队条才是实时的。
+                    this.broadcast_queue_update().await;
                     tracing::info!(
-                        "prompt 结束：session={} ok={} err={:?}",
+                        "prompt 结束：session={} queued={} ok={} err={:?}",
                         this.id,
+                        queued,
                         result.is_ok(),
                         result.as_ref().err().map(|e| e.to_string())
                     );
@@ -251,17 +266,31 @@ impl LiveAgent {
             "steer" => {
                 let message = prompt_message(command)?;
                 self.lane.steer(message).await?;
+                self.broadcast_queue_update().await;
                 Ok(json!({ "accepted": true }))
             }
             "follow_up" => {
                 let message = prompt_message(command)?;
                 self.lane.follow_up(message).await?;
+                self.broadcast_queue_update().await;
                 Ok(json!({ "accepted": true }))
+            }
+            // 前端的「撤回排队」按钮（`handleRecallQueue`）：清空两条队列并把
+            // **被清掉的文本**还回去，前端拿它回填输入框。pi 的 `clearQueue()`
+            // 同义；不实现的话按钮会拿到 500，提示「Failed to recall」。
+            "clear_queue" => {
+                let cleared = self.lane.clear_queue().await?;
+                let steering = texts_of(&cleared).0;
+                let follow_up = texts_of(&cleared).1;
+                self.broadcast_queue_update().await;
+                Ok(json!({ "steering": steering, "followUp": follow_up }))
             }
             "abort" => {
                 self.running.store(false, Ordering::Relaxed);
                 let _ = self.lane.abort().await;
                 self.notify_running_changed();
+                // abort 会把队列里的 steer/follow-up 回收掉，排队条得跟着清。
+                self.broadcast_queue_update().await;
                 Ok(json!({ "accepted": true }))
             }
             "set_model" => self.set_model(command).await,
@@ -367,14 +396,20 @@ impl LiveAgent {
         Ok(json!({ "id": model.id, "provider": model.provider.as_str() }))
     }
 
-    /// `{"type":"navigate_tree","targetId":…}` → `{cancelled, leafId}`。
+    /// `{"type":"navigate_tree","targetId":…,"hideTarget":bool}` → `{cancelled, leafId}`。
     ///
-    /// 语义与 pi 的 `navigateTree(targetId)` 一致：把 main lane 的叶子**移到**
+    /// 默认语义与 pi 的 `navigateTree(targetId)` 一致：把 main lane 的叶子**移到**
     /// 目标条目上（不是它的父节点），于是目标消息仍在分支里，下一条消息成为
-    /// 它的子节点 —— 这就是「从此处编辑」在同一会话里开分支的做法。
+    /// 它的子节点。
     ///
-    /// 前端的三个入口都发这一条命令：消息上的「从此处编辑」、消息树点节点、
-    /// 分支下拉切换叶子。返回的 `leafId` 会被原样带去
+    /// `hideTarget: true` 是「从此处编辑」专用的：用户要把这条消息（连同它之后的
+    /// 内容）从对话里**消失**，改完重发。所以叶子退到它的**父节点**，目标条目
+    /// 自己也不在分支上；重发的新消息挂在父节点下，原消息留在旧分支里。
+    /// 目标条目的父节点是 `null`（改的是第一条消息）时叶子被移到「无」，
+    /// 前端据此清空对话区。
+    ///
+    /// 前端的三个入口都发这一条命令：消息上的「从此处编辑」（带 `hideTarget`）、
+    /// 消息树点节点、分支下拉切换叶子。返回的 `leafId` 会被原样带去
     /// `GET /api/sessions/{id}/context?leafId=…`，所以这里必须是**导航后**的叶子。
     ///
     /// v3 文件里没有 leaf 记录（pi 也一样）：只挪内存指针，重开文件时叶子
@@ -387,9 +422,27 @@ impl LiveAgent {
             .filter(|id| !id.is_empty())
             .ok_or_else(|| anyhow::anyhow!("navigate_tree 缺少 targetId"))?;
 
+        let hide_target = command
+            .get("hideTarget")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        // `None` 也要真的导航（回到「没有叶子」）：不能回退成「保持当前叶子」，
+        // 否则编辑第一条消息时对话区会原样留在最后一条上。
+        let landing = if hide_target {
+            let entry = self
+                .harness
+                .session()
+                .get_entry(target)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Entry {target} not found"))?;
+            entry.base().parent_id.clone()
+        } else {
+            Some(target.to_string())
+        };
+
         let result = self
             .lane
-            .navigate_tree(Some(target), false, None, None)
+            .navigate_tree(landing.as_deref(), false, None, None)
             .await?;
         match result.outcome {
             NavigationOutcome::Completed { new_leaf_id, .. } => {
@@ -412,12 +465,40 @@ impl LiveAgent {
         }
     }
 
-    /// `get_state` 形状。`/api/agent/[id]`、`/api/mobile/state` 都用它。
+    /// 排队消息的文本快照（steering, follow-up）。
+    ///
+    /// 前端 `queuedMessages` 要的是**文本数组**（排队条逐条渲染，撤回按钮还要
+    /// 把它们回填输入框），不是数量。早先这里发的是 `usize`，前端 `?.length`
+    /// 恒为 `undefined` → 排队条永远不出现，看起来就是「排队没生效」。
+    async fn queued_texts(&self) -> (Vec<String>, Vec<String>) {
+        match self.lane.queued_messages().await {
+            Ok(queued) => texts_of(&queued),
+            Err(_) => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// 排队条数：`/api/mobile/state.queue` 是数量（手机端只显示 `N queued`）。
+    pub async fn queued_counts(&self) -> (usize, usize) {
+        let (steering, follow_up) = self.queued_texts().await;
+        (steering.len(), follow_up.len())
+    }
+
+    /// 推一帧 `queue_update`：前端 `ChatInput` 的排队条与手机端都读它。
+    async fn broadcast_queue_update(&self) {
+        let (steering, follow_up) = self.queued_texts().await;
+        let _ = self.events.send(json!({
+            "type": "queue_update",
+            "steering": steering,
+            "followUp": follow_up,
+        }));
+    }
+
+    /// `get_state` 形状。`/api/agent/[id]`、`/api/agent/new` 都用它。
+    ///
+    /// 注意 `queuedMessages` 是文本数组，`/api/mobile/state.queue` 是数量 ——
+    /// 两个消费方要的东西不同，不要再从同一份 `queuedMessages` 里取。
     pub async fn state_json(&self) -> Result<Value> {
-        let (steering, follow_up) = match self.lane.queued_messages().await {
-            Ok(queued) => (queued.steering.len(), queued.follow_up.len()),
-            Err(_) => (0, 0),
-        };
+        let (steering, follow_up) = self.queued_texts().await;
         let model = self.model.lock().expect("model").clone();
         Ok(json!({
             "isStreaming": self.is_streaming(),
@@ -627,6 +708,29 @@ fn task_progress_tasks(entry: &Value) -> Option<Vec<TaskItem>> {
         return None;
     }
     serde_json::from_value(message.get("details")?.get("tasks")?.clone()).ok()
+}
+
+/// `QueuedMessages` → 两条队列的文本（图片不参与排队条展示）。
+///
+/// 不用 rpi 的 `texts()`：它把两条队列摊平成一个迭代器，分不出 steering 与
+/// follow-up，而排队条要按队列分组渲染。
+fn texts_of(queued: &QueuedMessages) -> (Vec<String>, Vec<String>) {
+    (
+        queued.steering.iter().map(|m| m.text.clone()).collect(),
+        queued.follow_up.iter().map(|m| m.text.clone()).collect(),
+    )
+}
+
+/// `{"streamingBehavior":"steer"|"followUp"}` → rpi 的 `deliver_as`。
+///
+/// 缺省是 `steer`（pi 的默认值）：会话空闲时这一项不影响行为，`send_message`
+/// 照常开新一轮；只有运行中才决定进哪条队列。
+fn streaming_delivery(command: &Value) -> MessageDelivery {
+    match command.get("streamingBehavior").and_then(Value::as_str) {
+        Some("followUp") | Some("follow_up") => MessageDelivery::FollowUp,
+        Some("nextTurn") | Some("next_turn") => MessageDelivery::NextTurn,
+        _ => MessageDelivery::Steer,
+    }
 }
 
 /// `{message:"文本"}` / `{message:{…}}` / `{message:[blocks]}` → `AgentMessage`。

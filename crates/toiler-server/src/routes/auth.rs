@@ -31,7 +31,7 @@ use std::convert::Infallible;
 
 use axum::response::sse::{Event, Sse};
 
-use crate::auth::{mask_key, provider_status, AuthStore, RemoveResult};
+use crate::auth::{mask_key, provider_status, RemoveResult};
 use crate::builtin_providers::{self, BuiltinProvider};
 use crate::models_json::{self, provider_config, provider_display_name, provider_model_ids};
 use crate::security::Trusted;
@@ -79,7 +79,7 @@ fn listing_inputs(state: &AppState) -> Vec<ListingInput> {
                 configured: status.configured,
                 source: status.source,
                 credential_type: auth.credential_type(provider.id),
-                model_count: model_count(&models, provider.id, Some(provider)),
+                model_count: model_count(state, &models, provider.id, Some(provider)),
             }
         })
         .collect();
@@ -103,21 +103,30 @@ fn listing_inputs(state: &AppState) -> Vec<ListingInput> {
             configured: status.configured,
             source: status.source,
             credential_type: auth.credential_type(&id),
-            model_count: model_count(&models, &id, None),
+            model_count: model_count(state, &models, &id, None),
             id,
         });
     }
     rows
 }
 
-/// 卡片上的「N models」：内置目录里的模型 ∪ `models.json` 同名 provider 的模型。
+/// 卡片上的「N models」：内置目录里的模型 ∪ `models.json` 同名 provider 的模型
+/// ∪ 已注入 catalog 的模型。
 ///
-/// pi 的 `ModelRuntime.getModels()` 会把两者合并（同 id 去重），这里靠内置表里的
-/// id 列表做同样的去重 —— 所以那张表别删。
-fn model_count(models: &Value, id: &str, builtin: Option<&BuiltinProvider>) -> usize {
-    let mut ids: BTreeSet<&str> = BTreeSet::new();
+/// pi 的 `ModelRuntime.getModels()` 会把它们合并（同 id 去重），这里靠内置表里的
+/// id 列表 + catalog 做同样的去重 —— 所以那张表别删。
+///
+/// `apisets` 的清单**不在静态表里**（远端目录，见 [`crate::apisets`]），只能从
+/// catalog 数：不数的话卡片会永远写着「0 models」，和设置页里列出的 18 个模型自相矛盾。
+fn model_count(
+    state: &AppState,
+    models: &Value,
+    id: &str,
+    builtin: Option<&BuiltinProvider>,
+) -> usize {
+    let mut ids: BTreeSet<String> = BTreeSet::new();
     if let Some(provider) = builtin {
-        ids.extend(provider.models.iter().copied());
+        ids.extend(provider.models.iter().map(|model| (*model).to_string()));
     }
     if let Some(list) = provider_config(models, id)
         .and_then(|config| config.get("models"))
@@ -125,9 +134,18 @@ fn model_count(models: &Value, id: &str, builtin: Option<&BuiltinProvider>) -> u
     {
         ids.extend(
             list.iter()
-                .filter_map(|model| model.get("id").and_then(Value::as_str)),
+                .filter_map(|model| model.get("id").and_then(Value::as_str))
+                .map(str::to_string),
         );
     }
+    ids.extend(
+        state
+            .catalog()
+            .entries
+            .iter()
+            .filter(|entry| entry.provider == id)
+            .map(|entry| entry.id.clone()),
+    );
     ids.len()
 }
 
@@ -244,6 +262,10 @@ pub async fn save_api_key(
     if let Err(e) = store.set(&provider, json!({ "type": "api_key", "key": key })) {
         return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
+    // 目录是快照：新 key 可能让之前拉不到的目录（`apisets`）变得可拉，先把已注入的
+    // 内置 provider 对齐一遍，再后台拉一次远端目录（面板上的「重试」不必等它）。
+    state.attach_builtin_providers();
+    state.spawn_apisets_refresh();
     state.sessions().invalidate();
     Json(json!({ "success": true })).into_response()
 }
@@ -254,7 +276,7 @@ pub async fn delete_api_key(
     _trusted: Trusted,
     Path(provider): Path<String>,
 ) -> Response {
-    remove_credential(state.auth(), &provider, "api_key", "not an API key")
+    remove_credential(&state, &provider, "api_key", "not an API key")
 }
 
 /// `POST /api/auth/logout/{provider}`
@@ -263,16 +285,20 @@ pub async fn logout(
     _trusted: Trusted,
     Path(provider): Path<String>,
 ) -> Response {
-    remove_credential(state.auth(), &provider, "oauth", "not OAuth")
+    remove_credential(&state, &provider, "oauth", "not OAuth")
 }
 
 /// 删凭据的公共部分。
 ///
 /// 类型不匹配 → 409，措辞取**实际存着的类型**（`api_key` → "an API key"，
 /// `oauth` → "OAuth"），与 pi 一致。
-fn remove_credential(store: &AuthStore, provider: &str, expect: &str, expected: &str) -> Response {
-    match store.remove(provider, expect) {
+fn remove_credential(state: &AppState, provider: &str, expect: &str, expected: &str) -> Response {
+    match state.auth().remove(provider, expect) {
         Ok(RemoveResult::Removed) | Ok(RemoveResult::NotFound) => {
+            // 凭据没了 → 内置目录要重算：`apisets` 失去 key 后它的模型就不该再挂在
+            // 目录里（否则对话的模型下拉会列出一个发不出去的模型）。
+            state.attach_builtin_providers();
+            state.sessions().invalidate();
             Json(json!({ "success": true })).into_response()
         }
         Ok(RemoveResult::TypeMismatch(stored)) => {
@@ -354,7 +380,7 @@ async fn qoder_cn_login_stream(state: AppState) -> Response {
                     Ok(()) => {
                         // 模型目录要跟着刷新：端口在 bind 时才知道，登录可能发生在
                         // 任何时刻，这里补一次注入（幂等）。
-                        state.attach_qoder_cn();
+                        state.attach_builtin_providers();
                         state.sessions().invalidate();
                         yield Ok(Event::default().data(json!({ "type": "success" }).to_string()));
                     }
@@ -407,6 +433,7 @@ fn error(status: StatusCode, message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::AuthStore;
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;

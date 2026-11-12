@@ -341,28 +341,40 @@ impl ModelCatalog {
             return self;
         }
         let models = crate::qoder_cn::models(base_url);
-        self.entries.extend(models.iter().map(|model| {
-            ModelEntry {
-                provider: provider_id.to_string(),
-                id: model.id.clone(),
-                name: model.name.clone(),
-                api: "openai-completions".to_string(),
-                context_window: model.context_window,
-                max_tokens: model.max_tokens,
-                reasoning: model.reasoning,
-                input: model
-                    .input
-                    .iter()
-                    .map(|modality| match modality {
-                        InputModality::Text => "text".to_string(),
-                        InputModality::Image => "image".to_string(),
-                    })
-                    .collect(),
-            }
-        }));
+        self.entries.extend(models.iter().map(entry_for_model));
         self.models.extend(models.iter().cloned());
         self.providers
             .push(Arc::new(crate::qoder_cn::provider(base_url)));
+        self
+    }
+
+    /// 把内置 `apisets`（设置页里叫 **Coding**）的目录注入一份副本。
+    ///
+    /// 模型清单来自远端缓存（[`crate::apisets`] 的 `models-store.json`），由调用方
+    /// 读好再传进来 —— `catalog` 本身不做 IO，也不联网。
+    ///
+    /// 与 `qoder-cn` 不同的是这层会**先摘掉旧的 apisets**：刷新一次目录后模型会变，
+    /// 只 add 不 remove 会让同一个 id 在目录里出现两次。
+    pub fn with_apisets(mut self, api_key: &str, defs: &[serde_json::Value]) -> Self {
+        self = self.without_provider(crate::apisets::PROVIDER_ID);
+        let models = crate::apisets::models(defs);
+        if models.is_empty() {
+            return self;
+        }
+        self.entries.extend(models.iter().map(entry_for_model));
+        self.models.extend(models.iter().cloned());
+        self.providers
+            .push(Arc::new(crate::apisets::provider(api_key, models)));
+        self
+    }
+
+    /// 摘掉某个 provider 的 entries / models / providers 实例。
+    pub fn without_provider(mut self, provider_id: &str) -> Self {
+        self.entries.retain(|entry| entry.provider != provider_id);
+        self.models
+            .retain(|model| model.provider.as_str() != provider_id);
+        self.providers
+            .retain(|provider| provider.id() != provider_id);
         self
     }
 
@@ -416,6 +428,31 @@ impl ModelCatalog {
         self.models
             .iter()
             .find(|m| m.provider.as_str() == provider && m.id == id)
+    }
+}
+
+/// 把 rpi 的 [`Model`] 变成 `/api/models` 用的目录条目。
+///
+/// 内置目录（`qoder-cn` / `apisets`）都是先造 `Model`（harness 要它）再反推出条目，
+/// 两处必须用同一套映射：`api` 取模型自己的协议（`apisets` 的模型横跳
+/// `anthropic-messages` / `openai-responses`，不能像 `models.json` 那样按 provider 写死）。
+fn entry_for_model(model: &Model) -> ModelEntry {
+    ModelEntry {
+        provider: model.provider.clone(),
+        id: model.id.clone(),
+        name: model.name.clone(),
+        api: model.api.as_str().to_string(),
+        context_window: model.context_window,
+        max_tokens: model.max_tokens,
+        reasoning: model.reasoning,
+        input: model
+            .input
+            .iter()
+            .map(|modality| match modality {
+                InputModality::Text => "text".to_string(),
+                InputModality::Image => "image".to_string(),
+            })
+            .collect(),
     }
 }
 

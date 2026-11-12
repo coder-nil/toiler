@@ -1,4 +1,5 @@
 pub mod agent_runtime;
+pub mod apisets;
 pub mod assets;
 pub mod auth;
 pub mod boot;

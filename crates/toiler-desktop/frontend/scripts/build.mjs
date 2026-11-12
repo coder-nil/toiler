@@ -46,8 +46,16 @@ await rm(distDirectory, { recursive: true, force: true });
 // 显式指定 webpack：这个 shell 里带着 `TURBOPACK=1`（Pi Desktop 自己设的），
 // 两个 bundler 同时出现 Next 会直接报错。置空字符串不算取消，必须真正删掉这个
 // 环境变量，否则子进程仍会读到它。
+//
+// 同理要删掉 Pi Desktop 注入的 `__NEXT_PRIVATE_STANDALONE_CONFIG` /
+// `__NEXT_PRIVATE_ORIGIN`：前者是 **pi-desktop 自己的** Next 配置（standalone、
+// distDir 指向它的 `.next`），子进程读到后会在 `next build` 里带着错的配置跑，
+// 报一个与源码无关的 `TypeError: generate is not a function`。而脚本在这条命令
+// 之前已经 `rm -rf dist`，所以一次失败的构建会把产物一起删掉。
 const childEnvironment = { ...process.env };
 delete childEnvironment.TURBOPACK;
+delete childEnvironment.__NEXT_PRIVATE_STANDALONE_CONFIG;
+delete childEnvironment.__NEXT_PRIVATE_ORIGIN;
 await run(process.execPath, ["node_modules/next/dist/bin/next", "build", "--webpack"], {
   env: childEnvironment,
 });

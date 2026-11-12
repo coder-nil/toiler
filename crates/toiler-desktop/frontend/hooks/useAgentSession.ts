@@ -622,6 +622,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, []);
 
   const loadContext = useCallback(async (sid: string, leafId: string | null) => {
+    // `leafId === null` 是「没有叶子」的显式状态（编辑第一条消息、切到根）：
+    // 不带 leafId 请求时服务端会退回文件最后一条，对话区会原样留着最后一条 ——
+    // 那正是「编辑后没隐藏」的老毛病，所以这里不发请求，直接清空。
+    if (!leafId) {
+      messagesSessionIdRef.current = sid;
+      entryIdsRef.current = [];
+      setMessages([]);
+      setEntryIds([]);
+      setHasEarlierMessages(false);
+      setTotalMessageCount(0);
+      return;
+    }
     try {
       const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1" });
       if (leafId) params.set("leafId", leafId);
@@ -1701,6 +1713,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const result = await sendAgentCommand<{ cancelled?: boolean; leafId?: string | null }>(sid, {
         type: "navigate_tree",
         targetId: entryId,
+        // 编辑的那条消息连它之后的内容一起从对话里隐藏，改完重发时新消息
+        // 会挂在它的父节点下（形成新分支），而不是把旧消息留在原处。
+        hideTarget: true,
       });
       if (result?.cancelled) return false;
       const leafId = result?.leafId ?? null;

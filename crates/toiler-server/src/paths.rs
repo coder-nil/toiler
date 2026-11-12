@@ -160,6 +160,9 @@ pub fn legacy_project_db() -> PathBuf {
 ///
 /// 只搬 toiler 真正用到的；`mcp.json` / `mcp-cache.json` / `models-store.json` /
 /// `web-push.json` 等属于 pi 自己的缓存与状态，不搬（搬了反而变成陈旧副本）。
+///
+/// `models-store.json` 另有一层原因：toiler 自己会写这份文件（`apisets` 的远端
+/// 模型目录，见 [`crate::apisets`]），从 pi 搬一份两个进程会互相覆盖。
 pub const SEEDED_CONFIG_FILES: [&str; 4] =
     ["auth.json", "models.json", "settings.json", "trust.json"];
 

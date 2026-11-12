@@ -75,8 +75,10 @@ pub fn start_with_state(
     // `state.clone()` 之前做 —— `with_binding` 靠 `Arc::get_mut`，一旦被克隆过
     // 就只能拒绝（早先放在预热之后，真实启动直接 panic）。
     let state = state.with_binding(HOST, addr.port());
-    // `qoder-cn` 的模型 baseUrl 指向本进程端口，所以注入必须发生在 bind 之后。
-    state.attach_qoder_cn();
+    // `qoder-cn` 的模型 baseUrl 指向本进程端口，所以注入必须发生在 bind 之后；
+    // `apisets`（Coding）的目录来自远端缓存，缓存过期时顺手在后台拉一份。
+    state.attach_builtin_providers();
+    state.warm_apisets_catalog();
 
     log_startup(&state, addr, options);
 
