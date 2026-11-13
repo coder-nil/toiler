@@ -36,7 +36,9 @@
         "items": [
           "修复 qoder-cn 设备码轮询地址缺少查询分隔符（`?`）的问题。查询参数原先被拼进路径，导致上游返回 401，现抽出 `poll_url` 显式补上分隔符并新增测试。",
           "修复只在「推送标签」上复现的「没有 token」问题。`fetch` / `pull` / `push` / `push_tag` / `push_tags` 统一走同一套凭据注入与 `rememberCredential` 外壳。",
-          "修复推送不存在的标签时报错含义不清的问题。`push_tag` 先本地校验 `refs/tags/<tag>` 是否存在并返回 `Tag not found: <tag>`，不再把 git 的 `src refspec ... does not match any` 抛给面板。"
+          "修复推送不存在的标签时报错含义不清的问题。`push_tag` 先本地校验 `refs/tags/<tag>` 是否存在并返回 `Tag not found: <tag>`，不再把 git 的 `src refspec ... does not match any` 抛给面板。",
+          "修复流式响应中途被上游重置连接时整轮对话直接中断、不重试的问题。这类传输层中断（`Connection reset by peer (os error 54)` 等）在 rpi 的两道重试闸门上都过不去：provider 层只重试 HTTP 状态错误，harness 层的可重试措辞表里也没有 `connection reset` 这一族。现在在 `AgentHarnessOptions::models` 上包一层 Provider 装饰器，给这类终态错误追加一个能命中判定表的标记（`[connection lost]`，原文保留在最前面），交给既有的指数退避重试（默认最多 10 次）；配额、参数、鉴权类确定性错误不打标记，不会白等退避。同时给「流在收全之前被截断、provider 没发终态」这条 rpi 会当成不可重试的路径补了终态，让它也走重试。",
+          "修复自动重试期间界面完全没有提示的问题。重试事件名从 `retry_scheduled` 改成 pi 的 `auto_retry_start` / `auto_retry_end`（前端只认后两个，旧形状全程静默），并补齐配对：重试后拿到正常输出时收尾为成功，整轮结束时仍未恢复则带 `finalError` 收尾，避免「重试中…」永远挂着。"
         ]
       }
     ]

@@ -3844,6 +3844,94 @@ async fn new_session_honours_tool_names_and_bash_rule() {
     std::fs::remove_dir_all(&project).ok();
 }
 
+/// 系统提示词的**分节行形状**：前端「系统提示词」面板按行切分节
+/// （`lib/prompt-sections.ts` 的 `splitPromptSections`），前提是每个块的
+/// 开标签与闭标签各自独占整个一行。
+///
+/// 面板不能用 Markdown 渲染：区块边界就是 `<tools>` / `<rules>` 这些标签，
+/// 交给 Markdown 渲染器会被当成真 HTML、标签在视图里消失；所以它自己按行切。
+/// 而切分器只认「整行就是 `<tag>`」——一旦 `compose()` 改成
+/// `<tools>- read: …` 这种同行形式，或把缩进/前缀带进标签行，面板会静默退到
+/// 「原文」视图（一份大卡片），不报任何错。这条用例守住那个前提。
+#[tokio::test]
+// 串行锁跨 await 持有是故意的（同其余改 `TOILER_AGENT_DIR` 的用例）。
+#[allow(clippy::await_holding_lock)]
+async fn system_prompt_tags_own_their_lines_for_the_panel() {
+    let _env = env_guard();
+    let root = fixture_root("promptlines");
+    let agent_dir = fixture_root("promptlines-agent");
+    let project = fixture_root("promptlines-project");
+    std::fs::write(
+        project.join("AGENTS.md"),
+        "# 项目约定\n\n改代码前先跑 cargo test。\n",
+    )
+    .unwrap();
+    let previous = std::env::var("TOILER_AGENT_DIR").ok();
+    std::env::set_var("TOILER_AGENT_DIR", &agent_dir);
+
+    // 必须先把周目写好，而且 cwd 必须指向临时项目：
+    // · `set_ui_locale` 走的是「已经打开的周目」那条路径，内存里现开一个会话时
+    //   它不返回 systemPrompt；
+    // · `write_session` 固定写 `/tmp/demo`，那里没有 AGENTS.md，
+    //   `<project_context>` 段就不会出现，断言会白跑一遍。
+    let cwd = project.to_string_lossy().to_string();
+    let dir = root.join(toiler_session::session_directory_name(&cwd));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(toiler_session::session_file_name(1794292904431, "sess-a")),
+        format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"sess-a\",\"timestamp\":\"2026-11-10T06:41:44.431Z\",\"cwd\":{}}}\n",
+            serde_json::to_string(&cwd).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let router = app_with_two_models(&root, &project, &agent_dir);
+    let zh = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"set_ui_locale","locale":"zh-CN"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(zh.status, StatusCode::OK, "{}", zh.text());
+    let prompt = zh.json()["data"]["systemPrompt"]
+        .as_str()
+        .expect("set_ui_locale 必须返回 systemPrompt")
+        .to_string();
+
+    // 每类标签都必须以「整行就是 <tag>」的形式出现，且成对。
+    let lines: Vec<&str> = prompt.lines().collect();
+    for tag in ["tools", "rules", "project_context", "cwd"] {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        let open_at = lines
+            .iter()
+            .position(|line| *line == open)
+            .unwrap_or_else(|| panic!("`{open}` 必须独占一行：{prompt}"));
+        let close_at = lines
+            .iter()
+            .position(|line| *line == close)
+            .unwrap_or_else(|| panic!("`{close}` 必须独占一行：{prompt}"));
+        assert!(open_at < close_at, "`{tag}` 段的标签顺序反了：{prompt}");
+    }
+
+    // 节之间必须空行分隔，否则两个块会被切成同一个正文。
+    assert!(
+        prompt.contains("</tools>\n\n<rules>"),
+        "节之间要空行分隔：{prompt}"
+    );
+
+    match previous {
+        Some(value) => std::env::set_var("TOILER_AGENT_DIR", value),
+        None => std::env::remove_var("TOILER_AGENT_DIR"),
+    }
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+    std::fs::remove_dir_all(&project).ok();
+}
+
 /// `task_progress` 的任务列表要能从 transcript 恢复，并且必须出现在
 /// `get_state` 的两个扩展字段里 —— 前端任务框读的就是它们
 /// （`useAgentSession.ts` 的 `setExtensionStatuses` / `setExtensionWidgets`）。

@@ -12,6 +12,7 @@ import { ProjectTrustDialog } from "./ProjectTrustDialog";
 import { SettingsPanel } from "./SettingsPanel";
 import { AboutDialog } from "./AboutDialog";
 import { BranchNavigator, ConversationBranchesIcon } from "./BranchNavigator";
+import { SystemPromptPanel } from "./SystemPromptPanel";
 import { GitPanel } from "./GitPanel";
 import { useTheme, resolveTheme, setThemeState } from "@/hooks/useTheme";
 import { useI18n } from "@/hooks/useI18n";
@@ -2095,33 +2096,7 @@ export function AppShell() {
               zIndex: 500,
             }}>
               {activeTopPanel === "system" && (
-                <div style={{
-                  background: "var(--bg-panel)",
-                  borderBottom: "1px solid var(--border)",
-                }}>
-                  {systemPrompt ? (
-                    <div style={{
-                      maxHeight: "min(600px, 75vh)",
-                      overflowY: "auto",
-                      padding: "12px 16px",
-                      color: "var(--text-muted)",
-                      fontSize: 12,
-                      lineHeight: 1.6,
-                      whiteSpace: "pre-wrap",
-                      fontFamily: "var(--font-mono)",
-                    }}>
-                      {systemPrompt}
-                    </div>
-                  ) : systemPrompt === "" ? (
-                    <div style={{ padding: "10px 16px", fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>
-                       {translate("system.empty")}
-                    </div>
-                  ) : (
-                    <div style={{ padding: "10px 16px", fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>
-                       {systemPromptLoading ? translate("system.loading") : translate("system.load")}
-                    </div>
-                  )}
-                </div>
+                <SystemPromptPanel prompt={systemPrompt} loading={systemPromptLoading} />
               )}
               {activeTopPanel === "language" && (
                 <div

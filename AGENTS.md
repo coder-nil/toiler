@@ -52,7 +52,8 @@ tools/
 | `paths.rs` | 目录约定 + 允许访问的根目录（词法 + realpath 两层判定） |
 | `security.rs` | Host 白名单 + Origin 同源校验（**不是** Basic Auth） |
 | `session_view.rs` | 会话投影：tree / 分页 / `totalActiveMs` |
-| `agent_runtime.rs` | 活会话（`LiveAgent`）、事件广播、SSE |
+| `agent_runtime.rs` | 活会话（`LiveAgent`）、事件广播、SSE（含 `RetryNotice`：重试提示的成对帧） |
+| `retry_provider.rs` | Provider 装饰器：把传输层中断（连接被重置）标成 harness 认得的可重试错误（见差异 24） |
 | `gitsvc.rs` | git：status / diff / worktree / 20 个白名单动作 |
 | `apisets.rs` | Coding（`apisets`）的远端模型目录：`models-store.json` 缓存 + 上游 `/v1/models` + 按 `model.api` 分发的 provider（rpi 一个 provider id 只能一种协议） |
 | `builtin_providers.rs` | 写死的 provider 目录（44 家），卡片 / `modelCount` / 登录方式都靠它 |
@@ -72,7 +73,8 @@ tools/
 # 编译与测试（工作区根目录执行）
 cargo build                                   # 全工作区；debug 版内嵌的是占位前端页
 cargo build --release -p toiler-server       # 纯服务
-cargo test                                    # 348 个测试，应全绿且 0 warning
+cargo test                                    # 399 个测试，应全绿且 0 warning（唯一例外：
+                                              # lan_proxy 的 never_half_closes_* 需要本机 node）
 cargo clippy --all-targets                    # 提交前跑一遍
 cargo fmt                                     # 提交前跑一遍
 cargo test -p toiler-server --test regression  # 只跑前端契约回归（最常改动的那份）
@@ -176,6 +178,16 @@ scope 用 crate 短名：`server` / `session` / `desktop` / `poc` / `docs` / `to
 
 ## 常见坑
 
+- **重试提示是成对的两个帧，不能只发 start。** `agent_runtime::RetryNotice` 把
+  harness 的 `RetryScheduled` 投成 pi 的 `auto_retry_start`，并在「重试后首个
+  正常助手消息」或「整轮 `agent_end` 仍未恢复」时补 `auto_retry_end`。
+  只发 start 的话输入框上方那条「重试中…」会永远挂着；发成旧事件名
+  `retry_scheduled`（当前实现之前的形状）前端完全不认，重试就全程无声。
+  失败那次尝试自己的 `message_end` 不在此列——它后面可能还跟着下一次重试。
+  具体规则见 `docs/contracts/README.md` 的 3.6 与差异 24。
+- **`retry_provider::wrap_all` 只装在 `AgentHarnessOptions::models`（活会话）上**，
+  不要下沉到 `catalog.providers`：`oneshot`（自动起标题 / commit message / 模型
+  连通性测试）是「不重试、不落会话」的一次性补全，那边不该被改写文案。
 - **不要为了「能开界面」引入 Node 或子进程。** 阶段 4 的整个价值就是删掉
   `Command::new(node)`、端口轮询和 45s 启动超时。加回来等于回退阶段 4。
 - **`task_progress` 的任务面板在输入框上方**（`components/TaskProgressPanel.tsx`，

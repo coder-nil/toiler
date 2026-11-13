@@ -16,6 +16,7 @@ pub mod oneshot;
 pub mod paths;
 pub mod projects;
 pub mod qoder_cn;
+pub mod retry_provider;
 pub mod routes;
 pub mod security;
 pub mod session_view;

@@ -121,9 +121,7 @@ impl LiveAgent {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("models.json 里没有可用模型"))?;
         let (events, _rx) = broadcast::channel(EVENT_BUFFER);
-        let tap = Arc::new(EventTap {
-            events: events.clone(),
-        });
+        let tap = Arc::new(EventTap::new(events.clone()));
 
         // 桌面自带工具的通道与状态：`ask_user` 的问答往返、`task_progress` 的展示。
         let ui = UiBridge::new(events.clone());
@@ -152,7 +150,14 @@ impl LiveAgent {
             system_prompt: Some(system_prompt.clone()),
             session,
             allow_existing_session: true,
-            models: catalog.providers.clone(),
+            // 装一层装饰器：把「流式连接被上游掐断」这类传输层中断标成 harness 认得的
+            // 可重试错误（rpi 的判定表里没有 `connection reset` 这一族措词，详情与
+            // 与 pi 的差异见 `crate::retry_provider`）。
+            //
+            // 接在这里而不是 `catalog.providers`：同目录下的 `oneshot`（自动起标题 /
+            // commit message / 模型连通性测试）是「不重试、不落会话」的一次性补全，
+            // 那边不能被这层改写文案。
+            models: crate::retry_provider::wrap_all(&catalog.providers),
             agent_emitter: Some(tap),
             // 队列模式在 `AgentHarness::create` 时定下来（rpi 没有运行期 setter），
             // 所以这里每次开会话都重新读一遍 `settings.json`：用户在设置页改完，
@@ -770,23 +775,120 @@ fn now_ms() -> i64 {
 /// 把 `AgentEvent` 投成广播用的 JSON 的 emitter。
 pub struct EventTap {
     events: broadcast::Sender<Value>,
+    /// 重试提示的配对状态（见 [`RetryNotice`]）。
+    retry: RetryNotice,
+}
+
+impl EventTap {
+    pub fn new(events: broadcast::Sender<Value>) -> Self {
+        Self {
+            events,
+            retry: RetryNotice::default(),
+        }
+    }
+
+    fn publish(&self, event: &AgentEvent) {
+        for payload in self.retry.frames(event) {
+            let _ = self.events.send(payload);
+        }
+        if let Some(payload) = project_event(event) {
+            let _ = self.events.send(payload);
+        }
+    }
 }
 
 impl AgentEmitter for EventTap {
     fn emit(&self, event: AgentEvent) -> futures::future::BoxFuture<'static, ()> {
-        let events = self.events.clone();
-        Box::pin(async move {
-            if let Some(payload) = project_event(&event) {
-                let _ = events.send(payload);
-            }
-        })
+        self.publish(&event);
+        Box::pin(async {})
     }
 
     fn try_emit(&self, event: AgentEvent) {
-        if let Some(payload) = project_event(&event) {
-            let _ = self.events.send(payload);
+        self.publish(&event);
+    }
+}
+
+/// 重试提示的配对状态。
+///
+/// harness 只在**排定重试时**发一帧（`AgentEvent::RetryScheduled`），不会告诉你
+/// 「这次重试成功了」或「重试用完了」。而前端那条提示是成对的（pi 的
+/// `auto_retry_start` / `auto_retry_end`，前端 `useAgentSession.ts` 用它们
+/// `setRetryInfo` / `setRetryInfo(null)`）：只发 start 的话「重试中…」会一直挂着。
+///
+/// 所以在这里配对：
+///
+/// | 时机 | 补的帧 |
+/// |---|---|
+/// | `RetryScheduled` | `auto_retry_start` |
+/// | 重试后第一轮正常助手消息结束 | `auto_retry_end {success:true}` |
+/// | 整轮结束但一直没成功 | `auto_retry_end {success:false, finalError}` |
+///
+/// 失败那次尝试自己的 `message_end`（`stopReason == "error"`）**不**收尾：
+/// 它后面可能还跟着下一次 `RetryScheduled`。
+#[derive(Default)]
+pub struct RetryNotice {
+    /// `(attempt, errorMessage)`，仅在「已经排定重试、但还没看到结果」时有值。
+    pending: Mutex<Option<(u32, String)>>,
+}
+
+impl RetryNotice {
+    /// 这一帧 AgentEvent 需要补发哪些重试提示。
+    pub fn frames(&self, event: &AgentEvent) -> Vec<Value> {
+        match event {
+            AgentEvent::RetryScheduled {
+                attempt,
+                max_retries,
+                delay_ms,
+                error,
+            } => {
+                *lock(&self.pending) = Some((*attempt, error.clone()));
+                vec![json!({
+                    "type": "auto_retry_start",
+                    "attempt": attempt,
+                    "maxAttempts": max_retries,
+                    "delayMs": delay_ms,
+                    "errorMessage": error,
+                })]
+            }
+            AgentEvent::MessageEnd { message, .. } => {
+                // 只有「真的拿到了模型输出」才算重试成功；aborted 与 error 都不算。
+                let recovered = matches!(
+                    message,
+                    AgentMessage::Assistant(assistant)
+                        if !matches!(
+                            assistant.stop_reason,
+                            rpi_ai::types::StopReason::Error | rpi_ai::types::StopReason::Aborted
+                        )
+                );
+                if !recovered {
+                    return Vec::new();
+                }
+                lock(&self.pending).take().map_or_else(Vec::new, |(attempt, _)| {
+                    vec![json!({ "type": "auto_retry_end", "success": true, "attempt": attempt })]
+                })
+            }
+            AgentEvent::AgentEnd { .. } => {
+                lock(&self.pending)
+                    .take()
+                    .map_or_else(Vec::new, |(attempt, error)| {
+                        vec![json!({
+                            "type": "auto_retry_end",
+                            "success": false,
+                            "attempt": attempt,
+                            "finalError": error,
+                        })]
+                    })
+            }
+            _ => Vec::new(),
         }
     }
+}
+
+/// 锁中毒也继续用：这里存的是展示状态，没有「一半更新」的不变量要守。
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// 复刻 pi `29859.q()` 的裁剪：丢 turn 边界、丢 system 消息、
@@ -796,18 +898,9 @@ pub fn project_event(event: &AgentEvent) -> Option<Value> {
         AgentEvent::TurnStart | AgentEvent::TurnEnd { .. } => None,
         AgentEvent::AgentStart => Some(json!({ "type": "agent_start" })),
         AgentEvent::AgentEnd { .. } => Some(json!({ "type": "agent_end" })),
-        AgentEvent::RetryScheduled {
-            attempt,
-            max_retries,
-            delay_ms,
-            error,
-        } => Some(json!({
-            "type": "retry_scheduled",
-            "attempt": attempt,
-            "maxRetries": max_retries,
-            "delayMs": delay_ms,
-            "error": error,
-        })),
+        // pi 没有 `retry_scheduled` 这个事件名（旧版 toiler 发过，前端从来不认）；
+        // 重试提示改由 [`RetryNotice`] 投成 pi 的 `auto_retry_start`/`auto_retry_end`。
+        AgentEvent::RetryScheduled { .. } => None,
         AgentEvent::MessageStart {
             message,
             message_id,
@@ -1103,5 +1196,129 @@ impl LiveSessions {
 
     pub fn clear_starting(&self, id: &str) {
         self.starting.lock().expect("starting").remove(id);
+    }
+}
+
+#[cfg(test)]
+mod retry_notice_tests {
+    use super::*;
+
+    fn assistant(stop_reason: rpi_ai::types::StopReason) -> AgentMessage {
+        let mut message = rpi_ai::types::AssistantMessage::terminal(
+            rpi_ai::Api::AnthropicMessages,
+            "apisets",
+            "deepseek-v4.1-flash",
+            stop_reason,
+            "",
+            0,
+        );
+        message.error_message = None;
+        AgentMessage::Assistant(Box::new(message))
+    }
+
+    fn scheduled(attempt: u32, error: &str) -> AgentEvent {
+        AgentEvent::RetryScheduled {
+            attempt,
+            max_retries: 10,
+            delay_ms: 2000,
+            error: error.to_string(),
+        }
+    }
+
+    fn message_end(message: AgentMessage) -> AgentEvent {
+        AgentEvent::MessageEnd {
+            message,
+            message_id: None,
+        }
+    }
+
+    fn kinds(frames: &[Value]) -> Vec<String> {
+        frames
+            .iter()
+            .map(|frame| frame["type"].as_str().unwrap_or("?").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn scheduled_retry_reports_auto_retry_start() {
+        // 前端 useAgentSession 只认 auto_retry_start / auto_retry_end。
+        // 这两帧要是发成 retry_scheduled，重试全程是静默的。
+        let notice = RetryNotice::default();
+        let frames = notice.frames(&scheduled(1, "boom"));
+        assert_eq!(kinds(&frames), vec!["auto_retry_start"]);
+        assert_eq!(frames[0]["attempt"], 1);
+        assert_eq!(frames[0]["maxAttempts"], 10);
+        assert_eq!(frames[0]["delayMs"], 2000);
+        assert_eq!(frames[0]["errorMessage"], "boom");
+    }
+
+    #[test]
+    fn successful_attempt_closes_the_notice() {
+        let notice = RetryNotice::default();
+        notice.frames(&scheduled(1, "boom"));
+        // 重试成功：必须收尾，否则「重试中…」永远挂着。
+        let frames = notice.frames(&message_end(assistant(rpi_ai::types::StopReason::Stop)));
+        assert_eq!(kinds(&frames), vec!["auto_retry_end"]);
+        assert_eq!(frames[0]["success"], true);
+        assert_eq!(frames[0]["attempt"], 1);
+    }
+
+    #[test]
+    fn a_failed_attempt_does_not_close_the_notice() {
+        // 失败那次尝试自己的 message_end 后面可能还跟着下一次 RetryScheduled，
+        // 在这里收尾会让提示闪一下又出现。
+        let notice = RetryNotice::default();
+        notice.frames(&scheduled(1, "boom"));
+        let frames = notice.frames(&message_end(assistant(rpi_ai::types::StopReason::Error)));
+        assert!(frames.is_empty(), "{frames:?}");
+        // 再来一次重试仍然只发 start
+        assert_eq!(
+            kinds(&notice.frames(&scheduled(2, "boom again"))),
+            vec!["auto_retry_start"]
+        );
+    }
+
+    #[test]
+    fn aborted_attempt_is_not_success() {
+        let notice = RetryNotice::default();
+        notice.frames(&scheduled(1, "boom"));
+        assert!(notice
+            .frames(&message_end(assistant(rpi_ai::types::StopReason::Aborted)))
+            .is_empty());
+    }
+
+    #[test]
+    fn run_end_without_recovery_reports_failure() {
+        // 重试用完仍然失败：得带 finalError，前端才知道是「彻底失败」而不是在等下一次。
+        let notice = RetryNotice::default();
+        notice.frames(&scheduled(10, "still broken"));
+        let frames = notice.frames(&AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        });
+        assert_eq!(kinds(&frames), vec!["auto_retry_end"]);
+        assert_eq!(frames[0]["success"], false);
+        assert_eq!(frames[0]["attempt"], 10);
+        assert_eq!(frames[0]["finalError"], "still broken");
+    }
+
+    #[test]
+    fn no_notice_is_emitted_without_a_scheduled_retry() {
+        // 正常一轮（没重试过）不能凭空多出重试提示。
+        let notice = RetryNotice::default();
+        assert!(notice.frames(&AgentEvent::AgentStart).is_empty());
+        assert!(notice
+            .frames(&message_end(assistant(rpi_ai::types::StopReason::Stop)))
+            .is_empty());
+        assert!(notice
+            .frames(&AgentEvent::AgentEnd {
+                messages: Vec::new()
+            })
+            .is_empty());
+    }
+
+    #[test]
+    fn retry_scheduled_is_no_longer_projected_as_its_own_frame() {
+        // 事件名对齐 pi：旧形状会让前端收到一个它不认识的事件。
+        assert!(project_event(&scheduled(1, "boom")).is_none());
     }
 }

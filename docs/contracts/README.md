@@ -184,6 +184,14 @@ v3 文件里没有 leaf 记录（pi 也没有）：只挪内存指针，重开�
 3.5 排队变化：`{"type":"queue_update","steering":["<文本>"],"followUp":[]}`。
    入队（`prompt` 运行中 / `steer` / `follow_up`）、清空（`clear_queue` / `abort`）
    与一轮结束时各推一帧；桌面端据此刷新排队条，手机端收到后重拉一次快照。
+3.6 重试提示：`{"type":"auto_retry_start","attempt":1,"maxAttempts":10,"delayMs":2000,"errorMessage":"…"}`
+   与 `{"type":"auto_retry_end","success":true|false,"attempt":1,"finalError":"…"}`。
+   前端 `useAgentSession.ts` 用这两帧 `setRetryInfo` / `setRetryInfo(null)`（输入框上方
+   那条「重试中…」），所以**必须成对**：只发 start 会让提示永远挂着。
+   harness 只在「排定重试」时发事件，收尾这一半由
+   `agent_runtime::RetryNotice` 配对：重试后首个正常助手 `message_end` → `success:true`；
+   整轮 `agent_end` 仍未恢复 → `success:false` + `finalError`。
+   失败那次尝试自己的 `message_end` 不收尾（后面可能还跟着下一次重试）。
 4. 启动失败：`{"type":"startup_error","errorMessage":"Failed to start agent: …"}` 后关闭
 
 会话不存在：`404 Session not found`；请求已中断：`204`。
@@ -581,6 +589,41 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
     响应与其它动作一致：返回操作后的完整仓库状态，所以推送后标签列表与 `tags`
     字段不变（本地标签没变），面板上看不到「已推送」标记——这与 `push` / `fetch`
     一样没有成功提示，只有失败才出红条。
+
+24. **传输层中断会被补上可重试标记（pi 不会）**：上游在流式响应中途把连接重置
+    （`Connection reset by peer (os error 54)` 一类）时，`rpi-ai` 会把它包成
+    `AiError::Sse`，provider 发一个 `stopReason: "error"` 的终态。这道错误在 rpi
+    的两道重试闸门上都过不去：
+
+    | 闸门 | 为何放行不了 |
+    |---|---|
+    | provider 层 `retry_provider_request` | harness 把 `max_retries` 传成 `None`，且它只重试 `AiError::Http`，`Sse` 直接透传 |
+    | harness 层 `is_retryable_assistant_error` | 拿 `errorMessage` 做**子串**匹配，表里没有 `connection reset` 这一族措辞 |
+
+    这是上游判定表的共同缺口、不是移植退化：拿同一条报错喂 pi 原版的
+    `RETRYABLE_PROVIDER_ERROR_PATTERN`（`pi-ai/dist/utils/retry.js`）同样返回
+    false（它的表里有 `connection.?lost`、`other side closed`，但没有
+    `connection reset`），并且 rpi 0.22.1 的这份表逐字未变。
+
+    toiler 的做法（`crates/toiler-server/src/retry_provider.rs`）：在 harness 的
+    `models` 上包一层 [`Provider`] 装饰器，**透传 `id`/`models`**，只在终态
+    `Error` 的 `errorMessage` 末尾追加一段能命中 rpi 子串表的标记
+    （`[connection lost]`），之后交给既有 `RetryPolicy`（默认指数退避、最多
+    10 次）。原文保留在最前面——它要展示给用户，也会落进 v3 文件给 pi 读。
+
+    | 项 | pi | toiler |
+    |---|---|---|
+    | 判定方式 | 正则（`connection.?lost` 允许中间夹字符） | 子串（rpi 的实现，不能改） |
+    | 覆盖范围 | 更宽（`terminated`、`unable to forward upstream` 等） | **只补传输层中断**（配额 / 参数 / 鉴权类明确不打，否则白等十轮退避） |
+    | 命中后 | 报错原文 | 原文 + `[connection lost]` 后缀 |
+
+    另外补了一个 rpi 的缺口：SSE 在 chunked 编码中途 EOF 时 reqwest 会「正常」
+    结束流，provider 却没发终态，rpi 那边就是 `ended without a terminal event`——
+    那是**不可重试**的 run 失败。装饰器会补一个 `Error` 终态，让它走上重试。
+
+    注意这层只装在 `AgentHarnessOptions::models`（活会话）上：同目录的
+    `oneshot`（自动起标题 / commit message / 模型连通性测试）是「不重试、不落
+    会话」的一次性补全，那边不能被改写文案。
 
 ### 目录与文件
 
