@@ -72,6 +72,13 @@ const TOP_BAR_ICON_BUTTON_SIZE = 34;
 const NOTIFICATION_ICON = "/icons/icon-192.png";
 const NOTIFICATION_PROMPT_MAX_LENGTH = 100;
 const RIGHT_PANEL_TRANSITION_MS = 200;
+// 会话还没有首条 user 消息时服务端给的占位文案（与 `session_view::first_message_text`
+// / `sessions_store::read_summary` 一致）。它不是真正的标题。
+const NO_FIRST_MESSAGE_PLACEHOLDER = "(no messages)";
+
+function isPlaceholderFirstMessage(text: string | undefined): boolean {
+  return !text || text === NO_FIRST_MESSAGE_PLACEHOLDER;
+}
 
 function preserveChatScrollDuringPanelTransition(container: HTMLDivElement): () => void {
   const content = container.querySelector<HTMLElement>("[data-chat-message-content]");
@@ -768,11 +775,23 @@ export function AppShell() {
       .then((d) => {
         const full = d?.sessions.find((s) => s.id === sessionId);
         if (!full) return;
-        setSelectedSession((prev) => (
-          prev?.id === sessionId
-            ? { ...prev, ...full, transient: full.transient ?? false }
-            : prev
-        ));
+        setSelectedSession((prev) => {
+          if (prev?.id !== sessionId) return prev;
+          const merged = { ...prev, ...full, transient: full.transient ?? false };
+          // `/api/sessions` 有 30 秒列表缓存，而且新会话的首条 user 消息要等
+          // `prompt` 落盘后才出现在文件里：这段时间服务端只能给出占位的
+          // `(no messages)`。发出消息的瞬间 `promoteNewSession` 已经把原文放进
+          // 本地条目，别让占位文案盖掉它——否则顶栏标题会一直显示
+          // `(no messages)`，直到某次缓存过期才恢复。
+          if (
+            isPlaceholderFirstMessage(merged.firstMessage)
+            && !isPlaceholderFirstMessage(prev.firstMessage)
+          ) {
+            merged.firstMessage = prev.firstMessage;
+            merged.messageCount = Math.max(merged.messageCount, prev.messageCount);
+          }
+          return merged;
+        });
       })
       .catch(() => {});
   }, []);
