@@ -2515,6 +2515,12 @@ span.token.table {
      （CHAT_TOP_BAR_HEIGHT + 安全区），内联的 padding-top 盖住这里的简写。 */
   padding: 0 8px 0 14px;
   background: var(--bg-chrome);
+  /* 这条带子是拖拽区（data-tauri-drag-region="deep"）：光标保持箭头、
+     不吃文本选择，跟窗口外壳（.app-chrome）同一套规矩。否则路径文字上
+     显示可选中光标，按下去却在拖窗口。 */
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .git-panel-header-icon {
@@ -2992,6 +2998,20 @@ span.token.table {
   color: var(--danger);
 }
 
+/* 标签行：tag 名不是可点目标（点开 diff 那套语法不适用于 tag），
+   所以用 span 占满剩余宽度，只保留等宽字体与截断。 */
+.git-tag-name {
+  flex: 1;
+  min-width: 0;
+  padding: 0 6px;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 底部确认条（discard_all）与浮在列表上的确认卡（discard 单个文件）。 */
 .git-confirm-panel {
   display: grid;
@@ -3020,6 +3040,14 @@ span.token.table {
   margin: 0;
   color: var(--text);
   font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 确认卡的第二行：一句补充说明（例如「只删本地标签」），比正文淡一档。 */
+.git-confirm-note {
+  margin: -4px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
   line-height: 1.5;
 }
 

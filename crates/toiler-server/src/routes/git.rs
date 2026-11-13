@@ -2,8 +2,8 @@
 //!
 //! | route | 行为 |
 //! |---|---|
-//! | `GET  /api/git?cwd=` | 完整仓库状态（分支/上游/增删/未跟踪…） |
-//! | `POST /api/git` | 20 个动作之一，返回操作后的状态 |
+//! | `GET  /api/git?cwd=` | 完整仓库状态（分支/标签/上游/增删/未跟踪…） |
+//! | `POST /api/git` | 22 个动作之一（pi 的 20 个 + `create_tag` / `delete_tag`），返回操作后的状态 |
 //! | `GET  /api/git/status?cwd=` | 只要「变更文件 + 增删行数」 |
 //! | `GET  /api/git/diff?cwd=&path=` | 单文件补丁 |
 //! | `POST /api/git/commit-message` | 暂存区 diff → 模型生成 commit message（NDJSON 流） |

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, GitBranch, Loader2, Minus, Plus, RefreshCw, Undo2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, GitBranch, Loader2, Minus, Plus, RefreshCw, Trash2, Undo2, X } from "lucide-react";
 import { useI18n } from "@/hooks/useI18n";
 import { readApiJson } from "@/lib/api-json";
 import { CHAT_TOP_BAR_HEIGHT } from "@/lib/panel-layout";
@@ -32,11 +32,12 @@ type GitSummary = {
   savedCredentialUsername: string | null;
   operation: "merge" | "rebase" | "cherry-pick" | "revert" | null;
   branches: string[];
+  tags: string[];
   changes: { files: GitFileStatus[]; additions: number; deletions: number };
   untrackedPaths: string[];
 };
 
-type Action = "stage" | "unstage" | "discard" | "discard_all" | "commit" | "fetch" | "pull" | "push" | "merge" | "continue" | "abort" | "set_remote_url" | "summarize";
+type Action = "stage" | "unstage" | "discard" | "discard_all" | "commit" | "fetch" | "pull" | "push" | "merge" | "continue" | "abort" | "set_remote_url" | "create_tag" | "delete_tag" | "summarize";
 
 const SAVED_CREDENTIAL_MASK = "••••••••";
 
@@ -58,6 +59,9 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
   const [busy, setBusy] = useState<Action | null>(null);
   const [confirmingDiscardAll, setConfirmingDiscardAll] = useState(false);
   const [confirmingDiscardFile, setConfirmingDiscardFile] = useState<string | null>(null);
+  const [newTag, setNewTag] = useState("");
+  const [tagMessage, setTagMessage] = useState("");
+  const [confirmingDeleteTag, setConfirmingDeleteTag] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [checkedUpdate, setCheckedUpdate] = useState(false);
 
@@ -131,6 +135,10 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
       const data = await readApiJson<GitSummary>(res, { hint: t("git.serverErrorHint") });
       setSummary(data);
       if (action === "commit") setMessage("");
+      if (action === "create_tag") {
+        setNewTag("");
+        setTagMessage("");
+      }
       if (action === "merge") setMergeBranch("");
       if (action === "set_remote_url") {
         setEditingRemote(false);
@@ -256,6 +264,8 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
           setConfirmingDiscardAll(false);
         } else if (confirmingDiscardFile) {
           setConfirmingDiscardFile(null);
+        } else if (confirmingDeleteTag) {
+          setConfirmingDeleteTag(null);
         } else if (editingRemote) {
           setEditingRemote(false);
           setRemoteDraft("");
@@ -266,7 +276,7 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
     };
     document.addEventListener("keydown", handleKeyDown, true);
     return () => document.removeEventListener("keydown", handleKeyDown, true);
-  }, [confirmingDiscardAll, confirmingDiscardFile, disabled, editingRemote, onClose]);
+  }, [confirmingDiscardAll, confirmingDeleteTag, confirmingDiscardFile, disabled, editingRemote, onClose]);
 
   return (
     <div role="presentation" className="git-panel-overlay">
@@ -274,7 +284,14 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
         {/* 标题条与对话顶栏同高（CHAT_TOP_BAR_HEIGHT）：它是从右侧抽出来的浮层，
             两条横线的 y 必须对得上，否则并排看就是错位的。高度仍是内联——安全区
             只有内联的 paddingTop 能压住类里的 padding 简写。 */}
-        <header className="git-panel-header" style={{ height: `calc(${CHAT_TOP_BAR_HEIGHT}px + env(safe-area-inset-top))`, paddingTop: "env(safe-area-inset-top)" }}>
+        <header
+          className="git-panel-header"
+          // 标题条可拖窗口：面板贴右侧、头上一整条与对话顶栏同高，鼠标自然
+          // 会往那儿落。与 app-topbar 一样用 deep——裸属性只在直接点中这个
+          // 元素时生效，而这条带子里铺着图标、标题、路径、按钮。
+          data-tauri-drag-region="deep"
+          style={{ height: `calc(${CHAT_TOP_BAR_HEIGHT}px + env(safe-area-inset-top))`, paddingTop: "env(safe-area-inset-top)" }}
+        >
           <GitBranch size={17} strokeWidth={2} className="git-panel-header-icon" aria-hidden="true" />
           <strong className="git-panel-title">{t("common.git")}</strong>
           <span className="git-panel-path" title={summary?.repositoryRoot ?? cwd}>{summary?.repositoryRoot ?? cwd}</span>
@@ -326,10 +343,31 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
               <div className="git-actions-row"><ActionButton label={t("git.fetch")} action="fetch" busy={busy} onClick={() => void run("fetch")} /><ActionButton label={t(pullRebase ? "git.pullRebase" : "git.pullMerge")} action="pull" busy={busy} onClick={() => void run("pull", { rebase: pullRebase })} /><ActionButton label={t("git.push")} action="push" busy={busy} onClick={() => void run("push")} /><label className="git-check"><input type="checkbox" checked={pullRebase} onChange={(event) => setPullRebase(event.target.checked)} disabled={disabled} /> {t("git.rebaseWhenPulling")}</label></div>
             </div>
             <div className="git-section"><SectionTitle title={t("git.mergeBranch")} /><div className="git-actions-row"><MergeBranchPicker branches={mergeBranches} value={mergeBranch} disabled={disabled} onChange={setMergeBranch} /><ActionButton label={t("git.merge")} action="merge" busy={busy} disabled={!mergeBranch || mergeBranches.length === 0} onClick={() => void run("merge", { branch: mergeBranch })} /></div></div>
+            {/* 标签只有本地一列：列表 / 创建（带附注则建附注 tag）/ 删除本地。
+                推送 tag 是网络动作，不在这块里做。 */}
+            <div className="git-section">
+              <SectionTitle title={t("git.tags")} action={summary.tags.length > 0 ? <span className="git-summary-note">{t("git.tagCount", { count: summary.tags.length })}</span> : undefined} />
+              <div className="git-field">
+                <input className="git-input" value={newTag} onChange={(event) => setNewTag(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && newTag.trim() && !disabled) void run("create_tag", { tag: newTag.trim(), ...(tagMessage.trim() ? { message: tagMessage.trim() } : {}) }); }} placeholder={t("git.tagName")} title={t("git.tagName")} disabled={disabled} />
+                <input className="git-input" value={tagMessage} onChange={(event) => setTagMessage(event.target.value)} placeholder={t("git.tagMessage")} title={t("git.tagMessage")} disabled={disabled} />
+              </div>
+              <div className="git-actions-row" style={{ marginBottom: summary.tags.length > 0 ? 9 : 0 }}>
+                <ActionButton label={t("git.createTag")} action="create_tag" busy={busy} disabled={!newTag.trim()} onClick={() => void run("create_tag", { tag: newTag.trim(), ...(tagMessage.trim() ? { message: tagMessage.trim() } : {}) })} />
+              </div>
+              {summary.tags.length === 0
+                ? <div className="git-hint">{t("git.noTags")}</div>
+                : <div className="git-file-list">{summary.tags.map((tag) => (
+                  <div key={tag} className="git-file-row">
+                    <span className="git-tag-name" title={tag}>{tag}</span>
+                    <FileAction label={t("git.deleteTag")} icon={Trash2} action="delete_tag" busy={busy} danger onClick={() => setConfirmingDeleteTag(tag)} />
+                  </div>
+                ))}</div>}
+            </div>
           </>}
         </main>
         {confirmingDiscardFile && summary?.isGitRepository && <DiscardFileConfirmDialog filePath={confirmingDiscardFile} busy={busy} onCancel={() => setConfirmingDiscardFile(null)} onConfirm={() => { const filePath = confirmingDiscardFile; setConfirmingDiscardFile(null); void run("discard", { paths: [filePath] }); }} />}
         {confirmingDiscardAll && summary?.isGitRepository && <DiscardAllConfirmDialog summary={summary} untrackedPaths={untrackedPaths} busy={busy} onCancel={() => setConfirmingDiscardAll(false)} onConfirm={() => { setConfirmingDiscardAll(false); void run("discard_all"); }} />}
+        {confirmingDeleteTag && summary?.isGitRepository && <DeleteTagConfirmDialog tag={confirmingDeleteTag} busy={busy} onCancel={() => setConfirmingDeleteTag(null)} onConfirm={() => { const tag = confirmingDeleteTag; setConfirmingDeleteTag(null); void run("delete_tag", { tag }); }} />}
       </section>
     </div>
   );
@@ -399,6 +437,27 @@ function DiscardFileConfirmDialog({ filePath, busy, onCancel, onConfirm }: { fil
       <div className="git-confirm-actions">
         <ActionButton label={t("git.discardAllConfirmCancel")} action="discard" busy={busy} onClick={onCancel} />
         <ActionButton label={t("git.discard")} action="discard" busy={busy} danger onClick={onConfirm} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Confirmation shown before `delete_tag`.
+ *
+ * Tags are cheap to recreate only if the name matters, not the target: the dialog
+ * spells out that this deletes the local tag only, so nobody expects the remote
+ * one to disappear too.
+ */
+function DeleteTagConfirmDialog({ tag, busy, onCancel, onConfirm }: { tag: string; busy: Action | null; onCancel: () => void; onConfirm: () => void }) {
+  const { t } = useI18n();
+  return (
+    <div role="alertdialog" aria-label={t("git.deleteTagConfirm", { tag })} className="git-confirm">
+      <p className="git-confirm-text">{t("git.deleteTagConfirm", { tag })}</p>
+      <p className="git-confirm-note">{t("git.deleteTagLocalOnly")}</p>
+      <div className="git-confirm-actions">
+        <ActionButton label={t("git.discardAllConfirmCancel")} action="delete_tag" busy={busy} onClick={onCancel} />
+        <ActionButton label={t("git.deleteTag")} action="delete_tag" busy={busy} danger onClick={onConfirm} />
       </div>
     </div>
   );

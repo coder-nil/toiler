@@ -382,8 +382,8 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 | `POST /api/models-config/discover` | ✅ | 打上游 `/models` 并按 pi 的字段兼容表解析 → `{models,endpoint}` |
 | `POST /api/models-config/test` | ✅ | 真跑一次补全 → `{ok,latencyMs,status,responseText}` |
 | `GET /api/models-config/catalog` | ⚠️ | models.dev 目录已砍，返回空表 + `note` |
-| `GET /api/git?cwd=` | ✅ | 分支/上游/增删/未跟踪/凭据类型/进行中的操作 |
-| `POST /api/git` | ✅ | 20 个动作（含 `merge_branch`、`*_remote_branch`、`*_branch`），返回操作后的状态 |
+| `GET /api/git?cwd=` | ✅ | 分支/上游/增删/未跟踪/凭据类型/进行中的操作；`tags` 是 toiler 追加的字段（见差异 22） |
+| `POST /api/git` | ✅ | pi 的 20 个动作（含 `merge_branch`、`*_remote_branch`、`*_branch`）+ toiler 追加的 `create_tag` / `delete_tag`（见差异 22），返回操作后的状态 |
 | `GET /api/git/status?cwd=` | ✅ | `{isGitRepository,repositoryRoot,files[],additions,deletions}` |
 | `GET /api/git/diff?cwd=&path=` | ✅ | `{supported,status?,patch?}`；未跟踪文件会合成补丁 |
 | `POST /api/git/commit-message` | ✅ | NDJSON：`update` → `done`（失败 `error`）；用 `settings.json` 的默认模型 |
@@ -545,6 +545,21 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
     `POST/DELETE /api/auth/api-key/apisets` 之后会重建内置目录。
     **还没做的**：`deepseek` / `openrouter` 两家在 pi 侧同样有 `refreshModels`
     （走 models.dev 目录），toiler 仍只读 `models.json`。
+
+22. **`/api/git` 追加了本地标签管理（pi 没有）**：`ACTIONS` 从 20 条扩到 22 条，
+    多出 `create_tag` / `delete_tag`，`GET /api/git` 的返回体也多一个 `tags: string[]`
+    （本地 tag 名，`git for-each-ref refs/tags` 的短名，升序去重，纯本地不区分是否已推送）。
+    pi 的 Git 面板只做分支，没有标签入口，所以这是扩展而不是逆向结果；面板上的
+    「标签」区块只有列表 / 创建 / 删除本地标签，**不打 remote**（推送 tag 属于
+    `git push` 之外的网络动作，暂不提供）。
+
+    | 动作 | 入参 | 等价命令 |
+    |---|---|---|
+    | `create_tag` | `tag`（必填）、`message`（可选，给了就建附注 tag）、`target`（可选，缺省 HEAD） | `git tag [-a <tag> -m <message>] <tag> [<target>]` |
+    | `delete_tag` | `tag`（必填） | `git tag -d <tag>`（只删本地） |
+
+    名字校验走 `git check-ref-format refs/tags/<name>`（与分支的 `--branch` 校验同一思路），
+    重名 / 非法名 / 删不存在的 tag 都由 git 自己报错并原样透出，不静默成功。
 
 ### 目录与文件
 

@@ -538,6 +538,7 @@ pub fn full_status(cwd: &Path) -> Value {
             "savedCredentialUsername": Value::Null,
             "operation": Value::Null,
             "branches": [],
+            "tags": [],
             "changes": status(cwd),
             "untrackedPaths": [],
         });
@@ -595,6 +596,7 @@ pub fn full_status(cwd: &Path) -> Value {
         "savedCredentialUsername": Value::Null,
         "operation": operation_in_progress(&root),
         "branches": local_branches,
+        "tags": branches(&root, "refs/tags"),
         "changes": changes,
         "untrackedPaths": untracked_paths(&root),
     })
@@ -895,8 +897,9 @@ pub fn checkout_branch(cwd: &Path, branch: &str) -> Result<String, GitError> {
     Ok(trimmed.to_string())
 }
 
-/// 20 个允许的 git 操作（`git.js` 里的白名单）。
-pub const ACTIONS: [&str; 20] = [
+/// `git.js` 的 20 个白名单动作，加上 toiler 追加的标签管理（`create_tag` /
+/// `delete_tag`，见 `docs/contracts/README.md` 差异 22）。
+pub const ACTIONS: [&str; 22] = [
     "stage",
     "unstage",
     "discard",
@@ -917,6 +920,8 @@ pub const ACTIONS: [&str; 20] = [
     "pull_branch",
     "push_branch",
     "merge_branch",
+    "create_tag",
+    "delete_tag",
 ];
 
 pub fn is_supported_action(action: &str) -> bool {
@@ -949,6 +954,21 @@ fn validate_branch(root: &Path, raw: &str) -> Result<String, GitError> {
         STATUS_TIMEOUT,
     )
     .map_err(|_| err(format!("Invalid branch name: {trimmed}")))?;
+    Ok(trimmed.to_string())
+}
+
+/// 校验 tag 名（`git check-ref-format` 要求完整 ref 名）。
+fn validate_tag(root: &Path, raw: &str) -> Result<String, GitError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(err("Tag name is required"));
+    }
+    run_git(
+        root,
+        &["check-ref-format", &format!("refs/tags/{trimmed}")],
+        STATUS_TIMEOUT,
+    )
+    .map_err(|_| err(format!("Invalid tag name: {trimmed}")))?;
     Ok(trimmed.to_string())
 }
 
@@ -1346,6 +1366,35 @@ pub fn action(cwd: &Path, body: &Value) -> Result<Value, GitError> {
             let branch = validate_branch(&root, require_str(body, "branch")?)?;
             run_git(&root, &["branch", "-D", &branch], ACTION_TIMEOUT)?;
         }
+        // toiler 扩展（不在 pi 的白名单里）：本地标签管理。带了 `message` 就建
+        // 附注 tag（`git tag -a`），否则建轻量 tag；`target` 缺省指向 HEAD。
+        "create_tag" => {
+            let tag = validate_tag(&root, require_str(body, "tag")?)?;
+            let message = body
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let target = body
+                .get("target")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let mut args: Vec<&str> = vec!["tag"];
+            if let Some(message) = message {
+                args.extend_from_slice(&["-a", &tag, "-m", message]);
+            } else {
+                args.push(&tag);
+            }
+            if let Some(target) = target {
+                args.push(target);
+            }
+            run_git(&root, &args, ACTION_TIMEOUT)?;
+        }
+        "delete_tag" => {
+            let tag = validate_tag(&root, require_str(body, "tag")?)?;
+            run_git(&root, &["tag", "-d", &tag], ACTION_TIMEOUT)?;
+        }
         "checkout_remote_branch" => {
             let (remote, branch, _) = resolve_remote_branch(&root, require_str(body, "branch")?)?;
             let local_exists = run_git(
@@ -1731,6 +1780,41 @@ mod tests {
         let committed = action(&dir, &json!({"action": "commit", "message": "init"})).unwrap();
         let changes = &committed["changes"];
         assert_eq!(changes["files"].as_array().unwrap().len(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tag_actions_create_and_delete() {
+        let dir = temp_repo("tags");
+        std::fs::write(dir.join("a.txt"), "x\n").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-qm", "init"]);
+
+        // 轻量 tag：只给名字
+        let lightweight = action(&dir, &json!({"action": "create_tag", "tag": "v1.0.0"})).unwrap();
+        assert_eq!(lightweight["tags"], json!(["v1.0.0"]));
+        let kind = run_git(&dir, &["cat-file", "-t", "refs/tags/v1.0.0"], STATUS_TIMEOUT).unwrap();
+        assert_eq!(kind, "commit");
+
+        // 带 message 则建附注 tag
+        let annotated = action(
+            &dir,
+            &json!({"action": "create_tag", "tag": "v1.1.0", "message": "release"}),
+        )
+        .unwrap();
+        assert_eq!(annotated["tags"], json!(["v1.0.0", "v1.1.0"]));
+        let kind = run_git(&dir, &["cat-file", "-t", "refs/tags/v1.1.0"], STATUS_TIMEOUT).unwrap();
+        assert_eq!(kind, "tag");
+
+        // 重复名字与非法名字都报错（与 git 自己的拒绝一致）
+        assert!(action(&dir, &json!({"action": "create_tag", "tag": "v1.0.0"})).is_err());
+        assert!(action(&dir, &json!({"action": "create_tag", "tag": "bad name"})).is_err());
+
+        let deleted = action(&dir, &json!({"action": "delete_tag", "tag": "v1.0.0"})).unwrap();
+        assert_eq!(deleted["tags"], json!(["v1.1.0"]));
+        // 删不存在的 tag 不能静默成功
+        assert!(action(&dir, &json!({"action": "delete_tag", "tag": "v1.0.0"})).is_err());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
