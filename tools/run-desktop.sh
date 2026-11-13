@@ -76,7 +76,8 @@ frontend_changed() {
   newer="$(find "$frontend_dir" \
     \( -name node_modules -o -name dist -o -name .next \) -prune -o \
     -type f \( -name '*.ts' -o -name '*.tsx' -o -name '*.css' -o -name '*.mjs' \
-                -o -name '*.json' -o -name '*.html' \) -newer "$dist_dir/index.html" -print \
+                -o -name '*.json' -o -name '*.html' -o -name '*.png' \
+                -o -name '*.ico' -o -name '*.svg' -o -name '*.webp' \) -newer "$dist_dir/index.html" -print \
     2>/dev/null | head -1)"
   [[ -n "$newer" ]]
 }

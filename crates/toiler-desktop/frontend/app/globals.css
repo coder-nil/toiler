@@ -183,8 +183,12 @@
   position: sticky;
   top: 0;
   display: flex;
+  align-items: center;
+  justify-content: center;
   align-self: flex-start;
   flex-shrink: 0;
+  /* 与单行文字和操作按钮共用行高，多行时仍固定在输入区顶部。 */
+  height: max(var(--composer-actions-height, 34px), calc(24px + var(--chat-font-size-offset, 0px)));
   margin: 0;
   padding: 0;
   border: none;

@@ -2531,7 +2531,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 flexShrink: 0,
                 width: 28,
                 height: 24,
-                marginTop: 2,
                 pointerEvents: "none",
                 userSelect: "none",
                 WebkitUserSelect: "none",
