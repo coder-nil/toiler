@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { ArrowDown, ArrowUp, GitBranch, Loader2, Minus, Plus, RefreshCw, Undo2, X } from "lucide-react";
 import { useI18n } from "@/hooks/useI18n";
 import { readApiJson } from "@/lib/api-json";
 import { CHAT_TOP_BAR_HEIGHT } from "@/lib/panel-layout";
@@ -39,10 +39,6 @@ type GitSummary = {
 type Action = "stage" | "unstage" | "discard" | "discard_all" | "commit" | "fetch" | "pull" | "push" | "merge" | "continue" | "abort" | "set_remote_url" | "summarize";
 
 const SAVED_CREDENTIAL_MASK = "••••••••";
-
-const STATUS_COLOR: Record<GitFileStatus["status"], string> = {
-  modified: "#d6a84b", added: "#4ade80", deleted: "#f87171", renamed: "#60a5fa", untracked: "#4ade80", conflict: "#f87171",
-};
 
 function fileName(filePath: string): string {
   return filePath.split(/[\\/]/).pop() ?? filePath;
@@ -274,49 +270,62 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
 
   return (
     <div role="presentation" className="git-panel-overlay">
-      <section role="dialog" aria-label={t("common.git")} className="git-panel-dialog" style={{ position: "relative", width: 460, maxWidth: "100vw", height: "100%", display: "flex", flexDirection: "column", background: "var(--bg)", borderLeft: "1px solid var(--border)", boxShadow: "-14px 0 32px rgba(0,0,0,.16)" }}>
+      <section role="dialog" aria-label={t("common.git")} className="git-panel-dialog">
         {/* 标题条与对话顶栏同高（CHAT_TOP_BAR_HEIGHT）：它是从右侧抽出来的浮层，
-            两条横线的 y 必须对得上，否则并排看就是错位的。 */}
-        <header style={{ height: `calc(${CHAT_TOP_BAR_HEIGHT}px + env(safe-area-inset-top))`, padding: "env(safe-area-inset-top) 8px 0 14px", display: "flex", alignItems: "center", gap: 10, flexShrink: 0, borderBottom: "1px solid var(--border)", background: "var(--bg-chrome)" }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="3" /><circle cx="18" cy="18" r="3" /><path d="M6 9v6a3 3 0 0 0 3 3h6" /><path d="M18 15V9a3 3 0 0 0-3-3H9" /></svg>
-          <strong style={{ fontSize: 13 }}>{t("common.git")}</strong>
-          <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11 }}>{summary?.repositoryRoot ?? cwd}</span>
-          <button type="button" onClick={() => void refresh().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))} disabled={disabled} title={t("git.refreshStatus")} aria-label={t("git.refreshStatus")} style={iconButtonStyle} onMouseEnter={(event) => { if (!disabled) event.currentTarget.style.background = "var(--bg-hover)"; }} onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}><span aria-hidden="true">↻</span></button>
-          <button type="button" onClick={onClose} disabled={disabled} title={t("git.close")} aria-label={t("git.close")} style={iconButtonStyle} onMouseEnter={(event) => { if (!disabled) event.currentTarget.style.background = "var(--bg-hover)"; }} onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}><span aria-hidden="true">×</span></button>
+            两条横线的 y 必须对得上，否则并排看就是错位的。高度仍是内联——安全区
+            只有内联的 paddingTop 能压住类里的 padding 简写。 */}
+        <header className="git-panel-header" style={{ height: `calc(${CHAT_TOP_BAR_HEIGHT}px + env(safe-area-inset-top))`, paddingTop: "env(safe-area-inset-top)" }}>
+          <GitBranch size={17} strokeWidth={2} className="git-panel-header-icon" aria-hidden="true" />
+          <strong className="git-panel-title">{t("common.git")}</strong>
+          <span className="git-panel-path" title={summary?.repositoryRoot ?? cwd}>{summary?.repositoryRoot ?? cwd}</span>
+          <button type="button" className="git-icon-btn" onClick={() => void refresh().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))} disabled={disabled} title={t("git.refreshStatus")} aria-label={t("git.refreshStatus")}><RefreshCw size={14} strokeWidth={2} aria-hidden="true" /></button>
+          <button type="button" className="git-icon-btn" onClick={onClose} disabled={disabled} title={t("git.close")} aria-label={t("git.close")}><X size={15} strokeWidth={2} aria-hidden="true" /></button>
         </header>
-        <main style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 14 }}>
-          {error && <div role="alert" style={{ marginBottom: 12, padding: "8px 10px", border: "1px solid rgba(248,113,113,.45)", background: "rgba(248,113,113,.08)", color: "#ef4444", fontSize: 12, lineHeight: 1.45, overflowWrap: "anywhere" }}>{error}{sshAuthFailed && <div style={{ marginTop: 6, color: "var(--text-muted)" }}>{t("git.sshKeyAuthFailed")}</div>}</div>}
-          {!summary && !error && <div style={{ color: "var(--text-muted)", fontSize: 12 }}>{t("git.loadingRepository")}</div>}
-          {summary && !summary.isGitRepository && <div style={{ color: "var(--text-muted)", fontSize: 12 }}>{t("git.notRepository")}</div>}
+        <main className="git-panel-body">
+          {error && <div role="alert" className="git-alert">{error}{sshAuthFailed && <div className="git-alert-detail">{t("git.sshKeyAuthFailed")}</div>}</div>}
+          {!summary && !error && <div className="git-hint">{t("git.loadingRepository")}</div>}
+          {summary && !summary.isGitRepository && <div className="git-hint">{t("git.notRepository")}</div>}
           {summary?.isGitRepository && <>
-            <div style={summaryStyle}>
-              <span style={{ color: "var(--text-muted)", fontSize: 11 }}>{t("git.branch")}</span><strong style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{summary.branch ?? t("git.detachedHead")}</strong>
-              <span style={{ color: "var(--text-muted)", fontSize: 11 }}>{t("git.sync")}</span><span>{summary.upstream ? <SyncIndicator ahead={summary.ahead} behind={summary.behind} /> : <span style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{t("git.noUpstream")}</span>}</span>
+            <div className="git-summary">
+              <span className="git-summary-label">{t("git.branch")}</span>
+              <strong className="git-summary-value" title={summary.branch ?? undefined}>{summary.branch ?? t("git.detachedHead")}</strong>
+              <span className="git-summary-label">{t("git.sync")}</span>
+              <span>{summary.upstream ? <SyncIndicator ahead={summary.ahead} behind={summary.behind} /> : <span className="git-summary-note">{t("git.noUpstream")}</span>}</span>
             </div>
             {summary.upstream && summary.behind > 0 && !checkedUpdate && (
-              <div style={{ marginTop: 10, padding: "9px 10px", border: "1px solid rgba(74,222,128,.5)", background: "rgba(74,222,128,.08)", color: "#16a34a", fontSize: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <span>{t("git.availableUpdate", { count: summary.behind })}</span>
+              <div className="git-note">
+                <span className="git-note-text">{t("git.availableUpdate", { count: summary.behind })}</span>
                 <ActionButton label={t("git.updateNow")} action="pull" busy={busy} onClick={() => { setCheckedUpdate(true); void run("pull", { rebase: pullRebase }); }} />
               </div>
             )}
-            {summary.operation && <div style={{ marginTop: 10, padding: "9px 10px", border: "1px solid rgba(214,168,75,.5)", background: "rgba(214,168,75,.10)", color: "var(--text)", fontSize: 12 }}>{t("git.operationInProgress", { operation: t(`git.operation.${summary.operation}`) })}{conflictCount ? ` ${t("git.operationConflicts", { count: conflictCount })}` : ""}<div style={{ display: "flex", gap: 6, marginTop: 8 }}><ActionButton label={t("git.continue")} busy={busy} action="continue" onClick={() => void run("continue")} /><ActionButton label={t("git.abort")} busy={busy} action="abort" danger onClick={() => void run("abort")} /></div></div>}
-            <div style={sectionStyle}><SectionTitle title={t("git.changesSummary", { additions: summary.changes.additions, deletions: summary.changes.deletions })} action={<div style={{ display: "flex", gap: 6 }}>{unstaged.length > 0 && <ActionButton label={t("git.stageAll")} action="stage" busy={busy} onClick={() => void run("stage", { paths: unstaged.map((file) => file.filePath) })} />}{summary?.changes.files.length > 0 && <ActionButton label={t("git.discardAll")} action="discard_all" busy={busy} danger disabled={conflictCount > 0} title={t("git.discardAllTitle")} onClick={() => setConfirmingDiscardAll(true)} />}</div>} /><FileList files={unstaged} empty={t("git.noUnstagedChanges")} busy={busy} onOpenDiff={openDiff} onStage={(filePath) => void run("stage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} /></div>
-            <div style={sectionStyle}><SectionTitle title={t("git.stagedSummary", { count: staged.length })} action={staged.length > 0 ? <ActionButton label={t("git.unstageAll")} action="unstage" busy={busy} onClick={() => void run("unstage", { paths: staged.map((file) => file.filePath) })} /> : undefined} /><FileList files={staged} empty={t("git.nothingStaged")} busy={busy} onOpenDiff={openDiff} onUnstage={(filePath) => void run("unstage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} /></div>
-            <div style={sectionStyle}><SectionTitle title={t("git.commit")} /><textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder={t("git.commitMessage")} disabled={disabled} rows={7} style={{ width: "100%", resize: "vertical", padding: 8, border: "1px solid var(--border)", borderRadius: 5, background: "var(--bg)", color: "var(--text)", fontFamily: "inherit", fontSize: 12, lineHeight: 1.5 }} /><div style={{ marginTop: 7, display: "flex", justifyContent: "flex-end", gap: 6 }}><ActionButton label={t("git.summarizeCommit")} action="summarize" busy={busy} disabled={staged.length === 0 || conflictCount > 0} title={t("git.summarizeCommitTitle")} onClick={() => void summarizeCommitMessage()} /><ActionButton label={t("git.commitStaged")} action="commit" busy={busy} disabled={!message.trim() || staged.length === 0 || conflictCount > 0} onClick={() => void run("commit", { message })} /></div></div>
-            <div style={sectionStyle}>
-              <SectionTitle title={t("git.remote")} />
-              {summary.remote && !editingRemote && <div style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 30, marginBottom: 9 }}><div style={{ minWidth: 0, flex: 1, color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.45, overflowWrap: "anywhere" }}>{summary.remote}</div><ActionButton label={t("git.editRemote")} action="set_remote_url" busy={busy} onClick={() => { setRemoteDraft(summary.remote ?? ""); setEditingRemote(true); }} /></div>}
-              {summary.remote && editingRemote && <form onSubmit={(event) => { event.preventDefault(); if (remoteDraft.trim()) void run("set_remote_url", { remoteUrl: remoteDraft }); }} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}><input value={remoteDraft} onChange={(event) => setRemoteDraft(event.target.value)} placeholder={t("git.remoteUrl")} title={t("git.remoteUrl")} autoFocus disabled={disabled} style={{ ...credentialInputStyle, minWidth: 0, flex: 1 }} /><ActionButton label={t("git.cancelEditRemote")} action="set_remote_url" busy={busy} onClick={() => { setEditingRemote(false); setRemoteDraft(""); }} /><ActionButton label={t("git.saveRemote")} action="set_remote_url" busy={busy} disabled={!remoteDraft.trim()} onClick={() => void run("set_remote_url", { remoteUrl: remoteDraft })} /></form>}
-              {(needsHttpsCredential || needsSshCredential) && <div style={{ display: "grid", gap: 7, marginBottom: 10, padding: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)" }}>
-                <div style={{ color: "var(--text-muted)", fontSize: 11 }}>{t(needsHttpsCredential ? "git.httpsCredentials" : "git.sshCredentials")}{summary.hasSavedCredential ? ` · ${t("git.savedCredential")}` : ""}</div>
-                {needsHttpsCredential && <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("git.username")} autoComplete="username" disabled={disabled} style={credentialInputStyle} />}
-                <input type="password" value={secret} onFocus={() => { if (secret === SAVED_CREDENTIAL_MASK) setSecret(""); }} onChange={(event) => setSecret(event.target.value)} placeholder={t(needsHttpsCredential ? "git.passwordOrToken" : "git.keyPassphrase")} autoComplete="current-password" disabled={disabled} style={credentialInputStyle} />
-                <label style={{ display: "flex", alignItems: "center", gap: 5, color: "var(--text-muted)", fontSize: 11 }}><input type="checkbox" checked={rememberCredential} onChange={(event) => setRememberCredential(event.target.checked)} disabled={disabled} /> {t("git.rememberCredential")}</label>
-              </div>}
-              {summary.credentialKind === "none" && summary.remote?.startsWith("git://") && <div style={{ marginBottom: 10, color: "var(--text-muted)", fontSize: 11 }}>{t("git.nativeProtocolAnonymous")}</div>}
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}><ActionButton label={t("git.fetch")} action="fetch" busy={busy} onClick={() => void run("fetch")} /><ActionButton label={t(pullRebase ? "git.pullRebase" : "git.pullMerge")} action="pull" busy={busy} onClick={() => void run("pull", { rebase: pullRebase })} /><ActionButton label={t("git.push")} action="push" busy={busy} onClick={() => void run("push")} /><label style={{ display: "flex", alignItems: "center", gap: 5, color: "var(--text-muted)", fontSize: 11 }}><input type="checkbox" checked={pullRebase} onChange={(event) => setPullRebase(event.target.checked)} disabled={disabled} /> {t("git.rebaseWhenPulling")}</label></div>
+            {summary.operation && <div className="git-note" data-tone="warn"><span className="git-note-text">{t("git.operationInProgress", { operation: t(`git.operation.${summary.operation}`) })}{conflictCount ? ` ${t("git.operationConflicts", { count: conflictCount })}` : ""}</span><div className="git-note-actions"><ActionButton label={t("git.continue")} busy={busy} action="continue" onClick={() => void run("continue")} /><ActionButton label={t("git.abort")} busy={busy} action="abort" danger onClick={() => void run("abort")} /></div></div>}
+            <div className="git-section">
+              <SectionTitle title={t("git.changesSummary", { additions: summary.changes.additions, deletions: summary.changes.deletions })} action={<>{unstaged.length > 0 && <ActionButton label={t("git.stageAll")} action="stage" busy={busy} onClick={() => void run("stage", { paths: unstaged.map((file) => file.filePath) })} />}{summary?.changes.files.length > 0 && <ActionButton label={t("git.discardAll")} action="discard_all" busy={busy} danger disabled={conflictCount > 0} title={t("git.discardAllTitle")} onClick={() => setConfirmingDiscardAll(true)} />}</>} />
+              <FileList files={unstaged} empty={t("git.noUnstagedChanges")} busy={busy} onOpenDiff={openDiff} onStage={(filePath) => void run("stage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} />
             </div>
-            <div style={sectionStyle}><SectionTitle title={t("git.mergeBranch")} /><div style={{ display: "flex", gap: 6 }}><MergeBranchPicker branches={mergeBranches} value={mergeBranch} disabled={disabled} onChange={setMergeBranch} /><ActionButton label={t("git.merge")} action="merge" busy={busy} disabled={!mergeBranch || mergeBranches.length === 0} onClick={() => void run("merge", { branch: mergeBranch })} /></div></div>
+            <div className="git-section">
+              <SectionTitle title={t("git.stagedSummary", { count: staged.length })} action={staged.length > 0 ? <ActionButton label={t("git.unstageAll")} action="unstage" busy={busy} onClick={() => void run("unstage", { paths: staged.map((file) => file.filePath) })} /> : undefined} />
+              <FileList files={staged} empty={t("git.nothingStaged")} busy={busy} onOpenDiff={openDiff} onUnstage={(filePath) => void run("unstage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} />
+            </div>
+            <div className="git-section">
+              <SectionTitle title={t("git.commit")} />
+              <textarea className="git-textarea" value={message} onChange={(event) => setMessage(event.target.value)} placeholder={t("git.commitMessage")} disabled={disabled} rows={6} />
+              <div className="git-commit-actions"><ActionButton label={t("git.summarizeCommit")} action="summarize" busy={busy} disabled={staged.length === 0 || conflictCount > 0} title={t("git.summarizeCommitTitle")} onClick={() => void summarizeCommitMessage()} /><ActionButton label={t("git.commitStaged")} action="commit" busy={busy} disabled={!message.trim() || staged.length === 0 || conflictCount > 0} onClick={() => void run("commit", { message })} /></div>
+            </div>
+            <div className="git-section">
+              <SectionTitle title={t("git.remote")} />
+              {summary.remote && !editingRemote && <div className="git-actions-row" style={{ marginBottom: 9 }}><div style={{ minWidth: 0, flex: 1, color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.45, overflowWrap: "anywhere" }}>{summary.remote}</div><ActionButton label={t("git.editRemote")} action="set_remote_url" busy={busy} onClick={() => { setRemoteDraft(summary.remote ?? ""); setEditingRemote(true); }} /></div>}
+              {summary.remote && editingRemote && <form onSubmit={(event) => { event.preventDefault(); if (remoteDraft.trim()) void run("set_remote_url", { remoteUrl: remoteDraft }); }} className="git-actions-row" style={{ marginBottom: 10 }}><input className="git-input" value={remoteDraft} onChange={(event) => setRemoteDraft(event.target.value)} placeholder={t("git.remoteUrl")} title={t("git.remoteUrl")} autoFocus disabled={disabled} style={{ minWidth: 0, flex: 1 }} /><ActionButton label={t("git.cancelEditRemote")} action="set_remote_url" busy={busy} onClick={() => { setEditingRemote(false); setRemoteDraft(""); }} /><ActionButton label={t("git.saveRemote")} action="set_remote_url" busy={busy} disabled={!remoteDraft.trim()} onClick={() => void run("set_remote_url", { remoteUrl: remoteDraft })} /></form>}
+              {(needsHttpsCredential || needsSshCredential) && <div className="git-field">
+                <div className="git-field-label">{t(needsHttpsCredential ? "git.httpsCredentials" : "git.sshCredentials")}{summary.hasSavedCredential ? ` · ${t("git.savedCredential")}` : ""}</div>
+                {needsHttpsCredential && <input className="git-input" value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("git.username")} autoComplete="username" disabled={disabled} />}
+                <input className="git-input" type="password" value={secret} onFocus={() => { if (secret === SAVED_CREDENTIAL_MASK) setSecret(""); }} onChange={(event) => setSecret(event.target.value)} placeholder={t(needsHttpsCredential ? "git.passwordOrToken" : "git.keyPassphrase")} autoComplete="current-password" disabled={disabled} />
+                <label className="git-check"><input type="checkbox" checked={rememberCredential} onChange={(event) => setRememberCredential(event.target.checked)} disabled={disabled} /> {t("git.rememberCredential")}</label>
+              </div>}
+              {summary.credentialKind === "none" && summary.remote?.startsWith("git://") && <div className="git-hint" style={{ marginBottom: 10 }}>{t("git.nativeProtocolAnonymous")}</div>}
+              <div className="git-actions-row"><ActionButton label={t("git.fetch")} action="fetch" busy={busy} onClick={() => void run("fetch")} /><ActionButton label={t(pullRebase ? "git.pullRebase" : "git.pullMerge")} action="pull" busy={busy} onClick={() => void run("pull", { rebase: pullRebase })} /><ActionButton label={t("git.push")} action="push" busy={busy} onClick={() => void run("push")} /><label className="git-check"><input type="checkbox" checked={pullRebase} onChange={(event) => setPullRebase(event.target.checked)} disabled={disabled} /> {t("git.rebaseWhenPulling")}</label></div>
+            </div>
+            <div className="git-section"><SectionTitle title={t("git.mergeBranch")} /><div className="git-actions-row"><MergeBranchPicker branches={mergeBranches} value={mergeBranch} disabled={disabled} onChange={setMergeBranch} /><ActionButton label={t("git.merge")} action="merge" busy={busy} disabled={!mergeBranch || mergeBranches.length === 0} onClick={() => void run("merge", { branch: mergeBranch })} /></div></div>
           </>}
         </main>
         {confirmingDiscardFile && summary?.isGitRepository && <DiscardFileConfirmDialog filePath={confirmingDiscardFile} busy={busy} onCancel={() => setConfirmingDiscardFile(null)} onConfirm={() => { const filePath = confirmingDiscardFile; setConfirmingDiscardFile(null); void run("discard", { paths: [filePath] }); }} />}
@@ -326,50 +335,68 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
   );
 }
 
-const iconButtonStyle: CSSProperties = { width: 26, height: 26, padding: 0, border: "none", borderRadius: "var(--radius-sm)", background: "transparent", color: "var(--text-muted)", cursor: "pointer", fontSize: 16, lineHeight: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", transition: "background .12s, color .12s" };
-const sectionStyle: CSSProperties = { marginTop: 18, paddingTop: 14, borderTop: "1px solid var(--border)" };
-const summaryStyle: CSSProperties = { display: "grid", gridTemplateColumns: "58px minmax(0, 1fr)", rowGap: 7, alignItems: "center", padding: "10px", background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 6 };
-
 function SyncIndicator({ ahead, behind }: { ahead: number; behind: number }) {
   const { t } = useI18n();
-  const chipStyle = (active: boolean): CSSProperties => ({
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 4,
-    minWidth: 36,
-    height: 24,
-    padding: "0 7px",
-    border: "1px solid var(--border)",
-    borderRadius: 999,
-    background: "var(--bg)",
-    color: active ? "currentColor" : "var(--text-dim)",
-    flexShrink: 0,
-  });
-  const countStyle: CSSProperties = { fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1 };
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-      <span role="img" aria-label={t("git.ahead", { count: ahead })} title={t("git.ahead", { count: ahead })} style={ahead > 0 ? { ...chipStyle(true), color: "#60a5fa" } : chipStyle(false)}>
-        <ArrowUp size={13} strokeWidth={2.5} aria-hidden="true" />
-        <span style={countStyle}>{ahead}</span>
+    <span className="git-sync">
+      <span role="img" aria-label={t("git.ahead", { count: ahead })} title={t("git.ahead", { count: ahead })} className="git-sync-chip" data-tone="ahead" data-active={ahead > 0}>
+        <ArrowUp size={12} strokeWidth={2.5} aria-hidden="true" />
+        <span>{ahead}</span>
       </span>
-      <span role="img" aria-label={t("git.behind", { count: behind })} title={t("git.behind", { count: behind })} style={behind > 0 ? { ...chipStyle(true), color: "#d6a84b" } : chipStyle(false)}>
-        <ArrowDown size={13} strokeWidth={2.5} aria-hidden="true" />
-        <span style={countStyle}>{behind}</span>
+      <span role="img" aria-label={t("git.behind", { count: behind })} title={t("git.behind", { count: behind })} className="git-sync-chip" data-tone="behind" data-active={behind > 0}>
+        <ArrowDown size={12} strokeWidth={2.5} aria-hidden="true" />
+        <span>{behind}</span>
       </span>
     </span>
   );
 }
-const credentialInputStyle: CSSProperties = { width: "100%", boxSizing: "border-box", minHeight: 30, padding: "5px 7px", border: "1px solid var(--border)", borderRadius: 5, background: "var(--bg)", color: "var(--text)", fontFamily: "inherit", fontSize: 12 };
-function SectionTitle({ title, action }: { title: string; action?: ReactNode }) { return <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8, color: "var(--text-muted)", fontSize: 11, fontWeight: 700, letterSpacing: ".04em", textTransform: "uppercase" }}><span>{title}</span>{action}</div>; }
-function ActionButton({ label, action, busy, disabled, danger, title, onClick }: { label: string; action: Action; busy: Action | null; disabled?: boolean; danger?: boolean; title?: string; onClick: () => void }) { const { t } = useI18n(); const pending = busy === action; const inactive = Boolean(busy) || disabled; const hoverBackground = danger ? "rgba(248,113,113,.12)" : "var(--bg-hover)"; return <button type="button" title={title} onClick={onClick} disabled={inactive} onMouseEnter={(event) => { if (!inactive) event.currentTarget.style.background = hoverBackground; }} onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }} style={{ flexShrink: 0, height: 30, padding: "0 10px", border: "none", borderRadius: 5, background: "transparent", color: danger ? "#ef4444" : "var(--text)", cursor: inactive ? "not-allowed" : "pointer", opacity: inactive ? .58 : 1, fontSize: 11, fontWeight: 600, lineHeight: 1, whiteSpace: "nowrap", transition: "background .12s" }}>{pending ? t("git.working") : label}</button>; }
-function FileList({ files, empty, busy, onOpenDiff, onStage, onUnstage, onDiscard }: { files: GitFileStatus[]; empty: string; busy: Action | null; onOpenDiff: (file: GitFileStatus) => void; onStage?: (filePath: string) => void; onUnstage?: (filePath: string) => void; onDiscard?: (file: GitFileStatus) => void }) { const { t } = useI18n(); if (!files.length) return <div style={{ color: "var(--text-dim)", fontSize: 12 }}>{empty}</div>; return <div style={{ height: 220, border: "1px solid var(--border)", borderRadius: 6, overflowY: "auto" }}>{files.map((file) => <div key={`${file.filePath}:${file.indexStatus}:${file.worktreeStatus}`} style={{ minHeight: 35, padding: "5px 7px", display: "flex", alignItems: "center", gap: 7, borderBottom: "1px solid var(--border)" }}><button type="button" onClick={() => onOpenDiff(file)} disabled={Boolean(busy)} title={file.filePath} style={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center", gap: 7, padding: 0, border: "none", background: "transparent", color: "var(--text)", cursor: busy ? "not-allowed" : "pointer", textAlign: "left" }} onMouseEnter={(event) => { if (!busy) event.currentTarget.style.color = "var(--accent)"; }} onMouseLeave={(event) => { event.currentTarget.style.color = "var(--text)"; }}><span style={{ width: 14, flexShrink: 0, color: STATUS_COLOR[file.status], fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700 }}>{file.code}</span><span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--font-mono)", fontSize: 11 }}>{fileName(file.filePath)}</span></button>{onStage && <ActionButton label={t("git.stage")} action="stage" busy={busy} onClick={() => onStage(file.filePath)} />}{onUnstage && <ActionButton label={t("git.unstage")} action="unstage" busy={busy} onClick={() => onUnstage(file.filePath)} />}{onDiscard && file.status !== "untracked" && <ActionButton label={t("git.discard")} action="discard" busy={busy} danger onClick={() => onDiscard(file)} />}</div>)}</div>; }
+function SectionTitle({ title, action }: { title: string; action?: ReactNode }) {
+  return <div className="git-section-title"><span className="git-section-title-text">{title}</span>{action && <div className="git-section-actions">{action}</div>}</div>;
+}
+
+/** 文本按钮：待执行的动作在原地显示「处理中」，其余情况显示 label。 */
+function ActionButton({ label, action, busy, disabled, danger, title, onClick }: { label: string; action: Action; busy: Action | null; disabled?: boolean; danger?: boolean; title?: string; onClick: () => void }) {
+  const { t } = useI18n();
+  const pending = busy === action;
+  return <button type="button" className="git-btn" data-tone={danger ? "danger" : undefined} title={title} onClick={onClick} disabled={Boolean(busy) || disabled}>{pending ? t("git.working") : label}</button>;
+}
+
+/** 文件行的图标按钮：常驻（不靠 hover 淡入）、尺寸固定，正在跑的动作转圈。 */
+function FileAction({ label, icon: Icon, action, busy, danger, onClick }: { label: string; icon: typeof Plus; action: Action; busy: Action | null; danger?: boolean; onClick: () => void }) {
+  const pending = busy === action;
+  return (
+    <button type="button" className="git-icon-btn" data-tone={danger ? "danger" : undefined} data-pending={pending ? "true" : undefined} title={label} aria-label={label} onClick={onClick} disabled={Boolean(busy)}>
+      {pending ? <Loader2 size={14} strokeWidth={2} aria-hidden="true" /> : <Icon size={14} strokeWidth={2} aria-hidden="true" />}
+    </button>
+  );
+}
+
+function FileList({ files, empty, busy, onOpenDiff, onStage, onUnstage, onDiscard }: { files: GitFileStatus[]; empty: string; busy: Action | null; onOpenDiff: (file: GitFileStatus) => void; onStage?: (filePath: string) => void; onUnstage?: (filePath: string) => void; onDiscard?: (file: GitFileStatus) => void }) {
+  const { t } = useI18n();
+  if (!files.length) return <div className="git-hint">{empty}</div>;
+  return (
+    <div className="git-file-list">
+      {files.map((file) => (
+        <div key={`${file.filePath}:${file.indexStatus}:${file.worktreeStatus}`} className="git-file-row" data-conflict={file.status === "conflict" ? "true" : undefined}>
+          <button type="button" className="git-file-open" onClick={() => onOpenDiff(file)} disabled={Boolean(busy)} title={file.filePath}>
+            <span className="git-file-code" data-status={file.status} aria-hidden="true">{file.code}</span>
+            <span className="git-file-name">{fileName(file.filePath)}</span>
+          </button>
+          {onStage && <FileAction label={t("git.stage")} icon={Plus} action="stage" busy={busy} onClick={() => onStage(file.filePath)} />}
+          {onUnstage && <FileAction label={t("git.unstage")} icon={Minus} action="unstage" busy={busy} onClick={() => onUnstage(file.filePath)} />}
+          {onDiscard && file.status !== "untracked" && <FileAction label={t("git.discard")} icon={Undo2} action="discard" busy={busy} danger onClick={() => onDiscard(file)} />}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function DiscardFileConfirmDialog({ filePath, busy, onCancel, onConfirm }: { filePath: string; busy: Action | null; onCancel: () => void; onConfirm: () => void }) {
   const { t } = useI18n();
   return (
-    <div role="alertdialog" aria-label={t("git.discardFileConfirm", { file: fileName(filePath) })} style={{ position: "absolute", left: 14, right: 14, bottom: 14, zIndex: 5, padding: 14, display: "grid", gap: 10, border: "1px solid rgba(248,113,113,.45)", borderRadius: 6, background: "var(--bg-panel)", boxShadow: "0 8px 24px rgba(0,0,0,.18)" }}>
-      <p style={{ margin: 0, color: "var(--text)", fontSize: 12, lineHeight: 1.5 }}>{t("git.discardFileConfirm", { file: fileName(filePath) })}</p>
-      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+    <div role="alertdialog" aria-label={t("git.discardFileConfirm", { file: fileName(filePath) })} className="git-confirm">
+      <p className="git-confirm-text">{t("git.discardFileConfirm", { file: fileName(filePath) })}</p>
+      <div className="git-confirm-actions">
         <ActionButton label={t("git.discardAllConfirmCancel")} action="discard" busy={busy} onClick={onCancel} />
         <ActionButton label={t("git.discard")} action="discard" busy={busy} danger onClick={onConfirm} />
       </div>
@@ -388,14 +415,14 @@ function DiscardAllConfirmDialog({ summary, untrackedPaths, busy, onCancel, onCo
   const snapshot = useRef(untrackedPaths).current;
   const shown = snapshot.slice(0, 8);
   return (
-    <div role="alertdialog" aria-label={t("git.discardAllConfirm")} style={{ padding: 14, display: "grid", gap: 10 }}>
-      <p style={{ margin: 0, color: "var(--text)", fontSize: 12, lineHeight: 1.5 }}>{t("git.discardAllConfirm")}</p>
-      <div style={{ display: "grid", gap: 5, padding: 9, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)", fontSize: 11, color: "var(--text-muted)" }}>
+    <div role="alertdialog" aria-label={t("git.discardAllConfirm")} className="git-confirm-panel">
+      <p className="git-confirm-text">{t("git.discardAllConfirm")}</p>
+      <div className="git-confirm-list">
         <div>{t("git.discardAllTracked", { count: summary.changes.files.length - snapshot.length })}</div>
         <div>{snapshot.length > 0 ? t("git.discardAllUntracked", { count: snapshot.length }) : t("git.discardAllNoUntracked")}</div>
-        {shown.length > 0 && <ul style={{ margin: 0, padding: "4px 0 0 16px", fontFamily: "var(--font-mono)", lineHeight: 1.6, overflowWrap: "anywhere" }}>{shown.map((filePath) => <li key={filePath}>{filePath}</li>)}{snapshot.length > shown.length && <li>{t("git.discardAllMore", { count: snapshot.length - shown.length })}</li>}</ul>}
+        {shown.length > 0 && <ul>{shown.map((filePath) => <li key={filePath}>{filePath}</li>)}{snapshot.length > shown.length && <li>{t("git.discardAllMore", { count: snapshot.length - shown.length })}</li>}</ul>}
       </div>
-      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+      <div className="git-confirm-actions">
         <ActionButton label={t("git.discardAllConfirmCancel")} action="discard_all" busy={busy} onClick={onCancel} />
         <ActionButton label={t("git.discardAllConfirmAction")} action="discard_all" busy={busy} danger onClick={onConfirm} />
       </div>
