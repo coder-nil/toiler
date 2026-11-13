@@ -1,6 +1,6 @@
 {
   "name": "@toiler/frontend",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "Toiler 桌面前端（源自 pi-desktop 的 Next 静态导出）",
   "scripts": {

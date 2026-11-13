@@ -187,7 +187,7 @@ export const enLocale: LocalePlugin = {
     "git.merge": "Merge",
     "git.tags": "Tags",
     "git.tagCount": "{count} local",
-    "git.tagName": "Tag name, e.g. v1.2.0",
+    "git.tagName": "Tag name, e.g. {name}",
     "git.tagMessage": "Annotation (leave empty for a lightweight tag)",
     "git.createTag": "Create tag",
     "git.deleteTag": "Delete tag",

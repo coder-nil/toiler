@@ -187,7 +187,7 @@ export const zhCNLocale: LocalePlugin = {
     "git.merge": "合并",
     "git.tags": "标签",
     "git.tagCount": "本地 {count} 个",
-    "git.tagName": "标签名，例如 v1.2.0",
+    "git.tagName": "标签名，例如 {name}",
     "git.tagMessage": "附注说明（留空则建轻量标签）",
     "git.createTag": "创建标签",
     "git.deleteTag": "删除标签",

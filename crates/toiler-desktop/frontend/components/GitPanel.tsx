@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { ArrowDown, ArrowUp, GitBranch, Loader2, Minus, Plus, RefreshCw, Trash2, Undo2, Upload, X } from "lucide-react";
 import { useI18n } from "@/hooks/useI18n";
 import { readApiJson } from "@/lib/api-json";
+import { APPLICATION_VERSION } from "@/lib/changelog";
+import { nextTagName } from "@/lib/git-tags";
 import { CHAT_TOP_BAR_HEIGHT } from "@/lib/panel-layout";
 import { revealNext } from "@/lib/typewriter";
 import { BranchPicker } from "./BranchPicker";
@@ -241,6 +243,8 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
   const staged = summary?.changes.files.filter((file) => file.indexStatus !== " " && file.indexStatus !== "?") ?? [];
   const unstaged = summary?.changes.files.filter((file) => file.worktreeStatus !== " " || file.indexStatus === "?") ?? [];
   const untrackedPaths = summary?.untrackedPaths ?? [];
+  // 标签名输入框的示例值跟着仓库已有的标签走（建好一个后下次自动往前一步）。
+  const tagPlaceholder = t("git.tagName", { name: nextTagName(summary?.tags ?? [], APPLICATION_VERSION) });
   // "Discard all" only restores tracked files from the index, so an untracked-only
   // worktree would leave the button visible but inert. Gate it on real worktree
   // changes (untracked files are never discarded and stay out of this set).
@@ -350,7 +354,7 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
             <div className="git-section">
               <SectionTitle title={t("git.tags")} action={summary.tags.length > 0 ? <><span className="git-summary-note">{t("git.tagCount", { count: summary.tags.length })}</span><ActionButton label={t("git.pushAllTags")} action="push_tags" busy={busy} disabled={!summary.remote} onClick={() => void run("push_tags")} /></> : undefined} />
               <div className="git-field">
-                <input className="git-input" value={newTag} onChange={(event) => setNewTag(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && newTag.trim() && !disabled) void run("create_tag", { tag: newTag.trim(), ...(tagMessage.trim() ? { message: tagMessage.trim() } : {}) }); }} placeholder={t("git.tagName")} title={t("git.tagName")} disabled={disabled} />
+                <input className="git-input" value={newTag} onChange={(event) => setNewTag(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && newTag.trim() && !disabled) void run("create_tag", { tag: newTag.trim(), ...(tagMessage.trim() ? { message: tagMessage.trim() } : {}) }); }} placeholder={tagPlaceholder} title={tagPlaceholder} disabled={disabled} />
                 <input className="git-input" value={tagMessage} onChange={(event) => setTagMessage(event.target.value)} placeholder={t("git.tagMessage")} title={t("git.tagMessage")} disabled={disabled} />
               </div>
               <div className="git-actions-row" style={{ marginBottom: summary.tags.length > 0 ? 9 : 0 }}>
