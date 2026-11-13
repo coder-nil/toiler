@@ -12,6 +12,12 @@ export const CHAT_SCROLL_REATTACH_TOLERANCE = 96;
  * “本来就看得到底部”的情况也算成离开底部。
  */
 export const CHAT_SCROLL_JUMP_TOLERANCE = 96;
+/**
+ * 「回到最新」的收回阈值。只用一个阈值会在边界处抖：内容长高一像素、
+ * 平滑滚动还差一像素，都会让按钮一下一下地闪（流式输出时特别明显）。
+ * 进场用宽阈值（96px），出场用紧阈值（24px），中间这段就是滞回区。
+ */
+export const CHAT_SCROLL_JUMP_HIDE_TOLERANCE = 24;
 
 export function getVisibleRenderWindow(totalCount: number, visibleCount: number): {
   startIndex: number;
@@ -73,6 +79,22 @@ export function shouldShowJumpToLatest(
   tolerance = CHAT_SCROLL_JUMP_TOLERANCE,
 ): boolean {
   return !isScrollAtTail(scrollTop, clientHeight, scrollHeight, tolerance);
+}
+
+/**
+ * 带滞回的可见性：已经可见时要贴得更近才收回去。
+ * 不可见 → 离开 96px 才弹出；可见 → 回到 24px 以内才收回。
+ * 两个阈值之间的窄带里保持原状，这就是滞回（和手势识别里的方向阈值同一个作用）。
+ */
+export function resolveJumpToLatestVisible(
+  wasVisible: boolean,
+  scrollTop: number,
+  clientHeight: number,
+  scrollHeight: number,
+): boolean {
+  return wasVisible
+    ? !isScrollAtTail(scrollTop, clientHeight, scrollHeight, CHAT_SCROLL_JUMP_HIDE_TOLERANCE)
+    : shouldShowJumpToLatest(scrollTop, clientHeight, scrollHeight);
 }
 
 export function getPromptAnchorSpacerHeight(

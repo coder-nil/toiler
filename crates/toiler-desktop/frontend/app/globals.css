@@ -112,6 +112,13 @@
   padding-left: 86px;
 }
 
+/* 输入框上方的附加内容（任务进度面板）。
+   「回到最新」疙瘩高 22px、挂在输入框外壳上沿，与面板占同一块空间；
+   面板的 margin-bottom（8px）加上这里补的 16px，刚好把它让出来。 */
+.chat-above-composer[data-jump="true"] {
+  padding-bottom: 16px;
+}
+
 .chat-composer-shell {
   --composer-padding: 10px;
   position: relative;
@@ -440,19 +447,25 @@
 /* 「回到最新」趴在输入框上沿，轮廓是一道底部外撇的弧（喇叭口）：
    矩形的 border 在底边处只能是垂直切线，撇不出去，所以轮廓交给内联 SVG。
    84×22：拱顶收在 y≈4.2，两条腿各向外撇出约 20°，
-   宽高比再大就会读成两个尖脚，再小又变成一条普通半圆。 */
+   宽高比再大就会读成两个尖脚，再小又变成一条普通半圆。
+
+   材料取「比内容面亮一档／深一档」的雾面（--bg-panel 的透明度），两个主题共用
+   一条公式：浅色底上合成出 #f5f5f5 的软灰，深色底上合成出 #292929 的微凸。
+   之前那层 `#fff 42%` 只在浅色主题里成立——深色底（#212121）上它会合成出中灰
+   #7c7c7c，比周围亮一大截，像贴了块膏药。 */
 .chat-jump-to-latest {
-  /* 输入框没有焦点时，它只是一层白色半透明的雾面凸起，自己不描边：
-     底下那条边框会隐约透出来，读法仍然是「从框里鼓出来」，
-     却不跟输入框抢那一圈线的注意力。 */
-  --jump-fill: color-mix(in srgb, #fff 42%, transparent);
+  --jump-fill: color-mix(in srgb, var(--bg-panel) 72%, transparent);
   --jump-stroke: transparent;
+  /* 两层投影：贴地的那层交代接触，甩开的那层交代重量。
+     drop-shadow 没有第四个 spread 参数，只能靠加大 blur 拉出扩散。 */
+  --jump-shadow: drop-shadow(0 1px 1.5px color-mix(in srgb, var(--text) 12%, transparent))
+    drop-shadow(0 5px 12px color-mix(in srgb, var(--text) 18%, transparent));
   position: absolute;
   bottom: 100%;
   left: 50%;
   /* 居中用 translate（独立属性），transform 留给按压位移：
-     animation 的 fill 会盖住 transform。 */
-  translate: -50% 0;
+     进出场也走 translate，两者才互不覆盖。 */
+  translate: -50% 6px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -469,8 +482,36 @@
   background: none;
   color: var(--text-muted);
   cursor: pointer;
-  /* backwards 而不是 both：动画跑完就交还基础值，:active 才动得起来。 */
-  animation: chat-jump-to-latest-in 200ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  /* 网页态（手机 / 局域网）按下时不要那层系统灰闪，反馈交给下面的 :active。 */
+  -webkit-tap-highlight-color: transparent;
+  /* 常驻在树里、靠 data-visible 进出场：只做条件渲染的话，隐藏就是一次卸载，
+     没有「退场」可言，按钮会硬切消失。
+     进出场只走 opacity + translate，且用过渡而不是关键帧——指针在它淡入的
+     半路上把列表滚回底部（或反过来），过渡会从当前值接着走，而关键帧会先跳回
+     起点。visibility 带 0s 延迟，等于「淡出结束后才真正从可交互相树上摘掉」。 */
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 140ms ease,
+    translate 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 240ms,
+    transform 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    color 120ms ease;
+}
+
+.chat-jump-to-latest[data-visible="true"] {
+  opacity: 1;
+  translate: -50% 0;
+  visibility: visible;
+  pointer-events: auto;
+  /* 出现比消失慢一点：进场要有交代，退场要利落。 */
+  transition:
+    opacity 180ms ease,
+    translate 280ms cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 0s,
+    transform 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    color 120ms ease;
 }
 
 .chat-jump-to-latest__shape {
@@ -484,10 +525,17 @@
   fill: var(--jump-fill);
   stroke: var(--jump-stroke);
   pointer-events: none;
-  /* 白色半透明在浅色主题里等于消失，靠一层柔和投影交代体积：
-     影子是「雾面凸起」的一部分，不是描边，用户要的无边框仍然成立。 */
-  filter: drop-shadow(0 1px 2px color-mix(in srgb, var(--text) 14%, transparent));
-  transition: fill 140ms ease, stroke 140ms ease;
+  /* 影子是「雾面凸起」的一部分，不是描边，用户要的无边框仍然成立。 */
+  filter: var(--jump-shadow);
+  transition: fill 140ms ease, stroke 140ms ease, filter 140ms ease;
+}
+
+/* 深色主题里材料的边界靠一道极淡的亮边（光擦过玻璃边缘）：
+   浅色底上白边等于没有，所以只在这里给。 */
+html.dark .chat-jump-to-latest {
+  --jump-stroke: color-mix(in srgb, #fff 14%, transparent);
+  --jump-shadow: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.5))
+    drop-shadow(0 6px 14px rgba(0, 0, 0, 0.45));
 }
 
 /* 非等比缩放不影响描边粗细：曲线怎么变形，线都还是 1px。 */
@@ -496,10 +544,12 @@
   stroke-width: 1;
 }
 
-/* 悬停：这层雾直接变不透明，作为「指针确实在它上面」的反馈；
-   仍然不加描边，箭头也沉 1px。 */
-.chat-jump-to-latest:hover {
-  --jump-fill: #fff;
+/* 悬停：雾面变实、跟着抬起来（投影加重），指针停在它上面这件事必须看得见；
+   仍然不加描边，箭头沉 1px 指一下「往下走」。 */
+.chat-jump-to-latest[data-visible="true"]:hover {
+  --jump-fill: color-mix(in srgb, var(--bg-panel) 96%, transparent);
+  --jump-shadow: drop-shadow(0 1.5px 2px color-mix(in srgb, var(--text) 14%, transparent))
+    drop-shadow(0 8px 18px color-mix(in srgb, var(--text) 22%, transparent));
   color: var(--text);
 }
 
@@ -508,13 +558,20 @@
   transition: transform 140ms ease;
 }
 
-.chat-jump-to-latest:hover svg:not(.chat-jump-to-latest__shape) {
+.chat-jump-to-latest[data-visible="true"]:hover svg:not(.chat-jump-to-latest__shape) {
   transform: translateY(1px);
 }
 
-/* 按下时整块跟着沉 1px，像被压回输入框里。 */
-.chat-jump-to-latest:active {
-  transform: translateY(1px);
+/* 按下：整块沉 1px 并缩到 96.5%，像被压回输入框里。
+   按下必须即时（70ms 内落地，超过 100ms 就读成「慢了」），松开回弹走上面 160ms。 */
+.chat-jump-to-latest[data-visible="true"]:active {
+  transform: translateY(1px) scale(0.965);
+  transition:
+    opacity 140ms ease,
+    translate 240ms cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 240ms,
+    transform 70ms ease-out,
+    color 120ms ease;
 }
 
 /* 输入框一有焦点，只换颜色，别的一个都不动：仍然是半透明、仍然没有描边，
@@ -537,40 +594,71 @@
   color: var(--accent);
 }
 
+/* 焦点环也要「看得见体积」：把雾面一起提亮，否则深色主题下只有一道蓝边。 */
+.chat-jump-to-latest:focus-visible {
+  --jump-fill: color-mix(in srgb, var(--accent) 16%, var(--bg-panel));
+}
+
 .chat-jump-to-latest:focus-visible .chat-jump-to-latest__shape path {
   stroke: var(--accent);
   stroke-width: 2;
 }
 
-/* 可见形状只有 84×22，热区向四周多扩 7px（不往输入框里挤）。 */
+/* 可见形状只有 84×22，热区往四周扩：左右各 10px、上方 12px，合计 104×34。
+   再往上够 44px 就会压到输入框里的正文与左侧 mark 键，抢走本该属于它们
+   的点击——宁可略小于 44，也不抢邻近控件。下边沿不扩：那一寸属于输入框。 */
 .chat-jump-to-latest::before {
   content: "";
   position: absolute;
-  top: -7px;
-  right: -7px;
+  top: -12px;
+  right: -10px;
   bottom: 0;
-  left: -7px;
+  left: -10px;
 }
 
-@keyframes chat-jump-to-latest-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-}
-
+/* 降低动态效果：不是「没有反馈」，是换成不引发前庭反应的形式——
+   位移与缩放一律取消，只留 120ms 淡入淡出。 */
 @media (prefers-reduced-motion: reduce) {
   .chat-jump-to-latest {
-    animation: none;
-    transition: none;
+    translate: -50% 0;
+    transition: opacity 120ms linear, visibility 0s linear 120ms;
+  }
+
+  .chat-jump-to-latest[data-visible="true"] {
+    translate: -50% 0;
+    transition: opacity 120ms linear, visibility 0s linear 0s;
+  }
+
+  .chat-jump-to-latest[data-visible="true"]:active {
+    transform: none;
+    transition: opacity 120ms linear, visibility 0s linear 0s;
   }
 
   .chat-jump-to-latest__shape {
-    transition: none;
+    transition: fill 140ms ease, stroke 140ms ease;
   }
 
-  .chat-jump-to-latest:hover svg:not(.chat-jump-to-latest__shape) {
+  .chat-jump-to-latest[data-visible="true"]:hover svg:not(.chat-jump-to-latest__shape) {
     transform: none;
+  }
+}
+
+/* 降低透明度：雾面直接给成实心面板色，不再透底下滚过去的内容。 */
+@media (prefers-reduced-transparency: reduce) {
+  .chat-jump-to-latest {
+    --jump-fill: var(--bg-panel);
+  }
+}
+
+/* 高对比度：实心 + 一圈有明确对比的轮廓（只有这一档允许描边）。 */
+@media (prefers-contrast: more) {
+  .chat-jump-to-latest {
+    --jump-fill: var(--bg-panel);
+    --jump-stroke: var(--text-muted);
+  }
+
+  .chat-jump-to-latest__shape path {
+    stroke-width: 1.5;
   }
 }
 
@@ -1291,29 +1379,6 @@ button.extension-widget-trigger:focus-visible {
   line-height: 1.45;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-}
-
-.extension-task-status-fallback {
-  display: flex;
-  flex: 0 1 auto;
-  align-items: center;
-  min-width: 0;
-  max-width: 45%;
-  height: 35px;
-}
-
-.extension-task-status-line {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex: 0 1 auto;
-  align-items: center;
-  min-width: 0;
-  height: 35px;
-  padding: 0 10px;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-weight: 400;
 }
 
 .extension-status-line {

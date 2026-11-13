@@ -7,6 +7,11 @@
 //! |---|---|---|
 //! | 展示 | `ctx.ui.setStatus/setWidget` | 同形状的 SSE 事件（[`UiBridge`]），并镜像进 `get_state.extensionStatuses/extensionWidgets` |
 //! | 恢复 | `session_start` / `session_tree` 时从分支里的 `toolResult.details` 重建 | 开会话与 `navigate_tree` 后从 v3 文件里最后一条 `task_progress` 的 details 重建 |
+//! | 进行中 | 完全由模型给定；它跳过 `in_progress` 直接写 `completed` 时，界面就一条活跃项都没有 | 程序自己维护「进行中」游标（见 [`advance`]）：没有任何 `in_progress` 时把下一条 `pending` 提上来 |
+//!
+//! 最后一行是唯一的语义差异：参数、校验、返回文本、`details` 形状仍然逐字对齐 pi，
+//! 变的只是存进去的 `status` 值。模型经常一步到位把某条写成 `completed`，如果界面
+//! 于是停在「还有 2 项未完成」却说不出在做哪一条，任务面板就等于失效了。
 //!
 //! 为什么要镜像进 `get_state`：前端渲染任务框读的是
 //! `state.extensionStatuses` / `state.extensionWidgets`（`useAgentSession.ts`），
@@ -103,11 +108,15 @@ impl TaskProgressStore {
 
     /// 开会话 / 切分支后从 transcript 恢复，并把界面同步过去。
     pub fn restore(&self, tasks: Vec<TaskItem>) {
+        let mut tasks = tasks;
+        advance(&mut tasks);
         *self.tasks.lock().expect("tasks") = tasks;
         self.broadcast();
     }
 
     fn replace(&self, tasks: Vec<TaskItem>) {
+        let mut tasks = tasks;
+        advance(&mut tasks);
         *self.tasks.lock().expect("tasks") = tasks;
         self.broadcast();
     }
@@ -143,6 +152,7 @@ impl TaskProgressStore {
         if let Some(detail) = patch.detail {
             current.detail = Some(detail);
         }
+        advance(&mut tasks);
         let snapshot = tasks.clone();
         drop(tasks);
         self.broadcast();
@@ -165,6 +175,43 @@ impl TaskProgressStore {
         self.ui.set_status(STATUS_KEY, status.as_deref());
         self.ui
             .set_widget(WIDGET_KEY, widget.as_deref(), WIDGET_PLACEMENT);
+    }
+}
+
+/// 自动推进「进行中」游标：完成一条之后，下一条就是进行中的。
+///
+/// 模型的常见毛病是 `replace`/`update` 时直接写 `completed`，于是清单里一条
+/// `in_progress` 都没有 —— 面板只能显示「还有 2 项未完成」，说不出「现在在做哪一条」。
+///
+/// 只在**没有任何 `in_progress`** 时生效，规则三条：
+///
+/// - 列表里已经有 `in_progress` → 不动（模型自己指定了游标）；
+/// - 有 `blocked` / `failed` → 不动：卡住或失败需要显式处理，不能假装在推进；
+/// - 否则把**第一条 `pending`** 提上来；没有 `pending`（全部收尾）也不动，
+///   这时 [`presentation`] 会把面板整个收掉。
+///
+/// 恢复（`restore`）也走这一套：历史会话里同样是被跳过 `in_progress` 写出来的，
+/// 开出来时应该与当时在跑的时候长一样。
+fn advance(tasks: &mut [TaskItem]) {
+    if tasks
+        .iter()
+        .any(|task| task.status == TaskStatus::InProgress)
+    {
+        return;
+    }
+    if tasks
+        .iter()
+        .any(|task| matches!(task.status, TaskStatus::Blocked | TaskStatus::Failed))
+    {
+        return;
+    }
+    if let Some(next) = tasks
+        .iter_mut()
+        .find(|task| task.status == TaskStatus::Pending)
+    {
+        // detail 不清：模型写的那句解释对新顶上来的这条同样成立，
+        // 而 pi 的「改状态就清 detail」针对的是模型自己的显式改动。
+        next.status = TaskStatus::InProgress;
     }
 }
 
@@ -316,8 +363,11 @@ impl AgentTool for TaskProgressTool {
             }
             "replace" => {
                 let items = parse_tasks(&params)?;
-                self.store.replace(items.clone());
-                items
+                self.store.replace(items);
+                // 返回文本用 store 的最终状态（已被 [`advance`] 推进过），
+                // 不是模型给的原始列表：模型看到的确认必须与界面一致，
+                // 否则它会以为「下一条还没开始」，下一轮又去重写整张表。
+                self.store.tasks()
             }
             "update" => self
                 .store
@@ -536,5 +586,128 @@ mod tests {
         assert_eq!(first["method"], "setStatus");
         let second = events.try_recv().expect("setWidget");
         assert_eq!(second["method"], "setWidget");
+    }
+
+    #[test]
+    fn advance_moves_cursor_to_first_pending() {
+        let mut tasks = vec![
+            item("a", TaskStatus::Completed),
+            item("b", TaskStatus::Pending),
+            item("c", TaskStatus::Pending),
+        ];
+        advance(&mut tasks);
+        assert_eq!(tasks[1].status, TaskStatus::InProgress);
+        assert_eq!(tasks[2].status, TaskStatus::Pending);
+    }
+
+    #[test]
+    fn advance_keeps_model_chosen_cursor() {
+        let mut tasks = vec![
+            item("a", TaskStatus::Pending),
+            item("b", TaskStatus::InProgress),
+        ];
+        advance(&mut tasks);
+        assert_eq!(tasks[0].status, TaskStatus::Pending);
+        assert_eq!(tasks[1].status, TaskStatus::InProgress);
+    }
+
+    #[test]
+    fn advance_stops_on_blocked_or_failed() {
+        for exception in [TaskStatus::Blocked, TaskStatus::Failed] {
+            let mut tasks = vec![
+                item("a", TaskStatus::Completed),
+                item("b", exception),
+                item("c", TaskStatus::Pending),
+            ];
+            advance(&mut tasks);
+            assert_eq!(tasks[2].status, TaskStatus::Pending, "{exception:?}");
+        }
+    }
+
+    #[test]
+    fn advance_does_nothing_when_everything_is_finished() {
+        let mut tasks = vec![
+            item("a", TaskStatus::Completed),
+            item("b", TaskStatus::Skipped),
+        ];
+        advance(&mut tasks);
+        assert_eq!(tasks[0].status, TaskStatus::Completed);
+        assert_eq!(tasks[1].status, TaskStatus::Skipped);
+    }
+
+    #[tokio::test]
+    async fn completing_a_task_hands_the_cursor_to_the_next_one() {
+        let (store, _events) = store();
+        store.replace(vec![
+            item("a", TaskStatus::InProgress),
+            item("b", TaskStatus::Pending),
+        ]);
+        let updated = store
+            .update(
+                "a",
+                TaskPatch {
+                    title: None,
+                    status: Some(TaskStatus::Completed),
+                    detail: None,
+                },
+            )
+            .unwrap();
+        // 模型只说了 a 完成；b 由程序推上来（模型看到的返回文本也是这份）。
+        assert_eq!(updated[0].status, TaskStatus::Completed);
+        assert_eq!(updated[1].status, TaskStatus::InProgress);
+        assert_eq!(store.tasks()[1].status, TaskStatus::InProgress);
+        let lines = store.widget_lines().expect("widget");
+        assert_eq!(lines[1], "✓ 任务 a");
+        assert_eq!(lines[2], "● 任务 b");
+    }
+
+    #[tokio::test]
+    async fn replace_without_in_progress_promotes_the_first_pending() {
+        let (store, _events) = store();
+        // 模型常见写法：一步到位把第一条写成 completed，剩下全是 pending。
+        store.replace(vec![
+            item("a", TaskStatus::Completed),
+            item("b", TaskStatus::Pending),
+            item("c", TaskStatus::Pending),
+        ]);
+        let tasks = store.tasks();
+        assert_eq!(tasks[1].status, TaskStatus::InProgress);
+        let status = store.status_text().expect("status");
+        assert!(status.contains("正在执行：任务 b"), "{status}");
+    }
+
+    #[tokio::test]
+    async fn restore_promotes_the_cursor_too() {
+        let (store, _events) = store();
+        store.restore(vec![
+            item("a", TaskStatus::Completed),
+            item("b", TaskStatus::Pending),
+        ]);
+        assert_eq!(store.tasks()[1].status, TaskStatus::InProgress);
+    }
+
+    #[tokio::test]
+    async fn execute_reports_the_advanced_list() {
+        let (store, _events) = store();
+        let tool = create_task_progress_tool(store.clone());
+        let params = json!({
+            "action": "replace",
+            "tasks": [
+                { "id": "a", "title": "任务 a", "status": "completed" },
+                { "id": "b", "title": "任务 b", "status": "pending" },
+            ],
+        });
+        let result = tool
+            .execute("call-1", params, CancellationToken::new(), Arc::new(|_| {}))
+            .await
+            .unwrap();
+        // 模型看到的文本与 details 必须和界面是同一份（都是推进后的），
+        // 否则它会以为「下一条还没开始」，下一轮又去重写整张表。
+        let TextContentOrImage::Text(text) = &result.content[0] else {
+            panic!("expected text content");
+        };
+        assert!(text.text.contains("● 任务 b"), "{}", text.text);
+        assert!(!text.text.contains("○ 任务 b"), "{}", text.text);
+        assert_eq!(result.details["tasks"][1]["status"], "in_progress");
     }
 }

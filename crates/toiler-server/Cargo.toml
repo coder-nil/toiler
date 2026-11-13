@@ -14,6 +14,10 @@ rpi-ai = { workspace = true, features = ["providers"] }
 rpi-tools = { workspace = true }
 
 axum = { version = "0.8", features = ["json", "query", "multipart"] }
+# 上传直接在已读入的字节上解 multipart：axum 的 `Multipart` 抽取器会强制套一层
+# 2MB 的 `DefaultBodyLimit`，与路由里声明的 25MB / 100MB 上限矛盾（见
+# `routes/files.rs` 的 `upload_receive`）。版本跟随 axum 自己的依赖（3.1）。
+multer = "3"
 tokio-util = "0.7"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net", "signal", "process"] }
 tower-http = { version = "0.6", features = ["trace", "cors"] }

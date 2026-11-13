@@ -2,6 +2,10 @@
 
 import McpIcon from "@lobehub/icons/es/MCP/components/Mono";
 import { parseAnsiLine, stripAnsi } from "@/lib/ansi";
+import {
+  TASK_PROGRESS_STATUS_KEY,
+  TASK_PROGRESS_WIDGET_KEY,
+} from "@/lib/task-progress-view";
 import type { ExtensionStatusItem, ExtensionWidgetItem } from "@/lib/types";
 import { ExtensionWidgets } from "./ExtensionWidgets";
 
@@ -20,8 +24,6 @@ export function formatExtensionStatusLine(statuses: ExtensionStatusItem[]): stri
 }
 
 const MCP_STATUS_PREFIX = /^🔌\s*/u;
-const TASK_PROGRESS_STATUS_KEY = "task-progress";
-const TASK_PROGRESS_WIDGET_KEY = "任务进度";
 
 type ExtensionStatusPart = {
   key: string;
@@ -67,52 +69,29 @@ export function ExtensionStatusBar({
   statuses: ExtensionStatusItem[];
   widgets?: ExtensionWidgetItem[];
 }) {
-  if (statuses.length === 0 && widgets.length === 0) return null;
+  // 任务进度有自己的面板（`TaskProgressPanel`，贴在输入框上方），
+  // 这里只留其余扩展的状态与 widget；否则同一条清单会在两处各画一次。
+  const visibleStatuses = statuses.filter(({ key }) => key !== TASK_PROGRESS_STATUS_KEY);
+  const visibleWidgets = widgets.filter(({ key }) => key !== TASK_PROGRESS_WIDGET_KEY);
 
-  const taskStatusParts = formatExtensionStatusParts(
-    statuses.filter(({ key }) => key === TASK_PROGRESS_STATUS_KEY),
-  );
-  const trailingStatusParts = formatExtensionStatusParts(
-    statuses.filter(({ key }) => key !== TASK_PROGRESS_STATUS_KEY),
-  );
-  const taskStatusLine = taskStatusParts.map(({ text }) => stripAnsi(text)).join(" ");
-  const trailingStatusLine = trailingStatusParts.map(({ text }) => stripAnsi(text)).join(" ");
-  const hasTaskProgressWidget = taskStatusParts.length > 0
-    && widgets.some(({ key }) => key === TASK_PROGRESS_WIDGET_KEY);
-  const taskStatusContent = taskStatusParts.length > 0 ? (
-    <span
-      role="status"
-      className="extension-task-status-line"
-      aria-label={taskStatusLine}
-      title={taskStatusLine}
-    >
-      <ExtensionStatusText parts={taskStatusParts} />
-    </span>
-  ) : null;
+  if (visibleStatuses.length === 0 && visibleWidgets.length === 0) return null;
+
+  const statusParts = formatExtensionStatusParts(visibleStatuses);
+  const statusLine = statusParts.map(({ text }) => stripAnsi(text)).join(" ");
 
   return (
     <div
-      className={`extension-status-shelf${widgets.length > 0 ? " has-widgets" : ""}${statuses.length > 0 ? " has-status" : ""}`}
+      className={`extension-status-shelf${visibleWidgets.length > 0 ? " has-widgets" : ""}${statusParts.length > 0 ? " has-status" : ""}`}
     >
-      {widgets.length > 0 && (
-        <ExtensionWidgets
-          widgets={widgets}
-          trailingContent={hasTaskProgressWidget ? taskStatusContent : undefined}
-        />
-      )}
-      {taskStatusContent && !hasTaskProgressWidget && (
-        <div className="extension-task-status-fallback">
-          {taskStatusContent}
-        </div>
-      )}
-      {trailingStatusParts.length > 0 && (
+      {visibleWidgets.length > 0 && <ExtensionWidgets widgets={visibleWidgets} />}
+      {statusParts.length > 0 && (
         <div
           role="status"
           className="extension-status-line"
-          aria-label={trailingStatusLine}
-          title={trailingStatusLine}
+          aria-label={statusLine}
+          title={statusLine}
         >
-          <ExtensionStatusText parts={trailingStatusParts} />
+          <ExtensionStatusText parts={statusParts} />
         </div>
       )}
     </div>

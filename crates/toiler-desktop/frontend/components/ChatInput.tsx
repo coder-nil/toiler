@@ -1,6 +1,6 @@
 "use client";
 
-import React, {forwardRef, KeyboardEvent, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState} from "react";
+import React, {forwardRef, KeyboardEvent, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode} from "react";
 import type {BuiltinSlashCommandResult, CompactResultInfo, QueuedMessages, SlashCommandInfo} from "@/hooks/useAgentSession";
 import type {SkillInfo, SkillsResponse} from "@/lib/api-types";
 import type {TextContent, UserMessage} from "@/lib/types";
@@ -75,6 +75,11 @@ interface Props {
   /** 对话向上滚动离开底部时，在输入框上沿拱出「回到最新」。 */
   showJumpToLatest?: boolean;
   onJumpToLatest?: () => void;
+  /**
+   * 贴在输入框上方的内容（任务进度面板）。渲染在同一条内容列里，
+   * 所以宽度与输入框天然对齐。
+   */
+  aboveComposer?: ReactNode;
 }
 
 export interface ChatInputHandle {
@@ -543,6 +548,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   sessionId,
   showJumpToLatest = false,
   onJumpToLatest,
+  aboveComposer,
 }: Props, ref) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
@@ -2463,15 +2469,30 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               )}
             </div>
           )}
+          {aboveComposer && (
+            // 「回到最新」是从输入框上沿鼓出来的疙瘩（高 22px），与面板会抢同一块
+            // 空间；它从壳里长出来，所以让路的一直是面板。
+            <div
+              className="chat-above-composer"
+              data-jump={showJumpToLatest && onJumpToLatest ? "true" : undefined}
+            >
+              {aboveComposer}
+            </div>
+          )}
           <div className="chat-composer-shell">
-          {showJumpToLatest && onJumpToLatest && (
+          {onJumpToLatest && (
             // 「回到最新」不是浮在消息区中间，而是从输入框上沿长出来的一个疙瘩：
             // 底部两撇是外撇的切线，矩形 + border 做不出来，所以轮廓交给这个
             // 内联 SVG（装饰性形状，图标仍然只用 lucide）。填充一直铺到输入框
             // 边框的内沿，等于把那条线在疙瘩宽度内顶开，疙瘩与框内连成一体。
+            //
+            // 常驻挂载、用 data-visible 控制进出场：条件渲染只能做「出现」，
+            // 消失就是一次卸载，读起来是硬切。隐藏态靠 visibility: hidden 退出
+            // 可交互相树与 Tab 序，屏幕阅读器不会遇到一个看不见的按钮。
             <button
               type="button"
               className="chat-jump-to-latest"
+              data-visible={showJumpToLatest ? "true" : "false"}
               onClick={onJumpToLatest}
               aria-label={t("chat.jumpToLatest")}
               title={t("chat.jumpToLatest")}

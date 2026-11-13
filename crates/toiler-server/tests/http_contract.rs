@@ -237,3 +237,55 @@ async fn agent_prompt_for_unknown_session_is_rejected() {
     assert_eq!(body["accepted"], false);
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// 上传的 body 上限由 handler 自己把关（单文件 25MB / 总量 100MB）。
+///
+/// 这条用例守的是一个已经踩过的坑：`upload_receive` 曾把读出的字节重包成
+/// 一个新的 `Request` 再交给 `Multipart::from_request`，而那个抽取器会把 body
+/// 换成上限 2MB 的 `Limited`（`DefaultBodyLimit` 的默认值；重建的 `Request`
+/// 丢掉了原请求扩展里的 `DefaultBodyLimitKind`）。结果是任何超过 2MB 的文件
+/// 在 `next_field()` 处被截断，接口回一句误导性的 `400 No files selected`——
+/// 承诺的 25MB 上限从来没生效过。这里用 3MB 直接盯住它。
+#[tokio::test]
+async fn upload_accepts_files_larger_than_the_axum_default_body_limit() {
+    let root = fixture_root("upload-big");
+    let target = root.join("uploads");
+    std::fs::create_dir_all(&target).unwrap();
+
+    let payload = vec![b'x'; 3 * 1024 * 1024];
+    let boundary = "----toilercontract";
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"files\"; filename=\"big.bin\"\r\n\r\n",
+    );
+    body.extend_from_slice(&payload);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let mut uri = String::from("/api/files/");
+    uri.push_str(target.to_string_lossy().trim_start_matches('/'));
+    uri.push_str("?type=upload");
+    let request = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("host", "127.0.0.1:8787")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body))
+        .unwrap();
+    // 上传要落在允许根内：把 cwd 指到 fixture 根（`app()` 的 /tmp/demo 不包含它）。
+    let response = app_with_cwd(&root, &root).oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::OK, "3MB 上传应当成功：{value}");
+    assert_eq!(value["uploaded"][0], "big.bin");
+    assert_eq!(
+        std::fs::read(target.join("big.bin")).unwrap().len(),
+        payload.len(),
+        "落盘的字节数要和上传的一致"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}

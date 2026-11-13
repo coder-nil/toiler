@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::{Multipart, Path as UrlPath, Query, State};
+use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -635,10 +635,26 @@ fn list_dir(target: &Path, hide_dot_dirs: bool) -> Response {
 ///
 /// pi 用同一组字段判断「真的变了」，否则一次读取（会刷新 atime）就会触发下一轮
 /// 重读，前端陷入自激刷新。
+///
+/// Windows 没有 `MetadataExt`（`ino`/`ctime`/`mtime` 都不存在），只能用
+/// `modified()` 自己算：mtime 换成毫秒，后三位（ctime / inode）固定为 0。
+#[cfg(unix)]
 fn signature(path: &Path) -> Option<(i64, i64, u64, u64)> {
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.mtime(), meta.ctime(), meta.ino(), meta.len()))
+}
+
+#[cfg(not(unix))]
+fn signature(path: &Path) -> Option<(i64, i64, u64, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let millis = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|delta| delta.as_millis() as i64)
+        .unwrap_or(0);
+    Some((millis, 0, 0, meta.len()))
 }
 
 /// `?type=watch`：每秒比对签名，变了就推一条命名事件 `change`。
@@ -881,13 +897,51 @@ pub async fn rename(
     .into_response()
 }
 
-fn same_entry(left: &Path, right: &Path) -> bool {
+/// 两个路径是否指向同一个条目（用来判断「大小写不敏感文件系统上的改名成自己」）。
+///
+/// 核心是比「设备号 + inode」而不是比路径：
+///
+/// - 大小写不敏感的文件系统上 `A.txt` 与 `a.txt` 是同一个文件，但路径字符串不一定
+///   相同，比字符串会误报「不同文件」→ 改名直接被 409 拒绝；
+/// - 硬链接指向同一 inode 却有两个路径，比字符串同样误判。
+///
+/// unix 用 `std::os::unix::fs::MetadataExt`。Windows 不能走 `std` 的
+/// `volume_serial_number()` / `file_index()`（那是 unstable 的 `windows_by_handle`），
+/// 改走 `libc::wstat`——它填的 `st_dev` / `st_ino` 在 libc 的 windows 模块里就有。
+#[cfg(unix)]
+fn entry_identity(path: &Path) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
-    match (
-        std::fs::symlink_metadata(left),
-        std::fs::symlink_metadata(right),
-    ) {
-        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(windows)]
+fn entry_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: `wide` 是以 0 结尾的宽字符串，`st` 已零初始化；`wstat` 成功时填 `st`。
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::wstat(wide.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    Some((st.st_dev as u64, st.st_ino as u64))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn entry_identity(path: &Path) -> Option<(u64, u64)> {
+    // 其它平台没有可移植的 inode，退回「规范化路径 + 长度」这种弱判据。
+    let canonical = std::fs::canonicalize(path).ok()?;
+    let len = std::fs::metadata(&canonical).ok()?.len();
+    Some((len, 0))
+}
+
+fn same_entry(left: &Path, right: &Path) -> bool {
+    match (entry_identity(left), entry_identity(right)) {
+        (Some(a), Some(b)) => a == b,
         _ => false,
     }
 }
@@ -940,7 +994,7 @@ pub async fn upload(
     if params.kind.as_deref() == Some("upload-check") {
         return upload_check(&state, &real_directory, request).await;
     }
-    upload_receive(&state, &real_directory, request).await
+    upload_receive(&real_directory, request).await
 }
 
 /// 冲突检查：`POST ...?type=upload-check`
@@ -1024,11 +1078,11 @@ fn parse_conflict_strategy(raw: Option<&str>) -> Option<ConflictStrategy> {
 }
 
 /// 收 multipart 上传：`POST ...?type=upload&conflict=error|overwrite|skip`
-async fn upload_receive(
-    state: &AppState,
-    directory: &Path,
-    request: axum::extract::Request,
-) -> Response {
+///
+/// 不接 `&AppState`：body 已经完全读进内存，解析不再需要 state（也就不用把
+/// 已读出的字节重包回一个 `Request` 再交给抽取器，那样会丢掉原请求的
+/// `DefaultBodyLimit` 扩展，见函数内注释）。
+async fn upload_receive(directory: &Path, request: axum::extract::Request) -> Response {
     let query = request.uri().query().unwrap_or("").to_string();
     let strategy_raw = query
         .split('&')
@@ -1063,17 +1117,17 @@ async fn upload_receive(
             .into_response();
     };
 
-    // 复用 axum 的 multipart 解析：把已读完的 body 重新包成一个请求即可。
-    let rebuilt = axum::http::Request::builder()
-        .method(axum::http::Method::POST)
-        .header(header::CONTENT_TYPE, content_type)
-        .body(Body::from(body))
-        .unwrap_or_default();
-    use axum::extract::FromRequest as _;
-    let mut multipart = match Multipart::from_request(rebuilt, state).await {
-        Ok(multipart) => multipart,
-        Err(_) => return bad_request("Malformed multipart body"),
-    };
+    // 直接在已读出的字节上解 multipart，不要再包回一个 `Request` 交给
+    // `Multipart::from_request`：那个抽取器会把 body 换成一展上限 2MB 的
+    // `Limited`（`DefaultBodyLimit` 的默认值），而重建的 `Request` 丢掉了原请求
+    // 扩展里的 `DefaultBodyLimitKind`，于是上面刚校验过的 100MB 总量限制被静默
+    // 降成 2MB —— 2MB 以上的上传在 `next_field()` 处被截断，最终报一句误导性的
+    // `400 No files selected`。`multer` 与本 crate 的 axum 同版本（见 Cargo.lock），
+    // 直接用它解析已读入内存的 body 既没有第二道隐式上限，也少一次拷贝。
+    let mut multipart = multer::Multipart::new(
+        futures::stream::once(async move { Ok::<_, std::io::Error>(body) }),
+        multer::parse_boundary(&content_type).unwrap_or_default(),
+    );
 
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let mut total: u64 = 0;
@@ -1160,25 +1214,8 @@ async fn upload_receive(
             }));
             continue;
         }
-        if is_conflict {
-            if let Err(error) = std::fs::remove_file(&destination) {
-                errors.push(json!({ "name": name, "error": error.to_string() }));
-                continue;
-            }
-        }
-        // `wx` = 目标已存在就失败，避免并发上传互相覆盖。
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&destination)
-        {
-            Ok(mut handle) => {
-                use std::io::Write;
-                match handle.write_all(&bytes) {
-                    Ok(()) => uploaded.push(name),
-                    Err(error) => errors.push(json!({ "name": name, "error": error.to_string() })),
-                }
-            }
+        match write_upload(&destination, &bytes, is_conflict) {
+            Ok(()) => uploaded.push(name),
             Err(error) => errors.push(json!({ "name": name, "error": error.to_string() })),
         }
     }
@@ -1198,6 +1235,57 @@ async fn upload_receive(
         })),
     )
         .into_response()
+}
+
+/// 把一个上传的文件写到 `destination`。
+///
+/// 两种语义分开处理，都**不做「先删后建」**：
+///
+/// - `overwrite == false`（目标原本不存在）：直接用 `create_new`，目标被并发请求
+///   抢先创建时返回 `AlreadyExists` 而不是默默覆盖。
+/// - `overwrite == true`：先写同目录下的临时文件，`sync_all` 之后 `rename` 覆盖。
+///   早先的实现是 `remove_file` 再 `create_new`，两步之间一旦失败（磁盘满、进程被杀、
+///   并发覆盖）原文件就已经没了 —— 一个上传请求能把用户正在编辑的文件变成空白。
+///   `rename` 在同一文件系统内是原子的，要么旧内容、要么新内容，不会出现中间态。
+fn write_upload(destination: &Path, bytes: &[u8], overwrite: bool) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if !overwrite {
+        let mut handle = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)?;
+        return handle.write_all(bytes);
+    }
+
+    // 临时文件与目标同目录：`rename` 跨设备会退化成「复制 + 删除」，不再原子。
+    let temp = destination.with_file_name(format!(
+        ".{}.upload-{}-{}",
+        destination
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".to_string()),
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    // 任何一步失败都要把临时文件删掉，否则上传目录里会堆满 `.xxx.upload-*`。
+    let written = (|| -> std::io::Result<()> {
+        let mut handle = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        handle.write_all(bytes)?;
+        handle.sync_all()?;
+        drop(handle);
+        std::fs::rename(&temp, destination)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 #[cfg(test)]
@@ -1270,6 +1358,94 @@ mod tests {
         assert!(!contains_exact_path("/a/b.rs.bak", "/a/b.rs"));
         // 前面还跟着路径字符 → 同前缀的另一个文件
         assert!(!contains_exact_path("/x/a/b.rs", "/a/b.rs"));
+    }
+
+    /// 覆盖上传不能是「先删后建」：两个步骤之间一旦出错，用户正在编辑的原文件
+    /// 就已经消失了。这里盯住三个性质：覆盖成功、原内容不丢、临时文件不残留。
+    #[test]
+    fn upload_overwrite_never_drops_the_original_before_replacing_it() {
+        let directory = std::env::temp_dir().join(format!(
+            "toiler-upload-race-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let destination = directory.join("notes.txt");
+        std::fs::write(&destination, b"original").unwrap();
+
+        // 覆盖成功：内容换成新的，临时文件不残留。
+        write_upload(&destination, b"overwritten", true).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"overwritten");
+        let leftovers: Vec<String> = std::fs::read_dir(&directory)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name != "notes.txt")
+            .collect();
+        assert!(leftovers.is_empty(), "临时文件没清理干净：{leftovers:?}");
+
+        // 覆盖失败（目标是个目录）时，原目录与其中的内容都不能被动。
+        let blocked = directory.join("blocked");
+        std::fs::create_dir_all(&blocked).unwrap();
+        std::fs::write(blocked.join("inner.txt"), b"keep me").unwrap();
+        assert!(write_upload(&blocked, b"x", true).is_err());
+        assert_eq!(
+            std::fs::read(blocked.join("inner.txt")).unwrap(),
+            b"keep me",
+            "覆盖失败不能破坏原内容"
+        );
+
+        // `overwrite = false` 时目标已存在必须失败（`create_new` 的独占语义）。
+        let existing = directory.join("existing.txt");
+        std::fs::write(&existing, b"first").unwrap();
+        assert!(write_upload(&existing, b"second", false).is_err());
+        assert_eq!(std::fs::read(&existing).unwrap(), b"first");
+
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    /// `same_entry` 是「改名校名」判定的核心：必须比 (dev, ino) 而不是比路径，
+    /// 否则硬链接与大小写不敏感文件系统上的同名文件都会被当成「另一个文件」
+    /// → 改名被 409 拒绝。
+    #[cfg(unix)]
+    #[test]
+    fn same_entry_compares_inodes_not_paths() {
+        let directory = std::env::temp_dir().join(format!(
+            "toiler-same-entry-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let original = directory.join("a.txt");
+        std::fs::write(&original, b"content").unwrap();
+
+        // 自己和自己：同名同 inode。
+        assert!(same_entry(&original, &original));
+
+        // 硬链接：不同路径、同一 inode → 必须认成同一个条目。
+        let hardlink = directory.join("b.txt");
+        if std::fs::hard_link(&original, &hardlink).is_ok() {
+            assert!(
+                same_entry(&original, &hardlink),
+                "硬链接应视为同一个条目（比路径就会误判）"
+            );
+        }
+
+        // 真正不同的文件：同目录、大小相同，但 inode 不同。
+        let other = directory.join("c.txt");
+        std::fs::write(&other, b"content").unwrap();
+        assert!(!same_entry(&original, &other), "两个不同的文件不能算同一个");
+
+        // 不存在的路径不能谎报成同一个。
+        assert!(!same_entry(&original, &directory.join("missing.txt")));
+
+        std::fs::remove_dir_all(&directory).ok();
     }
 
     #[test]

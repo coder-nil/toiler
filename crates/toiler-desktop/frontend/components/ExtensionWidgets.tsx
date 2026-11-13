@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronLeft, ChevronUp, ListTodo } from "lucide-react";
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import type { ExtensionWidgetItem } from "@/lib/types";
 
@@ -50,10 +50,8 @@ export function getNextExpandedWidgetKey(
 
 export function ExtensionWidgets({
   widgets,
-  trailingContent,
 }: {
   widgets: ExtensionWidgetItem[];
-  trailingContent?: ReactNode;
 }) {
   const { t } = useI18n();
   const idPrefix = useId();
@@ -227,7 +225,6 @@ export function ExtensionWidgets({
             </div>
           );
         })}
-        {trailingContent}
       </div>
     </>
   );

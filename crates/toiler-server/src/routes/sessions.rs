@@ -82,10 +82,17 @@ pub async fn detail(
         .map(|message| {
             // `deferThinking`：把 thinking 正文清空并标记 `deferred`（pi 的同一行为），
             // 前端点开时才去 `/api/sessions/{id}/entries/{entryId}/thinking` 取全文。
-            if params.defer_thinking.is_some() {
+            let message = if params.defer_thinking.is_some() {
                 session_view::defer_thinking_blocks(message)
             } else {
                 message.clone()
+            };
+            // `deferMedia`：把图片块换成一行占位文字（pi 的同一行为）。前端首屏一直
+            // 带这条参数，不实现的话几张图片就能把首帧撑到 MB 级。
+            if params.defer_media.is_some() {
+                session_view::defer_media_blocks(&message)
+            } else {
+                message
             }
         })
         .collect();
@@ -99,9 +106,7 @@ pub async fn detail(
         .into_iter()
         .find(|item| item.get("id").and_then(Value::as_str) == Some(id.as_str()));
 
-    // `deferMedia`：pi 会把 toolResult 里的 base64 图片换成一段占位文字。
-    // 这里只做最小版：去掉 `image` 块（前端「图片占位」分支能处理空 content）。
-    let _ = params.defer_media;
+    // `deferMedia` 在上一段的 map 里已按图片块换成占位文字（见 `defer_media_blocks`）。
 
     Json(json!({
         "sessionId": id,

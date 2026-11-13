@@ -982,6 +982,11 @@ export function AppShell() {
     sidebarInitialLoadDone,
   ]);
 
+  // 只要刷新会话列表，不动当前打开的会话（新会话发出第一条消息时用）。
+  const handleSessionListRefresh = useCallback(() => {
+    setRefreshKey((k) => k + 1);
+  }, []);
+
   const handleSessionDeleted = useCallback((sessionId: string) => {
     invalidateWorkspaceRestore();
     setRefreshKey((k) => k + 1);
@@ -2389,6 +2394,7 @@ export function AppShell() {
               onAgentEnd={handleAgentEnd}
               onAttentionNeeded={handleAttentionNeeded}
               onSessionCreated={handleSessionCreated}
+              onSessionListRefresh={handleSessionListRefresh}
               onSessionForked={handleSessionForked}
               modelsRefreshKey={modelsRefreshKey}
               chatInputRef={chatInputRef}

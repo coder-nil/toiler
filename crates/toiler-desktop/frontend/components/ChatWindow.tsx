@@ -13,6 +13,8 @@ import { MessageView } from "./MessageView";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
+import { TaskProgressPanel } from "./TaskProgressPanel";
+import { resolveTaskProgress } from "@/lib/task-progress-view";
 import { useI18n } from "@/hooks/useI18n";
 import { useAgentSession, type AgentPhase, type NoticeItem } from "@/hooks/useAgentSession";
 import { useDragDrop } from "@/hooks/useDragDrop";
@@ -24,7 +26,8 @@ import {
   getPromptAnchorSpacerHeight,
   getVisibleRenderWindow,
   restoreScrollTop,
-  shouldShowJumpToLatest,
+  isScrollAtTail,
+  resolveJumpToLatestVisible,
   VISIBLE_PAGE_SIZE,
 } from "@/lib/chat-lazy-load";
 
@@ -36,6 +39,8 @@ interface Props {
   onAgentEnd?: (recentPrompt: string | null) => void;
   onAttentionNeeded?: (request: BlockingExtensionUiRequest) => void;
   onSessionCreated?: (session: SessionInfo, sourceDraftKey: string) => void;
+  /** 仅刷新侧边栏列表（不切会话）。 */
+  onSessionListRefresh?: () => void;
   onSessionForked?: (newSessionId: string) => void;
   modelsRefreshKey?: number;
   chatInputRef?: React.RefObject<ChatInputHandle | null>;
@@ -160,7 +165,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = fa
   );
 }
 
-export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onNewSessionRequest, onContextUsageChange, onScrollContainerChange, minimapHost = null, onMinimapStateChange, onOpenFile, onOpenConsole, consoleActive, soundEnabled = true, playDoneSound = () => {}, unlockAudio }: Props) {
+export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionListRefresh, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onNewSessionRequest, onContextUsageChange, onScrollContainerChange, minimapHost = null, onMinimapStateChange, onOpenFile, onOpenConsole, consoleActive, soundEnabled = true, playDoneSound = () => {}, unlockAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
 
@@ -204,7 +209,7 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
     handleBuiltinSlashCommand,
     handleToolPresetChange, handleChatModeChange, handleThinkingLevelChange, loadSlashCommands, scrollToBottom, scrollUserMsgToTop,
   } = useAgentSession({
-    session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd: wrappedOnAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
+    session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd: wrappedOnAgentEnd, onAttentionNeeded, onSessionCreated, onSessionListRefresh, onSessionForked,
     modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsPanelOpen,
     onNewSessionRequest,
   });
@@ -237,9 +242,20 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
   const sentinelRef = useRef<HTMLDivElement>(null);
   const prevScrollDistanceRef = useRef<number | null>(null);
 
-  // 「回到底部」按钮：只在离开贴底时出现。scroll 监听里只翻转这一位，滚动过程本身不重渲染；
-  // 贴底跟随由 useAgentSession 自己那份监听负责，这里用同一个容忍度独立判定。
+  // 「回到最新」按钮：只在离开贴底时出现。
+  // 判定带滞回（进 96px / 出 24px），否则贴底边界上的抖动会让它一下一下地闪；
+  // 滚动事件用 rAF 合并：一次滚动里可能有几十个事件，只量最后一次的布局。
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const showJumpToLatestRef = useRef(false);
+  // 平滑回底期间遮住重新弹出：滚动途中位置离底还很远，不拦的话按钮会在自己
+  // 刚点下去的那次滚动里又弹回来。用户反向拉开（想停在上面）时就立即解除。
+  const jumpInFlightRef = useRef(false);
+  const jumpLastTopRef = useRef(0);
+  // 回底途中用户反向拉开（想停在上面）就记为“被打断”：收尾那次对齐不再抢回底部，
+  // 用户的手永远比我们的动画优先。
+  const jumpInterruptedRef = useRef(false);
+  // 组件卸载时不要留着一个还打算改状态的回调。
+  const jumpSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 只拿「有没有消息」这个布尔值做依赖：按 messages.length 重订阅会让内容长高与贴底跟随
   // 之间的那一帧被当成“离开底部”，流式输出时按钮会一下一下闪。
   const hasNoMessages = messages.length === 0;
@@ -247,31 +263,85 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
+    let frame: number | null = null;
     const syncJumpVisibility = () => {
-      const show = shouldShowJumpToLatest(container.scrollTop, container.clientHeight, container.scrollHeight);
-      setShowJumpToLatest((previous) => (previous === show ? previous : show));
+      frame = null;
+      const { scrollTop, clientHeight, scrollHeight } = container;
+      const atTail = isScrollAtTail(scrollTop, clientHeight, scrollHeight);
+      const scrolledUp = scrollTop < jumpLastTopRef.current - 1;
+      jumpLastTopRef.current = scrollTop;
+      if (jumpInFlightRef.current) {
+        // 回到尾了，或者用户抢过去往上拉了：两种都结束“回底中”的遮罩。
+        if (!atTail && !scrolledUp) return;
+        jumpInFlightRef.current = false;
+        if (scrolledUp) jumpInterruptedRef.current = true;
+        if (!scrolledUp) return;
+      }
+      const previous = showJumpToLatestRef.current;
+      const next = hasNoMessages
+        ? false
+        : resolveJumpToLatestVisible(previous, scrollTop, clientHeight, scrollHeight);
+      if (previous === next) return;
+      showJumpToLatestRef.current = next;
+      setShowJumpToLatest(next);
     };
-    container.addEventListener("scroll", syncJumpVisibility, { passive: true });
+    const onScroll = () => {
+      if (frame !== null) return;
+      frame = requestAnimationFrame(syncJumpVisibility);
+    };
+    container.addEventListener("scroll", onScroll, { passive: true });
     // 首帧延后一帧再同步：挂载时 useAgentSession 刚把长会话滚到底，等它落地再量一次，
     // 否则按钮会在会话打开的瞬间闪一下。
     const initialFrame = requestAnimationFrame(syncJumpVisibility);
     return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
       cancelAnimationFrame(initialFrame);
-      container.removeEventListener("scroll", syncJumpVisibility);
+      container.removeEventListener("scroll", onScroll);
     };
   }, [scrollContainerRef, isNew, hasNoMessages]);
+
+  // 组件卸载时不要留着一个还打算改状态的回调。
+  useEffect(() => () => {
+    if (jumpSettleTimerRef.current !== null) clearTimeout(jumpSettleTimerRef.current);
+  }, []);
 
   const handleJumpToLatest = useCallback(() => {
     const reduceMotion = typeof window !== "undefined"
       && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // 按钮是在它自己被按下的那一刻收起的；主动收起让它在滚动途中就开始退场，
+    // 而不是等 smooth 滚动跑完、scroll 事件把它推到边界才闪掉。
+    showJumpToLatestRef.current = false;
+    setShowJumpToLatest(false);
+    jumpInFlightRef.current = true;
+    jumpInterruptedRef.current = false;
+    jumpLastTopRef.current = scrollContainerRef.current?.scrollTop ?? 0;
     scrollToBottom(reduceMotion ? "auto" : "smooth");
-  }, [scrollToBottom]);
+    // 流式输出会在动画期间把内容继续长高，smooth 滚动的目标是调用那一刻的底部，
+    // 可能差一点。落地后再核一次：还差得多就补一次瞬时对齐（不第二次平滑，
+    // 否则尾随两次动画比硬对齐更难受）。
+    if (jumpSettleTimerRef.current !== null) clearTimeout(jumpSettleTimerRef.current);
+    jumpSettleTimerRef.current = setTimeout(() => {
+      jumpSettleTimerRef.current = null;
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      jumpInFlightRef.current = false;
+      if (jumpInterruptedRef.current) return;
+      if (isScrollAtTail(container.scrollTop, container.clientHeight, container.scrollHeight)) return;
+      scrollToBottom("auto");
+    }, reduceMotion ? 0 : 420);
+  }, [scrollContainerRef, scrollToBottom]);
 
   const renderUnits = useMemo(
     () => buildChatRenderUnits(messages, { liveTail: sessionBusy || streamState.isStreaming }),
     [messages, sessionBusy, streamState.isStreaming],
   );
-  const { startIndex: unitStartIndex, hasMore: hasMoreUnits } = getVisibleRenderWindow(renderUnits.length, visibleCount);
+
+  // 任务清单：活会话读 widget，历史会话从 `task_progress` 的工具结果里恢复。
+  // 两条路都给不出任务时是空数组，面板自己不会渲染。
+  const taskProgress = useMemo(
+    () => resolveTaskProgress(extensionWidgets, messages),
+    [extensionWidgets, messages],
+  );  const { startIndex: unitStartIndex, hasMore: hasMoreUnits } = getVisibleRenderWindow(renderUnits.length, visibleCount);
   // The pager needs both flags without re-subscribing its observer each render.
   const pagingStateRef = useRef({ hasMoreUnits, hasEarlierMessages });
   pagingStateRef.current = { hasMoreUnits, hasEarlierMessages };
@@ -528,6 +598,7 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
       isStreaming={sessionBusy}
       showJumpToLatest={showJumpToLatest}
       onJumpToLatest={handleJumpToLatest}
+      aboveComposer={taskProgress.length > 0 ? <TaskProgressPanel tasks={taskProgress} /> : undefined}
       model={displayModelValue}
       isAutoModelSelection={isAutoModelSelection}
       modelNames={modelNames}
@@ -565,8 +636,7 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
     />
   );
 
-  if (loading) {
-    return (
+  if (loading) {    return (
       <div className="flex h-full items-center justify-center text-text-muted">
          {t("chat.loadingSession")}
       </div>

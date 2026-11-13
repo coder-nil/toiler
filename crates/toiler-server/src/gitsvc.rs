@@ -1082,9 +1082,41 @@ fn credential_from_body(
     Ok(Some((kind.to_string(), username, secret.to_string())))
 }
 
-/// 临时 askpass 脚本：pi 用它把凭据喂给 git（避免明文进命令行）。
+/// 临时 askpass 程序：pi 用它把凭据喂给 git（避免明文进命令行）。
+///
+/// 脚本内容按平台不同（git 把 `GIT_ASKPASS` 当可执行程序启动，把 prompt 作为
+/// 第一个参数传给它，所以我们只需根据 prompt 里有没有 “sername” 决定吐用户名
+/// 还是密码）：
+///
+/// | 平台 | 文件名 | 说明 |
+/// |---|---|---|
+/// | unix | `askpass.sh` | `#!/bin/sh` + `case` |
+/// | Windows | `askpass.cmd` | 批处理；`CreateProcess` 会自己经 `cmd.exe` 跑 `.cmd` |
+///
+/// 早先这里固定写 `#!/bin/sh` 的脚本，Windows 上 git 根本执行不了它 ——
+/// 「记住密码」在 Windows 是静默失效的。
 struct Askpass {
     dir: PathBuf,
+}
+
+/// askpass 脚本的文件名与内容。抽成函数是为了能单测（不跑 git、不分平台）。
+fn askpass_script() -> (&'static str, &'static str) {
+    #[cfg(unix)]
+    {
+        (
+            "askpass.sh",
+            "#!/bin/sh\ncase \"$1\" in *[Uu]sername*) cat \"$TOILER_GIT_USERNAME_FILE\" ;; *) cat \"$TOILER_GIT_SECRET_FILE\" ;; esac\n",
+        )
+    }
+    // Windows：先判断 prompt 里有没有 “sername”，再 `type` 对应文件。
+    // 用 `type` 而不是 `echo`：文件内容里的 `%` / `!` / `&` 不会被再展开一次。
+    #[cfg(not(unix))]
+    {
+        (
+            "askpass.cmd",
+            "@echo off\r\nsetlocal\r\necho %~1 | findstr /I \"sername\" >nul\r\nif errorlevel 1 goto __toiler_secret\r\n:__toiler_user\r\ntype \"%TOILER_GIT_USERNAME_FILE%\"\r\ngoto __toiler_done\r\n:__toiler_secret\r\ntype \"%TOILER_GIT_SECRET_FILE%\"\r\n:__toiler_done\r\nexit /b 0\r\n",
+        )
+    }
 }
 
 impl Askpass {
@@ -1101,12 +1133,9 @@ impl Askpass {
         std::fs::write(dir.join("secret"), secret).map_err(|e| err(e.to_string()))?;
         std::fs::write(dir.join("username"), username.unwrap_or("git"))
             .map_err(|e| err(e.to_string()))?;
-        let script = dir.join("askpass.sh");
-        std::fs::write(
-            &script,
-            "#!/bin/sh\ncase \"$1\" in *[Uu]sername*) cat \"$TOILER_GIT_USERNAME_FILE\" ;; *) cat \"$TOILER_GIT_SECRET_FILE\" ;; esac\n",
-        )
-        .map_err(|e| err(e.to_string()))?;
+        let (name, body) = askpass_script();
+        let script = dir.join(name);
+        std::fs::write(&script, body).map_err(|e| err(e.to_string()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1124,7 +1153,8 @@ impl Askpass {
     }
 
     fn env(&self) -> Vec<(&'static str, String)> {
-        let script = self.dir.join("askpass.sh").to_string_lossy().to_string();
+        let (name, _) = askpass_script();
+        let script = self.dir.join(name).to_string_lossy().to_string();
         vec![
             ("GIT_ASKPASS", script.clone()),
             ("SSH_ASKPASS", script),
@@ -1603,6 +1633,64 @@ mod tests {
         assert_eq!(credential_kind(Some("ssh://git@host/y.git")), "ssh");
         assert_eq!(credential_kind(Some("file:///tmp/x")), "none");
         assert_eq!(credential_kind(None), "none");
+    }
+
+    /// askpass 脚本必须能区分用户名与密码两个 prompt，且用文件读而不是把凭据
+    /// 写进脚本文本（脚本在磁盘上、且会被 git 当程序执行）。
+    #[test]
+    fn askpass_script_matches_the_platform_it_runs_on() {
+        let (name, body) = askpass_script();
+        // 两个变量都引用了，说明两路分支都在。
+        assert!(body.contains("TOILER_GIT_USERNAME_FILE"), "{body}");
+        assert!(body.contains("TOILER_GIT_SECRET_FILE"), "{body}");
+        // 大小写不敏感地判断 “username”，否则 git 的 “Username for ...” 会走到密码分支。
+        assert!(
+            body.contains("[Uu]sername") || body.contains("/I \"sername\""),
+            "{body}"
+        );
+
+        #[cfg(unix)]
+        {
+            assert_eq!(name, "askpass.sh");
+            assert!(body.starts_with("#!/bin/sh"), "{body}");
+        }
+        #[cfg(not(unix))]
+        {
+            // Windows 上 git 靠 CreateProcess 起它，必须是 `.cmd` 且有 CRLF 换行。
+            assert_eq!(name, "askpass.cmd");
+            assert!(body.contains("\r\n"), "批处理需要 CRLF");
+            assert!(!body.contains("TOILER_ASKPASS"), "凭据不该写进脚本");
+        }
+    }
+
+    /// 凭据只落在独立的 0600 文件里，脚本本身与命令行都不含 secret。
+    #[test]
+    fn askpass_keeps_the_secret_out_of_the_script_and_env() {
+        let askpass = Askpass::new("s3cr3t-value", Some("alice")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(askpass.dir.join("secret")).unwrap(),
+            "s3cr3t-value"
+        );
+        assert_eq!(
+            std::fs::read_to_string(askpass.dir.join("username")).unwrap(),
+            "alice"
+        );
+        let (name, _) = askpass_script();
+        let script = std::fs::read_to_string(askpass.dir.join(name)).unwrap();
+        assert!(
+            !script.contains("s3cr3t-value"),
+            "secret 不能写进脚本：{script}"
+        );
+        // 环境变量只给文件路径，不给明文。
+        for (key, value) in askpass.env() {
+            assert!(
+                !value.contains("s3cr3t-value"),
+                "{key} 泄漏了 secret：{value}"
+            );
+        }
+        let dir = askpass.dir.clone();
+        drop(askpass);
+        assert!(!dir.exists(), "临时目录必须随 Drop 清掉");
     }
 
     #[test]

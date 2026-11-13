@@ -168,6 +168,8 @@ export interface UseAgentSessionOptions {
   onAgentEnd?: (recentPrompt: string | null) => void;
   onAttentionNeeded?: (request: BlockingExtensionUiRequest) => void;
   onSessionCreated?: (session: SessionInfo, sourceDraftKey: string) => void;
+  /** 让侧边栏重新拉一次 `/api/sessions`（不切会话、不重建 ChatWindow）。 */
+  onSessionListRefresh?: () => void;
   onSessionForked?: (newSessionId: string) => void;
   modelsRefreshKey?: number;
   chatInputRef?: React.RefObject<ChatInputHandle | null>;
@@ -317,7 +319,7 @@ function getUserMessageText(message: AgentMessage): string | null {
 export function useAgentSession(opts: UseAgentSessionOptions) {
   const { locale, t } = useI18n();
   const {
-    session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionForked,
+    session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionListRefresh, onSessionForked,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsPanelOpen,
     onNewSessionRequest,
   } = opts;
@@ -1535,6 +1537,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
         if (!sid) throw new Error("Unable to create a session for the prompt");
         sentSessionId = sid;
+        // 会话文件在 `/api/agent/new` 返回时就已落盘，侧边栏已经能列出它。
+        // 这里立刻推进到会话列表，不等模型回第一段文本（那个位置在 bundle
+        // 后面，会让刚发出的会话在列表里迟到好几秒）。`promoteNewSession` 幂等，
+        // 下面 prompt 后的那一次调用会直接 return。
+        promoteNewSession(1, message);
         try {
           const checkpoint = await fetch("/api/checkpoints", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create", sessionId: sid, cwd: newSessionCwd }) }).then((r) => r.ok ? r.json() : null);
           checkpointIdRef.current = checkpoint?.id ?? null;
@@ -1553,7 +1560,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           message,
           ...(piImages?.length ? { images: piImages } : {}),
         });
-        promoteNewSession(1, message);
+        // 条目在 `promoteNewSession` 时就已经进了列表，但那时文件里只有 header，
+        // 所以显示成「0 条消息 / (no messages)」。user 消息在 `prompt` 命令里
+        // 同步落盘（模型还没回），这里补一次刷新就换成真实标题与条数。
+        onSessionListRefresh?.();
       } else if (session) {
         sentSessionId = session.id;
         try {
@@ -1617,7 +1627,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, locale, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, reconcileAgentState, restoreSubmission]);
+  }, [isNew, locale, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, onSessionListRefresh, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, reconcileAgentState, restoreSubmission]);
 
   const handleRetryPrompt = useCallback(() => {
     const prompt = retryablePromptRef.current;
@@ -1634,13 +1644,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       const sid = sessionIdRef.current ?? session?.id ?? await ensureNewSession();
       if (!sid) throw new Error("Unable to create a session for the shell command");
+      // 与 prompt 同理：会话文件已经存在就立刻上列表，不等命令跑完。
+      promoteNewSession(1, inputText);
       await sendAgentCommand(sid, {
         type: "bash",
         command,
         excludeFromContext,
       });
       await loadSession(sid);
-      promoteNewSession(1, inputText);
+      onSessionListRefresh?.();
     } catch (e) {
       console.error("Failed to execute shell command:", e);
       addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
@@ -1650,7 +1662,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setPendingBash(null);
       setBashRunning(false);
     }
-  }, [addNotice, composerDraftKey, ensureNewSession, loadSession, promoteNewSession, restoreSubmission, session]);
+  }, [addNotice, composerDraftKey, ensureNewSession, loadSession, onSessionListRefresh, promoteNewSession, restoreSubmission, session]);
   executeBashRef.current = executeBash;
 
   const handleAbort = useCallback(async () => {

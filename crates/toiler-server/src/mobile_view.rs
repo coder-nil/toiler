@@ -263,19 +263,40 @@ fn format_clock(timestamp: Option<&Value>) -> Option<String> {
 
 /// 当前时区相对 UTC 的偏移秒数（拿不到时按 0 = UTC）。
 fn local_utc_offset_seconds() -> i32 {
-    // SAFETY: `localtime_r` 是线程安全的；失败时退回 UTC。
-    #[cfg(unix)]
     unsafe {
         let now = libc::time(std::ptr::null_mut());
-        let mut tm: libc::tm = std::mem::zeroed();
-        if libc::localtime_r(&now, &mut tm).is_null() {
-            return 0;
+        let mut local: libc::tm = std::mem::zeroed();
+        // SAFETY: 两个分支都只写我们给的 tm。非 unix 没有 `localtime_r`，
+        // 也没有 `tm_gmtoff` / `mktime`（见 `desktop_tools/system_time.rs`）。
+        #[cfg(unix)]
+        {
+            if libc::localtime_r(&now, &mut local).is_null() {
+                return 0;
+            }
+            local.tm_gmtoff as i32
         }
-        tm.tm_gmtoff as i32
-    }
-    #[cfg(not(unix))]
-    {
-        0
+        #[cfg(not(unix))]
+        {
+            if libc::localtime_s(&mut local, &now) != 0 {
+                return 0;
+            }
+            let mut utc: libc::tm = std::mem::zeroed();
+            if libc::gmtime_s(&mut utc, &now) != 0 {
+                return 0;
+            }
+            let local_secs =
+                local.tm_hour as i64 * 3600 + local.tm_min as i64 * 60 + local.tm_sec as i64;
+            let utc_secs = utc.tm_hour as i64 * 3600 + utc.tm_min as i64 * 60 + utc.tm_sec as i64;
+            // 同一天的墙上时间差，跨日时向 24h 内回落。
+            let mut diff = local_secs - utc_secs;
+            const HALF_DAY: i64 = 12 * 3600;
+            if diff > HALF_DAY {
+                diff -= 24 * 3600;
+            } else if diff < -HALF_DAY {
+                diff += 24 * 3600;
+            }
+            diff as i32
+        }
     }
 }
 

@@ -53,6 +53,33 @@ fn main() {
     );
 
     println!("cargo:rerun-if-changed={}", dir.display());
+    // 目录本身只登记一条时，Cargo 只盯目录 mtime：产物里换了文件名、而目录
+    // mtime 没变的情况下，`cargo build` 会把**旧前端**继续嵌进二进制（实测过：
+    // `cargo build -p toiler-desktop` 重编了桌面壳，server 二进制却还是上一版
+    // 前端）。所以把产物里的每个文件都登记一遍。
+    for path in files_under(&dir) {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
     println!("cargo:rustc-env=TOILER_FRONTEND_DIR={}", dir.display());
     println!("cargo:rustc-env=TOILER_FRONTEND_SOURCE={source}");
+}
+
+/// 递归列出目录下的常规文件（前端产物是几十~几百个小文件，不引第三方依赖）。
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => stack.push(path),
+                Ok(kind) if kind.is_file() => out.push(path),
+                _ => {}
+            }
+        }
+    }
+    out
 }

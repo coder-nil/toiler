@@ -26,5 +26,11 @@ serde = { version = "1", features = ["derive"] }
 anyhow = "1"
 
 # 阶段 4：单二进制，release 去掉符号表（安装包体积直接少几 MB）。
+# `panic = "abort"`：桌面 App 没有「panic 后继续运行」的语义，abort 反而更诚实
+# （崩溃留给系统上报），同时省掉整张异常展开表（`__text` 里的 landing pad +
+# `__gcc_except_tab` / `__eh_frame` / `__unwind_info`，实测共约 7.7MB）。
+# 注意 Cargo 会为 test/bench profile 忽略这项设置并强制 unwind，所以
+# `cargo test` 与 `cargo test --release` 都不受影响。
 [profile.release]
 strip = "symbols"
+panic = "abort"

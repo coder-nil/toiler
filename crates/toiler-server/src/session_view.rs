@@ -913,6 +913,59 @@ pub fn defer_thinking_blocks(message: &Value) -> Value {
     out
 }
 
+/// `deferMedia`：把图片块换成一个占位文本块，避免把 base64 正文塞进首帧。
+///
+/// 前端首屏一直带 `deferMedia=1`（`useAgentSession.ts` 的 `loadSession`），
+/// 而这条参数曾经是空实现：带不带返回的字节数完全一样，一条会话里几张图片就能
+/// 把首帧撑到 1.3MB（实测）。pi 的语义是把 `{type:"image"}` 换掉，这里是同一件事：
+/// 图片块 → 一行 `[image: <mime>, <大小>]` 文本，其它块原样保留。
+///
+/// 两种形状都认（v3 文件里两种都存在，前端的 `imageSource()` 也是这么兼容的）：
+///
+/// - 嵌套：`{type:"image", source:{type:"base64", media_type, data}}`
+/// - 扁平：`{type:"image", data, mimeType}`
+pub fn defer_media_blocks(message: &Value) -> Value {
+    let Some(blocks) = message.get("content").and_then(Value::as_array) else {
+        return message.clone();
+    };
+    let mut changed = false;
+    let mapped: Vec<Value> = blocks
+        .iter()
+        .map(|block| {
+            if block.get("type").and_then(Value::as_str) != Some("image") {
+                return block.clone();
+            }
+            changed = true;
+            let source = block.get("source");
+            let mime = source
+                .and_then(|s| s.get("media_type"))
+                .or_else(|| block.get("mimeType"))
+                .and_then(Value::as_str)
+                .unwrap_or("image");
+            let data = source
+                .and_then(|s| s.get("data"))
+                .or_else(|| block.get("data"))
+                .and_then(Value::as_str);
+            let detail = match (source.and_then(|s| s.get("url")), data) {
+                // base64 长度 ×3/4 ≈ 原始字节数，只用于提示，不参与判定。
+                (_, Some(encoded)) => {
+                    format!("[image: {mime}, ~{} KB]", encoded.len() * 3 / 4 / 1024)
+                }
+                _ => format!("[image: {mime}, url]"),
+            };
+            json!({ "type": "text", "text": detail })
+        })
+        .collect();
+    if !changed {
+        return message.clone();
+    }
+    let mut out = message.clone();
+    if let Some(map) = out.as_object_mut() {
+        map.insert("content".into(), Value::Array(mapped));
+    }
+    out
+}
+
 /// 构建 context（消息 + entryIds + 当前模型 / 思考等级）。
 pub fn context_view(entries: &[Value], leaf_id: Option<&str>) -> ContextView {
     let branch = branch_entries(entries, leaf_id);
@@ -1113,6 +1166,47 @@ mod context_tests {
         assert_eq!(view.entry_ids, vec!["u"]);
         assert_eq!(view.model["provider"], "qoder");
         assert_eq!(view.thinking_level, "high");
+    }
+
+    /// `deferMedia` 必须真的把图片块换掉：前端首屏一直带这条参数，不生效的话
+    /// 一条有图的会话首帧能到 MB 级（实测 1.38MB → 214KB）。
+    /// 两种形状都要认：v3 文件里既有嵌套 `source`、也有扁平的 `data`/`mimeType`。
+    #[test]
+    fn defer_media_replaces_image_blocks_in_both_shapes() {
+        let nested = json!({
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "看这张图" },
+                {
+                    "type": "image",
+                    "source": { "type": "base64", "media_type": "image/png", "data": "A".repeat(4096) }
+                }
+            ]
+        });
+        let out = defer_media_blocks(&nested);
+        let blocks = out["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[1]["type"], "text");
+        let text = blocks[1]["text"].as_str().unwrap();
+        assert!(text.starts_with("[image: image/png"), "{text}");
+
+        let flat = json!({
+            "role": "toolResult",
+            "content": [
+                { "type": "image", "data": "B".repeat(2048), "mimeType": "image/jpeg" }
+            ]
+        });
+        let out = defer_media_blocks(&flat);
+        let text = out["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("[image: image/jpeg"), "{text}");
+        assert!(
+            !out["content"][0].to_string().contains("BBBB"),
+            "正文不能被带出来"
+        );
+
+        // 纯文本消息原样返回（不能平白改写 content）。
+        let plain = json!({"role": "user", "content": [{"type": "text", "text": "hi"}]});
+        assert_eq!(defer_media_blocks(&plain), plain);
     }
 
     #[test]

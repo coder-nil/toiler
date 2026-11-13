@@ -1,0 +1,219 @@
+/* 任务进度面板：贴在输入框上沿、与输入框同宽的一张小卡片。
+   材质刻意比输入框轻一档 —— 项目里阴影只属于「浮在内容面上」的输入框外壳
+   与弹层，这里再加一层浮起的面会把层级读乱，所以只给 1px 边框。 */
+
+.panel {
+  margin-bottom: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  animation: panel-in 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* 面板是「刚到的材质」，不是淡入的图片：位移与透明度一起走，距离只给 4px。 */
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 34px;
+  padding: 0 8px 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.head:hover {
+  background: var(--bg-subtle);
+}
+
+.head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* 数字用等宽 + 表格数字：3/8 → 4/8 时宽度不跳。 */
+.count {
+  flex: none;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.current {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  flex: none;
+  color: var(--text-dim);
+  transition: transform 160ms ease;
+}
+
+.panel[data-collapsed="true"] .chevron {
+  transform: rotate(-90deg);
+}
+
+.meter {
+  height: 2px;
+  margin: 0 12px;
+  overflow: hidden;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--text-dim) 22%, transparent);
+}
+
+.meterFill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform 220ms ease;
+}
+
+.panel[data-collapsed="true"] .meter {
+  margin-bottom: 6px;
+}
+
+.list {
+  max-height: min(34dvh, 264px);
+  margin: 6px 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  margin: 0 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.item[data-status="in_progress"] {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.mark {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--text-dim);
+}
+
+.item[data-status="in_progress"] .mark {
+  color: var(--accent);
+}
+
+.item[data-status="failed"] .mark {
+  color: var(--danger);
+}
+
+.item[data-status="blocked"] .mark {
+  color: var(--star);
+}
+
+.title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item[data-status="in_progress"] .title {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.item[data-status="failed"] .title,
+.item[data-status="blocked"] .title {
+  color: var(--text);
+}
+
+.item[data-status="completed"] .title {
+  color: var(--text-muted);
+}
+
+/* 待办要最淡、已完成与活跃拉开一档，否则灰阶读不出「已经做完了」。 */
+.item[data-status="pending"] .title {
+  color: var(--text-dim);
+}
+
+.item[data-status="skipped"] .title {
+  color: var(--text-dim);
+}
+
+/* 细节紧跟标题，不右对齐：它只出现在活跃/异常那一行，右对齐会跟标题扯开一大块空白。 */
+.detail {
+  flex: 0 1 auto;
+  max-width: 55%;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 吃掉行尾的剩余宽度，让标题与细节贴在一起。 */
+.spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chevron,
+  .meterFill {
+    transition: none;
+  }
+
+  .panel {
+    animation: none;
+  }
+}

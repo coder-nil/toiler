@@ -5530,6 +5530,7 @@ dependencies = [
  "include_dir",
  "libc",
  "md-5",
+ "multer",
  "rand 0.8.8",
  "reqwest 0.12.28",
  "rpi-agent",

@@ -426,7 +426,12 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 2. **`models` 元数据不全**：只给前端首屏需要的字段，没有价格/能力目录。
 3. **`deferThinking`** ✅ 阶段 5 已实现：思考正文清空 + 标 `deferred:true`（前端据此显示
    「展开思考」，点开走 `/api/sessions/{id}/entries/{entryId}/thinking`）。
-   **`deferMedia`** 仍未做：pi 会把 toolResult 里的 base64 图片换成一段占位文字，这里原样返回。
+   **`deferMedia`** ✅ 已实现：`content` 里的图片块换成一行
+   `[image: <mime>, ~<KB> KB]` 文本块（嵌套 `source` 与扁平 `data`/`mimeType` 两种形状都认）。
+   前端首屏一直带 `deferMedia=1`，之前是空实现，带不带返回的字节完全一样——
+   一条有图的会话首帧能到 1.38MB，实现后降到 214KB（实测同一条会话）。
+   注意：占位只发生在 `GET /api/sessions/{id}` 的 `context.messages` 上，
+   `/api/sessions/{id}/entries/...` 取单条、导出、手机投影一律返回原字节。
 4. **tree 的 `compressedEntryIds`** 只在深度超过 200 时出现（与 pi 的代码路径一致，但 pi 的 `visible` 集合还有别的分支，未 100% 验证）。
 5. **自定义 role 的消息**：写 v3 时降级为 `role:"custom"` + `customType`（pi 认的集合有限）。
 6. **auth provider 列表来自写死的内置表**：pi 的列表来自 provider 目录
