@@ -1,6 +1,5 @@
 "use client";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
-import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, BlockingExtensionUiRequest, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolResultMessage, UserMessage } from "@/lib/types";
 import { normalizeCustomPanelLines, parseAnsiLine } from "@/lib/ansi";
@@ -12,6 +11,7 @@ import type { FileOpenLocation } from "@/lib/file-links";
 import { MessageView } from "./MessageView";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
+import { CHAT_MINIMAP_WIDTH } from "@/lib/panel-layout";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
 import { TaskProgressPanel } from "./TaskProgressPanel";
 import { resolveTaskProgress } from "@/lib/task-progress-view";
@@ -53,12 +53,6 @@ interface Props {
   onNewSessionRequest?: () => boolean;
   onContextUsageChange?: (usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => void;
   onScrollContainerChange?: (container: HTMLDivElement | null) => void;
-  /**
-   * 右栏槽位。minimap 现在是 AppShell 里与 sidebar 平级的一条常驻列，
-   * 节点层通过 portal 渲染进去，但仍由 ChatWindow 拥有数据与滚动容器引用。
-   */
-  minimapHost?: HTMLDivElement | null;
-  onMinimapStateChange?: (state: { visible: boolean; previewOpen: boolean }) => void;
   onOpenFile?: (filePath: string, location?: FileOpenLocation) => void;
   onOpenConsole?: () => void;
   consoleActive?: boolean;
@@ -87,6 +81,19 @@ function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, 
 }
 
 const CHAT_COLUMN_PADDING = 16;
+/**
+ * 后台补齐历史的上限（条）。超过这个量级就不在后台悄悄拉了：那种会话本来就
+ * 得靠分页读，minimap 少几轮比首屏多出几十次请求划算。
+ */
+const CHAT_HISTORY_BACKFILL_LIMIT = 1600;
+/** 读者已经贴到顶部时不要后台翻页，让 sentinel 那条路径自己接。 */
+const CHAT_HISTORY_BACKFILL_TOP_GUARD = 240;
+/* 「回到最新」药丸是浮层，盖在消息区最下面一条上（叠在 [任务面板 + 输入框]
+   这一整块的上沿）。所以消息内容底部常驻垫出这么高的一条空带：滚到底时
+   最后一行文字停在药丸上方，而不是被它盖住一半。
+   = 药丸 26 + 与下沿的间隙 6 + 文字与药丸的呼吸 6。改药丸高度时这个值要
+   跟着改（样式在 globals.css 的 .chat-jump-to-latest）。 */
+const CHAT_JUMP_CLEARANCE = 38;
 
 function getUserInputText(message: AgentMessage): string | null {
   if (message.role !== "user") return null;
@@ -165,7 +172,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, defaultExpanded = fa
   );
 }
 
-export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionListRefresh, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onNewSessionRequest, onContextUsageChange, onScrollContainerChange, minimapHost = null, onMinimapStateChange, onOpenFile, onOpenConsole, consoleActive, soundEnabled = true, playDoneSound = () => {}, unlockAudio }: Props) {
+export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionDraftKey, onAgentEnd, onAttentionNeeded, onSessionCreated, onSessionListRefresh, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onNewSessionRequest, onContextUsageChange, onScrollContainerChange, onOpenFile, onOpenConsole, consoleActive, soundEnabled = true, playDoneSound = () => {}, unlockAudio }: Props) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
 
@@ -393,6 +400,42 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
     container.scrollTop = restoreScrollTop(container.scrollHeight, prevScrollDistanceRef.current);
     prevScrollDistanceRef.current = null;
   }, [visibleCount, messages.length, scrollContainerRef]);
+
+  /**
+   * 后台补齐历史分页。
+   *
+   * 首屏只拿尾部一页（服务端默认 120 条），所以会话的前几轮在补齐前既不在
+   * `messages` 里，也就不会出现在 minimap 上 —— 表现是「三轮对话只有两个节点，
+   * 往上滑一段才冒出第三个」。跑在空闲里逐页翻，翻完 minimap 就是全量轮次。
+   *
+   * 两处避让：
+   * - `scrollTop` 贴顶（用户自己在往上翻）时不抢：那条路径由 sentinel 的
+   *   IntersectionObserver 负责，它自己会做滚动补偿。
+   * - 每页间隔 250ms，且页大小就是服务端的一页，不把 300 多条会话变成
+   *   一次大 JSON 请求（首屏体积才是当初引入分页的原因）。
+   *
+   * 插入位置在当前视口上方，所以沿用 `prevScrollDistanceRef`：恢复 effect 靠
+   * 「距底距离」把视口钉住，读者看的那一行不会往下掉。
+   */
+  useEffect(() => {
+    if (!hasEarlierMessages) return;
+    if (messages.length >= CHAT_HISTORY_BACKFILL_LIMIT) return;
+    const timer = setTimeout(() => {
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      if (container.scrollTop <= CHAT_HISTORY_BACKFILL_TOP_GUARD) return;
+      const distance = captureScrollDistance(container.scrollHeight, container.scrollTop);
+      prevScrollDistanceRef.current = distance;
+      void loadEarlierMessages().then((added) => {
+        // 没翻到东西（锚点失效、或另一条路径正在翻）时只清理自己设的距离，
+        // 别把 sentinel 刚记下的值抹掉。
+        if (added === 0 && prevScrollDistanceRef.current === distance) {
+          prevScrollDistanceRef.current = null;
+        }
+      });
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [hasEarlierMessages, loadEarlierMessages, messages.length, scrollContainerRef]);
   // Push session stats up to AppShell for the top bar.
   // Compare scalar fields to avoid loops from new object identity each render.
   const statsKey = sessionStats
@@ -465,14 +508,6 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
     return history.reverse();
   }, [messages]);
   const messageRefs = useMessageRefs(visibleMessages.length);
-  // 可见性/预览状态的持有者现在是 AppShell（它渲染右栏），这里只负责去重上报。
-  const minimapStateRef = useRef({ visible: false, previewOpen: false });
-  const handleMinimapStateChange = useCallback((next: { visible: boolean; previewOpen: boolean }) => {
-    const current = minimapStateRef.current;
-    if (current.visible === next.visible && current.previewOpen === next.previewOpen) return;
-    minimapStateRef.current = next;
-    onMinimapStateChange?.(next);
-  }, [onMinimapStateChange]);
   const revealHistoryForMinimap = useCallback(() => {
     setVisibleCount((current) => Math.max(current, renderUnits.length));
   }, [renderUnits.length]);
@@ -742,7 +777,7 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
         className="relative flex min-w-0 flex-1 overflow-hidden"
       >
         <div ref={scrollContainerRef} className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-width:none]">
-          <div style={{ minWidth: 0, padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
+          <div style={{ minWidth: 0, padding: `0 ${CHAT_COLUMN_PADDING}px ${CHAT_JUMP_CLEARANCE}px` }}>
             <div ref={messageContentRef} data-chat-message-content="" style={{ width: "100%", minWidth: 0, maxWidth: "var(--chat-content-max-width, 820px)", margin: "0 auto" }}>
             {(() => {
               let lastUserIdx = -1;
@@ -927,16 +962,30 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
             </div>
           </div>
         </div>
-        {isMobile || !minimapHost ? null : createPortal(
-          <ChatMinimap
-            messages={messages}
-            streamingMessage={streamState.streamingMessage}
-            scrollContainer={scrollContainerRef}
-            messageRefs={messageRefs}
-            onRevealHistory={revealHistoryForMinimap}
-            onStateChange={handleMinimapStateChange}
-          />,
-          minimapHost,
+        {/* minimap 浮在消息区右边缘：不占布局宽度、没有自己的背景与边框，
+            因此不把它挂在整个对话区上（那会盖掉右下角的输入框与发送按钮）。 */}
+        {isMobile ? null : (
+          <div
+            data-chat-minimap-dock=""
+            style={{
+              position: "absolute",
+              top: 0,
+              bottom: 0,
+              right: 0,
+              width: CHAT_MINIMAP_WIDTH,
+              zIndex: 20,
+              // 轨道不可见时不要挡住正文上的点击（minimap 自己会改成 auto）。
+              pointerEvents: "none",
+            }}
+          >
+            <ChatMinimap
+              messages={messages}
+              streamingMessage={streamState.streamingMessage}
+              scrollContainer={scrollContainerRef}
+              messageRefs={messageRefs}
+              onRevealHistory={revealHistoryForMinimap}
+            />
+          </div>
         )}
       </div>
 

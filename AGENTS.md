@@ -184,6 +184,14 @@ scope 用 crate 短名：`server` / `session` / `desktop` / `poc` / `docs` / `to
   任务清单等于看不见（pi 原版就是这么渲染的，不要再照着抄）。历史会话没有
   widget 事件，清单是从 `messages` 里最后一条 `task_progress` 的 `details` 派生
   出来的（`lib/task-progress-view.ts`）——这条回退别删，删了刷新一次清单就没了。
+- **对话 minimap 的节点来自已加载的 `messages`，而会话是分页加载的**（首屏
+  只有尾部一页）。`ChatWindow` 里那段「后台补齐历史」的 effect 就是为 minimap
+  服务的：删掉它，长会话的前几轮在 minimap 上会缺节点，得靠往上滑触发翻页才
+  出现（三轮对话显示两个节点，就是这个症状）。补齐按服务端页大小逐页走，并
+  用 `prevScrollDistanceRef` 保持视口不跳；上限见 `CHAT_HISTORY_BACKFILL_LIMIT`。
+  另外 minimap 是**浮在消息区右边缘的一层**（`ChatWindow` 的
+  `data-chat-minimap-dock`），不是布局列：它没有背景/边框，`pointer-events`
+  只在节点带上打开，别再加回与 sidebar 平级的常驻列。
 - **端口由内核分配（`port = 0`）**，桌面壳不会抢 8787，也没有「端口被占用」。
   需要固定端口的场景走 `toiler-server --port`。
 - **`/api` 与前端同源**：静态资源挂在 `Router::fallback`，`/api/*` 是具体路由，

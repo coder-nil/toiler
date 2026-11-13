@@ -44,6 +44,10 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
         background: "transparent",
         overflowX: "auto",
         flexShrink: 0,
+        // 上层现在是 flex 容器（为了把高度传下来），所以这里必须是可收缩的
+        // flex 项，否则宽度会按标签内容撑开、溢出被裁掉右边。
+        flex: 1,
+        minWidth: 0,
         height: "100%",
       }}
     >

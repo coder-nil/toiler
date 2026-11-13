@@ -112,11 +112,20 @@
   padding-left: 86px;
 }
 
-/* 输入框上方的附加内容（任务进度面板）。
-   「回到最新」疙瘩高 22px、挂在输入框外壳上沿，与面板占同一块空间；
-   面板的 margin-bottom（8px）加上这里补的 16px，刚好把它让出来。 */
-.chat-above-composer[data-jump="true"] {
-  padding-bottom: 16px;
+/* 「回到最新」浮在 [任务面板 + 输入框] 这一整块的上沿：
+   面板在场时它就在面板上方，不在面板与输入框的夹缝里。
+   药丸是浮层，会盖住消息区最下面一条，所以消息内容底部垫了一段常驻
+   留白（ChatWindow.tsx 的 CHAT_JUMP_CLEARANCE），滚到底时最后一行文字
+   停在药丸上方而不是被盖一半。 */
+.chat-above-composer {
+  min-width: 0;
+}
+
+/* 药丸、任务面板、输入框外壳的共同定位参考系：
+   药丸的 bottom: 100% 量的是这个盒子的上沿，面板一出现药丸自动上提。 */
+.chat-composer-stack {
+  position: relative;
+  min-width: 0;
 }
 
 .chat-composer-shell {
@@ -444,44 +453,51 @@
   letter-spacing: -0.01em;
 }
 
-/* 「回到最新」趴在输入框上沿，轮廓是一道底部外撇的弧（喇叭口）：
-   矩形的 border 在底边处只能是垂直切线，撇不出去，所以轮廓交给内联 SVG。
-   84×22：拱顶收在 y≈4.2，两条腿各向外撇出约 20°，
-   宽高比再大就会读成两个尖脚，再小又变成一条普通半圆。
+/* 「回到最新」是浮在任务面板上方的一颗药丸：箭头 + 文字。
 
-   材料取「比内容面亮一档／深一档」的雾面（--bg-panel 的透明度），两个主题共用
-   一条公式：浅色底上合成出 #f5f5f5 的软灰，深色底上合成出 #292929 的微凸。
-   之前那层 `#fff 42%` 只在浅色主题里成立——深色底（#212121）上它会合成出中灰
-   #7c7c7c，比周围亮一大截，像贴了块膏药。 */
+   早一版把它做成「趴在边框上、底部外撇的弧」（喇叭口），理由是让按钮与输入框
+   焊成一体。但输入框是 16px 大圆角 + 一层软阴影的面，弧那两条外撇的腿贴在
+   圆角旁边读出来的是两个尖脚，不是同一个面上的凸起；换成矩形又只能在底边给
+   出垂直切线。所以现在不焊了：整颗完全离边框浮着，边框那圈圆角一寸不被遮。
+
+   材料沿用项目里「控制面」的语言：--bg-panel 实底 + 一道 1px --border +
+   一档软阴影，与输入框内的图标键、手机端的跳转键是同一套。
+   之前靠半透明雾面 + drop-shadow 假装体积，在深色底上会合成出一块比周围亮
+   的膏药；实底色 + 边框两个主题都稳。 */
 .chat-jump-to-latest {
-  --jump-fill: color-mix(in srgb, var(--bg-panel) 72%, transparent);
-  --jump-stroke: transparent;
-  /* 两层投影：贴地的那层交代接触，甩开的那层交代重量。
-     drop-shadow 没有第四个 spread 参数，只能靠加大 blur 拉出扩散。 */
-  --jump-shadow: drop-shadow(0 1px 1.5px color-mix(in srgb, var(--text) 12%, transparent))
-    drop-shadow(0 5px 12px color-mix(in srgb, var(--text) 18%, transparent));
+  /* 阴影用黑底 rgba，不用 --text 混色：深色主题里 --text 几乎是白的，
+     混出来的会是白晕（一个往亮的发光圈），不是影子。这两条与
+     --shadow-composer / --shadow-overlay 用的是同一套写法，色相跟主题走。*/
+  --jump-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 6px 16px -6px rgba(0, 0, 0, 0.16);
   position: absolute;
   bottom: 100%;
   left: 50%;
-  /* 居中用 translate（独立属性），transform 留给按压位移：
+  /* 居中用 translate（独立属性），transform 留给按压缩放：
      进出场也走 translate，两者才互不覆盖。 */
   translate: -50% 6px;
-  display: flex;
+  z-index: 2;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 84px;
-  height: 22px;
-  /* 底边停在边框外沿之外，一寸都不压上去：雾面是半透明的，压在那条 1px 线上
-     只会把它冲淡成一段亮线（浅色主题下是一段发白的灰），整条边框读起来
-     就「缺了一块」。bottom: 100% 量到的是边框内沿，让开 1px 回到外沿，
-     另外 0.5px 是给抗锯齿的余量：布局把边框搁在半像素上时，两者的边缘
-     会落到同一行像素里，那条线又被冲淡一半。 */
-  margin-bottom: 1.5px;
-  padding: 0;
-  border: 0;
-  background: none;
+  gap: 4px;
+  height: 26px;
+  padding: 0 11px;
+  /* 底边停在参考系上沿之外（药丸在面板之上时就停在面板上方）：
+     药丸完全离邻居浮着，那段距离也是它与下方面板的间隙。
+     消息区底部那条常驻留白按「26 + 6 + 6」算（CHAT_JUMP_CLEARANCE）。 */
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--bg-panel);
   color: var(--text-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: nowrap;
   cursor: pointer;
+  box-shadow: var(--jump-shadow);
   /* 网页态（手机 / 局域网）按下时不要那层系统灰闪，反馈交给下面的 :active。 */
   -webkit-tap-highlight-color: transparent;
   /* 常驻在树里、靠 data-visible 进出场：只做条件渲染的话，隐藏就是一次卸载，
@@ -497,7 +513,10 @@
     translate 240ms cubic-bezier(0.16, 1, 0.3, 1),
     visibility 0s linear 240ms,
     transform 160ms cubic-bezier(0.16, 1, 0.3, 1),
-    color 120ms ease;
+    color 120ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
 }
 
 .chat-jump-to-latest[data-visible="true"] {
@@ -511,58 +530,40 @@
     translate 280ms cubic-bezier(0.16, 1, 0.3, 1),
     visibility 0s linear 0s,
     transform 160ms cubic-bezier(0.16, 1, 0.3, 1),
-    color 120ms ease;
+    color 120ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
 }
 
-.chat-jump-to-latest__shape {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  width: 100%;
-  overflow: visible;
-  fill: var(--jump-fill);
-  stroke: var(--jump-stroke);
-  pointer-events: none;
-  /* 影子是「雾面凸起」的一部分，不是描边，用户要的无边框仍然成立。 */
-  filter: var(--jump-shadow);
-  transition: fill 140ms ease, stroke 140ms ease, filter 140ms ease;
-}
-
-/* 深色主题里材料的边界靠一道极淡的亮边（光擦过玻璃边缘）：
-   浅色底上白边等于没有，所以只在这里给。 */
+/* 深色主题：--bg-panel（#2a2a2a）比阅读面（#212121）只亮一档，底与边框的
+   差异已经够用；阴影得加重，否则浮起来的感觉全没了。 */
 html.dark .chat-jump-to-latest {
-  --jump-stroke: color-mix(in srgb, #fff 14%, transparent);
-  --jump-shadow: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.5))
-    drop-shadow(0 6px 14px rgba(0, 0, 0, 0.45));
+  --jump-shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 8px 20px -8px rgba(0, 0, 0, 0.6);
 }
 
-/* 非等比缩放不影响描边粗细：曲线怎么变形，线都还是 1px。 */
-.chat-jump-to-latest__shape path {
-  vector-effect: non-scaling-stroke;
-  stroke-width: 1;
-}
-
-/* 悬停：雾面变实、跟着抬起来（投影加重），指针停在它上面这件事必须看得见；
-   仍然不加描边，箭头沉 1px 指一下「往下走」。 */
+/* 悬停：底从面板色抬到 --bg-hover、边框略压深、阴影加重，指针停在它上面
+   这件事必须看得见；箭头随后沉 1px 指一下「往下走」。 */
 .chat-jump-to-latest[data-visible="true"]:hover {
-  --jump-fill: color-mix(in srgb, var(--bg-panel) 96%, transparent);
-  --jump-shadow: drop-shadow(0 1.5px 2px color-mix(in srgb, var(--text) 14%, transparent))
-    drop-shadow(0 8px 18px color-mix(in srgb, var(--text) 22%, transparent));
+  --jump-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 10px 22px -8px rgba(0, 0, 0, 0.22);
+  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--text) 18%, var(--border));
   color: var(--text);
 }
 
-/* 只有箭头参与 hover 位移；形状层是背景，不跟着动。 */
-.chat-jump-to-latest svg:not(.chat-jump-to-latest__shape) {
+html.dark .chat-jump-to-latest[data-visible="true"]:hover {
+  --jump-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 12px 26px -8px rgba(0, 0, 0, 0.7);
+}
+
+.chat-jump-to-latest svg {
   transition: transform 140ms ease;
 }
 
-.chat-jump-to-latest[data-visible="true"]:hover svg:not(.chat-jump-to-latest__shape) {
+.chat-jump-to-latest[data-visible="true"]:hover svg {
   transform: translateY(1px);
 }
 
-/* 按下：整块沉 1px 并缩到 96.5%，像被压回输入框里。
+/* 按下：整颗沉 1px 并缩到 96.5%，像被按回输入框上。
    按下必须即时（70ms 内落地，超过 100ms 就读成「慢了」），松开回弹走上面 160ms。 */
 .chat-jump-to-latest[data-visible="true"]:active {
   transform: translateY(1px) scale(0.965);
@@ -571,49 +572,37 @@ html.dark .chat-jump-to-latest {
     translate 240ms cubic-bezier(0.16, 1, 0.3, 1),
     visibility 0s linear 240ms,
     transform 70ms ease-out,
-    color 120ms ease;
+    color 120ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
 }
 
-/* 输入框一有焦点，只换颜色，别的一个都不动：仍然是半透明、仍然没有描边，
-   只是从白雾变成外沿那圈淡蓝光晕的色系。几何、投影、箭头位移全部共用基础样式。
+/* 输入框一有焦点，跟着它那圈淡蓝光晕换色：仍是面板底，只是沾一点 accent，
+   别让旁边那颗药丸看起来像没跟上焦点的另一套东西。
    :has(~ …) 让按钮读到后面兄弟的焦点状态。 */
 .chat-jump-to-latest:has(~ .chat-composer-field:focus-within) {
-  --jump-fill: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
   color: var(--accent);
 }
 
-/* 聚焦状态下把指针移上去，走的还是「变不透明」这一条规则：
-   用不透明的淡蓝，而不是又退回半透明。 */
-.chat-jump-to-latest:has(~ .chat-composer-field:focus-within):hover {
-  --jump-fill: color-mix(in srgb, var(--accent) 22%, var(--bg));
-}
-
-/* 形状不规则，outline 会沿矩形框走；焦点直接加粗轮廓本身。 */
+/* 药丸是规规矩矩的圆角矩形，焦点环就走 outline，不再借形状描边。 */
 .chat-jump-to-latest:focus-visible {
-  outline: none;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
   color: var(--accent);
 }
 
-/* 焦点环也要「看得见体积」：把雾面一起提亮，否则深色主题下只有一道蓝边。 */
-.chat-jump-to-latest:focus-visible {
-  --jump-fill: color-mix(in srgb, var(--accent) 16%, var(--bg-panel));
-}
-
-.chat-jump-to-latest:focus-visible .chat-jump-to-latest__shape path {
-  stroke: var(--accent);
-  stroke-width: 2;
-}
-
-/* 可见形状只有 84×22，热区往四周扩：左右各 10px、上方 12px，合计 104×34。
-   再往上够 44px 就会压到输入框里的正文与左侧 mark 键，抢走本该属于它们
-   的点击——宁可略小于 44，也不抢邻近控件。下边沿不扩：那一寸属于输入框。 */
+/* 药丸高 26、宽约 100：触控目标靠宽度已经够大，热区只往左右各扩 8px，
+   上下都不扩：上面是消息区最后一行的常驻留白，下面那 6px 之外是任务
+   面板（或输入框外壳），抢了就是抢邻近控件的点击。 */
 .chat-jump-to-latest::before {
   content: "";
   position: absolute;
-  top: -12px;
-  right: -10px;
+  top: 0;
+  right: -8px;
   bottom: 0;
-  left: -10px;
+  left: -8px;
 }
 
 /* 降低动态效果：不是「没有反馈」，是换成不引发前庭反应的形式——
@@ -634,31 +623,17 @@ html.dark .chat-jump-to-latest {
     transition: opacity 120ms linear, visibility 0s linear 0s;
   }
 
-  .chat-jump-to-latest__shape {
-    transition: fill 140ms ease, stroke 140ms ease;
-  }
-
-  .chat-jump-to-latest[data-visible="true"]:hover svg:not(.chat-jump-to-latest__shape) {
+  .chat-jump-to-latest[data-visible="true"]:hover svg {
     transform: none;
   }
 }
 
-/* 降低透明度：雾面直接给成实心面板色，不再透底下滚过去的内容。 */
-@media (prefers-reduced-transparency: reduce) {
-  .chat-jump-to-latest {
-    --jump-fill: var(--bg-panel);
-  }
-}
-
-/* 高对比度：实心 + 一圈有明确对比的轮廓（只有这一档允许描边）。 */
+/* 高对比度：边框换成有明确对比的中灰（基础样式那条 --border 太淡了）。 */
 @media (prefers-contrast: more) {
   .chat-jump-to-latest {
-    --jump-fill: var(--bg-panel);
-    --jump-stroke: var(--text-muted);
-  }
-
-  .chat-jump-to-latest__shape path {
-    stroke-width: 1.5;
+    border-color: var(--text-muted);
+    border-width: 1.5px;
+    color: var(--text);
   }
 }
 
@@ -2608,15 +2583,6 @@ span.token.table {
   .sidebar-container.sidebar-resizing,
   .sidebar-container.sidebar-resizing > * {
     transition: none !important;
-  }
-
-  /* Chat minimap rail: collapses by width so the chat column reflows smoothly. */
-  .chat-minimap-column {
-    width: 0;
-    transition: width 0.2s ease;
-  }
-  .chat-minimap-column.is-open {
-    width: var(--chat-minimap-width, 36px);
   }
 }
 

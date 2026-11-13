@@ -8,7 +8,6 @@ import {
   normalizeDisplayMath,
 } from "@/lib/markdown";
 import { splitFinalAssistantBlocks } from "@/lib/message-display";
-import { CHAT_TOP_BAR_HEIGHT } from "@/lib/panel-layout";
 import type { AgentMessage, AssistantMessage, TextContent, UserMessage } from "@/lib/types";
 import styles from "./ChatMinimap.module.css";
 
@@ -18,22 +17,20 @@ interface Props {
   scrollContainer: RefObject<HTMLDivElement | null>;
   messageRefs: RefObject<(HTMLDivElement | null)[]>;
   onRevealHistory: () => void;
-  onStateChange?: (state: { visible: boolean; previewOpen: boolean }) => void;
 }
 
 const MAX_NODE_GAP = 50;
 const MINIMAP_PADDING = 12;
 /**
- * 右栏顶部给「显示文件面板」开关留出的高度。节点层从它下方开始，
- * 否则第一个方格会压在图标上。
+ * 节点是横条而不是方块：轨道只有 28px 宽，同样面积下横向更长更好点中，
+ * 密集时又能压成一根根刻度线，不会叠成一串圆点。
  */
-const MINIMAP_TOP_INSET = CHAT_TOP_BAR_HEIGHT;
-/** 稀疏时的节点方块规格（含边框实占 11px）。 */
-const MAX_NODE_SIZE = 8;
-const MAX_NODE_BORDER = 1.5;
-/** 间距压到极限时节点退化成 2px 的小点，保证几百轮也不糊成一条带。 */
-const MIN_NODE_SIZE = 2;
-/** 相邻方块之间至少保留的空白。 */
+const MAX_NODE_WIDTH = 14;
+const MIN_NODE_WIDTH = 4;
+/** 厚度上限 4px，几百轮时才不会糊成一条带。 */
+const MAX_NODE_HEIGHT = 4;
+const MIN_NODE_HEIGHT = 2;
+/** 相邻横条之间至少保留的空白。 */
 const NODE_CLEARANCE = 1;
 const PREVIEW_SHOW_DELAY = 500;
 const PREVIEW_HIDE_DELAY = 250;
@@ -211,21 +208,27 @@ interface NodeLayout {
   nodes: NodeInfo[];
   gap: number;
   fillsHeight: boolean;
-  /** 方块边长（不含边框）。 */
-  nodeSize: number;
-  nodeBorder: number;
+  /** 横条长度。 */
+  nodeWidth: number;
+  /** 横条厚度。 */
+  nodeHeight: number;
 }
 
 /**
- * 间距一旦被压缩到放不下默认方块，就让方块同步缩小（并保持至少 NODE_CLEARANCE 的空隙），
- * 这样在有限的 minimap 高度里能塞下更多轮次，而不是让几十个 8px 方块叠成一片。
+ * 横条的长度随间距生长（稀疏时是一条能看清的短线），厚度一旦放不下就压扁
+ * （并保持至少 NODE_CLEARANCE 的空隙），这样有限的 minimap 高度里能塞下更多轮次，
+ * 而不是让几十根横条叠成一片。
  */
-function nodeVisualFor(gap: number): { nodeSize: number; nodeBorder: number } {
-  const maxExtent = MAX_NODE_SIZE + MAX_NODE_BORDER * 2;
-  const fittedExtent = Math.round(Math.max(0, gap - NODE_CLEARANCE) * 2) / 2;
-  const extent = Math.max(MIN_NODE_SIZE, Math.min(maxExtent, fittedExtent));
-  const nodeBorder = extent >= 9 ? MAX_NODE_BORDER : extent >= 6 ? 1 : 0;
-  return { nodeSize: extent - nodeBorder * 2, nodeBorder };
+function nodeVisualFor(gap: number): { nodeWidth: number; nodeHeight: number } {
+  const clearance = Math.max(0, gap - NODE_CLEARANCE);
+  const nodeHeight = Math.round(
+    Math.max(MIN_NODE_HEIGHT, Math.min(MAX_NODE_HEIGHT, clearance)) * 2,
+  ) / 2;
+  // 长度也跟着间距收缩：密集时还维持 16px 宽的话，就会连成一条实心竖带。
+  const nodeWidth = Math.round(
+    Math.min(MAX_NODE_WIDTH, Math.max(MIN_NODE_WIDTH, clearance * 2.2)),
+  );
+  return { nodeWidth, nodeHeight };
 }
 
 export function layoutNodes(allNodes: NodeInfo[], minimapHeight: number, topInset = 0): NodeLayout {
@@ -264,7 +267,6 @@ export function ChatMinimap({
   scrollContainer,
   messageRefs,
   onRevealHistory,
-  onStateChange,
 }: Props) {
   const [visible, setVisible] = useState(false);
   const [allNodes, setAllNodes] = useState<NodeInfo[]>([]);
@@ -282,6 +284,7 @@ export function ChatMinimap({
     ...nodeVisualFor(MAX_NODE_GAP),
   });
   const previewBoxRef = useRef<HTMLDivElement>(null);
+  const viewportBandRef = useRef<HTMLDivElement>(null);
   const previewItemRefs = useRef(new Map<number, HTMLDivElement>());
   const previewShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -301,10 +304,10 @@ export function ChatMinimap({
   allMessagesRef.current = allMessages;
 
   const nodeLayout = useMemo(
-    () => layoutNodes(allNodes, minimapHeight, MINIMAP_TOP_INSET),
+    () => layoutNodes(allNodes, minimapHeight),
     [allNodes, minimapHeight],
   );
-  const { nodes: positionedNodes, gap: nodeGap, nodeSize, nodeBorder } = nodeLayout;
+  const { nodes: positionedNodes, gap: nodeGap, nodeWidth, nodeHeight } = nodeLayout;
   nodeLayoutRef.current = nodeLayout;
 
   const lockActiveNode = useCallback((index: number) => {
@@ -338,6 +341,46 @@ export function ChatMinimap({
     setActiveIndex(nextActiveNode.index);
   }, []);
 
+  /**
+   * 把「当前视口看到哪几轮」画成轨道上的高亮带。
+   *
+   * 不能用 scrollTop / scrollHeight 的像素比例直接换算：节点是按轮次等距排布的，
+   * 和内容像素长度无关，混着算会让高亮带和节点错位。所以先用每轮 user 消息的
+   * 实测位置求出覆盖区间，再取这两端的比例。直接写 DOM 而不是 setState，
+   * 滚动时不用重渲染整条轨道。
+   */
+  const syncViewportBand = useCallback((scrollEl: HTMLDivElement, nextNodes: NodeInfo[]) => {
+    const band = viewportBandRef.current;
+    if (!band) return;
+    const { nodes, gap } = nodeLayoutRef.current;
+    const height = containerRef.current?.clientHeight ?? 0;
+    if (nodes.length === 0 || height <= 0 || nextNodes.length === 0) {
+      band.style.opacity = "0";
+      return;
+    }
+
+    const scrollTop = scrollEl.scrollTop;
+    const scrollBottom = scrollTop + scrollEl.clientHeight;
+    let first = 0;
+    let last = 0;
+    for (let index = 0; index < nodes.length; index += 1) {
+      const top = nodes[index].targetTurn.scrollTop;
+      if (top === null) continue;
+      if (top <= scrollTop + 4) first = index;
+      if (top < scrollBottom) last = index;
+    }
+    last = Math.max(first, last);
+
+    const topPx = nodes[first].topRatio * height - gap * 0.5;
+    const bottomPx = nodes[last].topRatio * height + gap * 0.5;
+    const bandTop = Math.max(0, Math.min(height, topPx));
+    const bandHeight = Math.max(16, Math.min(height - bandTop, bottomPx - bandTop));
+
+    band.style.top = `${bandTop}px`;
+    band.style.height = `${bandHeight}px`;
+    band.style.opacity = "1";
+  }, []);
+
   const updateScroll = useCallback(() => {
     const scrollEl = scrollContainer.current;
     if (!scrollEl) return;
@@ -345,7 +388,8 @@ export function ChatMinimap({
     const currentNodes = allNodesRef.current;
     setVisible(scrollable > 20);
     syncActiveNode(scrollEl, currentNodes);
-  }, [scrollContainer, syncActiveNode]);
+    syncViewportBand(scrollEl, currentNodes);
+  }, [scrollContainer, syncViewportBand, syncActiveNode]);
 
   const measureThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const measureNodes = useCallback(() => {
@@ -399,6 +443,7 @@ export function ChatMinimap({
       setAllNodes(nextNodes);
       setVisible(scrollEl.scrollHeight - scrollEl.clientHeight > 20);
       syncActiveNode(scrollEl, nextNodes);
+      syncViewportBand(scrollEl, nextNodes);
 
       const pendingNavigation = pendingNavigationRef.current;
       const pendingNode = pendingNavigation
@@ -434,7 +479,7 @@ export function ChatMinimap({
         scrollEl.scrollTo({ top: Math.max(0, targetTop - targetOffset), behavior: "smooth" });
       }
     }, 150);
-  }, [lockActiveNode, messageRefs, scrollContainer, syncActiveNode]);
+  }, [lockActiveNode, messageRefs, scrollContainer, syncActiveNode, syncViewportBand]);
 
   useEffect(() => {
     const el = scrollContainer.current;
@@ -473,6 +518,14 @@ export function ChatMinimap({
     }, 50);
     return () => clearTimeout(timeout);
   }, [messages.length, measureNodes, updateScroll]);
+
+  // 节点重排（新轮次、窗口缩放）后需要重算视口带：measureNodes 是延迟执行的，
+  // 它自己那次调用拿到的还是旧布局，所以等布局落地后再补一次。
+  useEffect(() => {
+    const el = scrollContainer.current;
+    if (!el) return;
+    syncViewportBand(el, allNodesRef.current);
+  }, [nodeLayout, syncViewportBand, scrollContainer]);
 
   const scrollToNode = useCallback((node: NodeInfo, behavior: ScrollBehavior) => {
     const scrollEl = scrollContainer.current;
@@ -643,14 +696,6 @@ export function ChatMinimap({
   const previewOpen = visible && minimapHovered && allNodes.length > 0;
 
   useEffect(() => {
-    onStateChange?.({ visible, previewOpen });
-  }, [onStateChange, previewOpen, visible]);
-
-  useEffect(() => () => {
-    onStateChange?.({ visible: false, previewOpen: false });
-  }, [onStateChange]);
-
-  useEffect(() => {
     if (!minimapHovered || nearestNodeIndex === null) return;
     const previewBox = previewBoxRef.current;
     const previewItem = previewItemRefs.current.get(nearestNodeIndex);
@@ -662,8 +707,8 @@ export function ChatMinimap({
 
   if (!visible) return null;
 
-  // 背景、左边框和贯穿整列的竖线由 ChatWindow 的整条右栏（data-chat-minimap-rail）提供；
-  // 这里只负责节点层，避免整条被切成两段。
+  // minimap 现在是消息区右边缘的一层浮层：没有自己的背景、边框与竖线，
+  // 宿主只给一个固定宽度的透明区域（见 ChatWindow 的 data-chat-minimap-dock）。
   return (
     <div
       ref={containerRef}
@@ -677,22 +722,28 @@ export function ChatMinimap({
       }}
       style={{
         position: "absolute",
-        // 撑满整条右栏：left/right 跟随列宽动画，top/bottom 贯穿到底。
-        left: 0,
-        right: 0,
-        top: 0,
-        bottom: 0,
+        inset: 0,
         cursor: "pointer",
         userSelect: "none",
         background: "transparent",
         overflow: "visible",
+        // 命中区交给节点自己（见下），这层不遮挡下面的正文。
+        pointerEvents: "none",
       }}
     >
+      {/* 视口高亮带垫在节点下面，位置由 syncViewportBand 直接写。 */}
+      <div
+        ref={viewportBandRef}
+        className={styles.viewport}
+        data-chat-minimap-viewport=""
+        aria-hidden="true"
+      />
+
       {positionedNodes.map((node) => {
         const isNearest = minimapHovered && nearestNode?.index === node.index;
         const isActive = activeIndex === node.index;
-        const fill = isActive ? "rgba(128,128,128,0.42)" : "rgba(128,128,128,0.16)";
-        const stroke = isActive ? "rgba(128,128,128,0.95)" : "rgba(128,128,128,0.58)";
+        // 光晕只有不会碰到相邻节点时才画。
+        const halo = nodeWidth + 8 <= nodeGap;
 
         return (
           <div
@@ -703,8 +754,9 @@ export function ChatMinimap({
               position: "absolute",
               top: `${node.topRatio * 100}%`,
               transform: "translateY(-50%)",
-              left: 0,
-              right: 0,
+              // 命中带比轨道窄一点：只遮挡正文最右 22px，而不是整整一列。
+              left: 3,
+              right: 3,
               height: Math.max(1, nodeGap),
               display: "flex",
               alignItems: "center",
@@ -714,20 +766,14 @@ export function ChatMinimap({
             }}
           >
             <div
+              className={styles.node}
+              data-active={isActive ? "" : undefined}
+              data-nearest={isNearest ? "" : undefined}
+              data-halo={halo ? "" : undefined}
               style={{
-                width: nodeSize,
-                height: nodeSize,
-                borderRadius: Math.min(2, nodeSize / 2),
-                // 间距太密时描边会吃掉整个方块，于是直接用描边色填充
-                background: nodeBorder > 0 ? fill : stroke,
-                border: nodeBorder > 0 ? `${nodeBorder}px solid ${stroke}` : "none",
-                // 激活光环只有在不会碰到相邻方块时才画
-                boxShadow: isActive && nodeSize + nodeBorder * 2 + 4 <= nodeGap
-                  ? "0 0 0 2px var(--bg-panel)"
-                  : "none",
-                transition: "transform 0.1s, background 0.1s",
-                transform: isNearest ? "scale(1.25)" : "scale(1)",
-              }}
+                "--node-width": `${nodeWidth}px`,
+                "--node-height": `${nodeHeight}px`,
+              } as React.CSSProperties}
             />
           </div>
         );

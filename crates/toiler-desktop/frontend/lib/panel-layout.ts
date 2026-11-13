@@ -10,16 +10,16 @@ export const RIGHT_PANEL_MIN_WIDTH = 300;
 export const RIGHT_PANEL_MAX_WIDTH = 1200;
 
 /**
- * Chat minimap rail width. It is a real layout column at the same level as the
- * sidebar, so the chat column gives up this much width instead of reserving it
- * with inner padding.
+ * Chat minimap track width.
+ *
+ * minimap 现在是对话区域右边缘的一层浮层（不占布局宽度、没有自己的背景
+ * 与边框），所以这个值只管「轨道多宽」，不再参与 flex 布局。窄窗口下它会
+ * 盖住正文行末最多这么宽，因此比原来的一整列（36）收窄一档。
  */
-export const CHAT_MINIMAP_WIDTH = 36;
+export const CHAT_MINIMAP_WIDTH = 28;
 
 /**
- * Height of the chat top bar / of the minimap rail's file-panel toggle row.
- * Shared so the minimap node layer can inset its first node below the toggle
- * instead of drawing a square on top of the icon.
+ * Height of the chat top bar.
  *
  * 42 而不是 36：这条东西在桌面壳里就是窗口的标题栏（macOS 覆盖式红绿灯就浮在
  * 它上面），它需要足够的垂直空间去容纳 26px 的工具按键与拖拽区。

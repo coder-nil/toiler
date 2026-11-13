@@ -2469,22 +2469,18 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               )}
             </div>
           )}
-          {aboveComposer && (
-            // 「回到最新」是从输入框上沿鼓出来的疙瘩（高 22px），与面板会抢同一块
-            // 空间；它从壳里长出来，所以让路的一直是面板。
-            <div
-              className="chat-above-composer"
-              data-jump={showJumpToLatest && onJumpToLatest ? "true" : undefined}
-            >
-              {aboveComposer}
-            </div>
-          )}
-          <div className="chat-composer-shell">
+          {/* 药丸、任务面板、输入框外壳共享这个定位参考系：药丸的
+              bottom: 100% 量的是它的上沿，所以面板一出现药丸就上提到
+              面板之上，而不是蹲在面板与输入框的夹缝里。 */}
+          <div className="chat-composer-stack">
           {onJumpToLatest && (
-            // 「回到最新」不是浮在消息区中间，而是从输入框上沿长出来的一个疙瘩：
-            // 底部两撇是外撇的切线，矩形 + border 做不出来，所以轮廓交给这个
-            // 内联 SVG（装饰性形状，图标仍然只用 lucide）。填充一直铺到输入框
-            // 边框的内沿，等于把那条线在疙瘩宽度内顶开，疙瘩与框内连成一体。
+            // 「回到最新」浮在整块（面板 + 输入框）的上沿正中，不压边框、不连体：
+            // 一颗 --bg-panel 实底的药丸，箭头 + 文字。早一版是「从边框上沿
+            // 拱出来、底部外撇的弧」，但输入框是 16px 大圆角的面，弧的两条腿
+            // 贴在圆角旁读出来是两个尖脚，所以改成完全离边框浮着。
+            //
+            // 它是浮层，所以消息区底部垫了一段常驻留白（CHAT_JUMP_CLEARANCE，
+            // 见 ChatWindow.tsx），滚到底时最后一行文字停在它上方。
             //
             // 常驻挂载、用 data-visible 控制进出场：条件渲染只能做「出现」，
             // 消失就是一次卸载，读起来是硬切。隐藏态靠 visibility: hidden 退出
@@ -2495,14 +2491,17 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               data-visible={showJumpToLatest ? "true" : "false"}
               onClick={onJumpToLatest}
               aria-label={t("chat.jumpToLatest")}
-              title={t("chat.jumpToLatest")}
             >
-              <svg className="chat-jump-to-latest__shape" viewBox="0 0 84 22" aria-hidden="true" focusable="false">
-                <path d="M0.5 22C3.5 16 11 4.2 42 4.2S80.5 16 83.5 22" />
-              </svg>
               <ChevronDown size={13} strokeWidth={2} aria-hidden="true" />
+              <span>{t("chat.jumpToLatest")}</span>
             </button>
           )}
+          {aboveComposer && (
+            <div className="chat-above-composer">
+              {aboveComposer}
+            </div>
+          )}
+          <div className="chat-composer-shell">
           <div
             className="chat-composer-field"
             ref={composerFieldRef}
@@ -2766,6 +2765,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               <ArrowUp size={16} strokeWidth={2.25} aria-hidden="true" />
             </button>
           )}
+          </div>
           </div>
           </div>
         </div>

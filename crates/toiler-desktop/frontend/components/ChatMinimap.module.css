@@ -1,18 +1,61 @@
+/* 轨道上的「当前视口」带：位置/高度由 ChatMinimap 直接写 inline style，
+   这里只管材质 —— 一层极淡的底，让「我读到哪一段」比单个节点更先被看见。 */
+.viewport {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  z-index: 1;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+
+/* 轮次节点：一根小横条。颜色全部走主题变量，亮/暗主题下对比度自动成立。 */
+.node {
+  width: var(--node-width);
+  height: var(--node-height);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 27%, transparent);
+  transition: width 120ms ease, background 120ms ease;
+}
+
+/* 指针最近的那一轮：拉长一点、变深一点，比单纯放大更不挡邻居。 */
+.node[data-nearest] {
+  width: calc(var(--node-width) + 6px);
+  background: color-mix(in srgb, var(--text) 62%, transparent);
+}
+
+.node[data-active] {
+  background: var(--accent);
+}
+
+/* 激活环只有空隙够时才加，否则会和相邻横条叠在一起。 */
+.node[data-halo] {
+  box-shadow: 0 0 0 2px var(--bg-panel);
+}
+
+/* 预览面板是一张浮在对话内容上的卡片：与轨道留 8px、上下也各让 8px，
+   四角圆角 + 1px 边框 + 弹层阴影。之前贴着轨道（right: 100%）时它和
+   minimap 连成一条、右侧又是直角，读起来像「轨道的附属条」而不是浮层。 */
 .preview {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  right: 100%;
+  top: 8px;
+  bottom: 8px;
+  right: calc(100% + 8px);
   z-index: 100;
-  width: 320px;
+  width: 336px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
+  padding: 4px 0;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
   background: var(--bg);
-  border-left: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
-  box-shadow: -10px 0 26px rgba(0, 0, 0, 0.07);
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-overlay);
   pointer-events: auto;
   cursor: default;
   user-select: text;
@@ -23,14 +66,23 @@
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
   padding: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
   background: transparent;
   transition: background 120ms ease, box-shadow 120ms ease;
 }
 
+/* 指针落在哪一轮就在面板里对应亮起；用强调色而不是灰，和轨道上的激活节点呼应。 */
+.turn:hover {
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+
 .turn[data-located="true"] {
-  background: color-mix(in srgb, var(--text) 4%, var(--bg));
-  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--text-muted) 70%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.turn[data-located="true"] .number {
+  color: var(--accent);
 }
 
 .number {
@@ -52,7 +104,7 @@
 }
 
 .turn[data-located="true"] .number {
-  color: var(--text-muted);
+  color: var(--accent);
 }
 
 .content {
