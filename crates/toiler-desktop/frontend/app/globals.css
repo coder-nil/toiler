@@ -2717,6 +2717,7 @@ span.token.table {
 
 .git-section-actions {
   display: flex;
+  align-items: center;
   flex-shrink: 0;
   gap: 4px;
 }

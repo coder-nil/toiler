@@ -383,7 +383,7 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 | `POST /api/models-config/test` | ✅ | 真跑一次补全 → `{ok,latencyMs,status,responseText}` |
 | `GET /api/models-config/catalog` | ⚠️ | models.dev 目录已砍，返回空表 + `note` |
 | `GET /api/git?cwd=` | ✅ | 分支/上游/增删/未跟踪/凭据类型/进行中的操作；`tags` 是 toiler 追加的字段（见差异 22） |
-| `POST /api/git` | ✅ | pi 的 20 个动作（含 `merge_branch`、`*_remote_branch`、`*_branch`）+ toiler 追加的 `create_tag` / `delete_tag`（见差异 22），返回操作后的状态 |
+| `POST /api/git` | ✅ | pi 的 20 个动作（含 `merge_branch`、`*_remote_branch`、`*_branch`）+ toiler 追加的 `create_tag` / `delete_tag` / `push_tag` / `push_tags`（见差异 22、23），返回操作后的状态 |
 | `GET /api/git/status?cwd=` | ✅ | `{isGitRepository,repositoryRoot,files[],additions,deletions}` |
 | `GET /api/git/diff?cwd=&path=` | ✅ | `{supported,status?,patch?}`；未跟踪文件会合成补丁 |
 | `POST /api/git/commit-message` | ✅ | NDJSON：`update` → `done`（失败 `error`）；用 `settings.json` 的默认模型 |
@@ -550,8 +550,7 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
     多出 `create_tag` / `delete_tag`，`GET /api/git` 的返回体也多一个 `tags: string[]`
     （本地 tag 名，`git for-each-ref refs/tags` 的短名，升序去重，纯本地不区分是否已推送）。
     pi 的 Git 面板只做分支，没有标签入口，所以这是扩展而不是逆向结果；面板上的
-    「标签」区块只有列表 / 创建 / 删除本地标签，**不打 remote**（推送 tag 属于
-    `git push` 之外的网络动作，暂不提供）。
+    「标签」区块做列表 / 创建 / 删除本地标签，推到远端见差异 23。
 
     | 动作 | 入参 | 等价命令 |
     |---|---|---|
@@ -560,6 +559,28 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 
     名字校验走 `git check-ref-format refs/tags/<name>`（与分支的 `--branch` 校验同一思路），
     重名 / 非法名 / 删不存在的 tag 都由 git 自己报错并原样透出，不静默成功。
+
+23. **`/api/git` 追加了标签推送（pi 没有）**：`ACTIONS` 再扩到 24 条，多出
+    `push_tag` / `push_tags`。两者与 `fetch` / `pull` / `push` 共用同一条网络链路
+    （`run_remote_action`）：读 `origin` 的 URL 判断凭据类型（`credentialKind`）、
+    按需注入 `credential`（HTTPS token / SSH passphrase 走 askpass 临时文件）、
+    成功后按 `rememberCredential` 交给系统 credential helper。**只推 `origin`**，
+    与 `set_remote_url`、`remote` 字段的既有假设一致。
+
+    | 动作 | 入参 | 等价命令 |
+    |---|---|---|
+    | `push_tag` | `tag`（必填，本地必须已存在） | `git push origin refs/tags/<tag>` |
+    | `push_tags` | 无 | `git push origin --tags` |
+
+    标签不存在时本地就报 `Tag not found: <tag>`，不把 git 的
+    `src refspec … does not match any` 原文抛给用户。`push_tags` 沿用 `--tags` 的
+    语义：远端已有同名 tag 且指向不同提交时 git 会拒绝整条命令，错误原文原样透出
+    （面板顶部的红条），**不会**静默覆盖远端 tag；要覆盖得先删远端 tag（当前面板
+    不提供，`delete_tag` 只删本地）。
+
+    响应与其它动作一致：返回操作后的完整仓库状态，所以推送后标签列表与 `tags`
+    字段不变（本地标签没变），面板上看不到「已推送」标记——这与 `push` / `fetch`
+    一样没有成功提示，只有失败才出红条。
 
 ### 目录与文件
 

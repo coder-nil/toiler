@@ -191,6 +191,8 @@ export const zhCNLocale: LocalePlugin = {
     "git.tagMessage": "附注说明（留空则建轻量标签）",
     "git.createTag": "创建标签",
     "git.deleteTag": "删除标签",
+    "git.pushTag": "推送到远程",
+    "git.pushAllTags": "推送全部标签",
     "git.deleteTagConfirm": "删除本地标签 {tag}？",
     "git.deleteTagLocalOnly": "只删本仓库的标签，远端同名的标签不会被删除。",
     "git.noTags": "还没有标签",

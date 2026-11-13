@@ -1,5 +1,46 @@
 [
   {
+    "version": "0.1.0",
+    "date": "2026-11-13",
+    "sections": [
+      {
+        "title": "Added",
+        "kind": "added",
+        "items": [
+          "Toiler 0.1.0：用 Rust 重写 pi-desktop 的首个版本。后端不再是 Node 子进程，而是 Tauri 单进程（axum 跑在 Tauri 的 tokio runtime 上，前端产物 `include_dir!` 嵌进二进制）；`/api` 契约与 v3 会话文件仍与 pi 兼容，同一个会话文件两边都能打开。",
+          "新增内置终端。基于 `portable-pty` 提供启动、写入、缩放、关闭四个命令与输出/退出事件，带绝对路径 `cwd` 校验、locale 兜底与进程组回收。",
+          "新增 Git 面板。仓库状态、单文件 diff（未跟踪文件合成补丁）、worktree 增删与 pi 的 20 个白名单动作；本地标签支持创建（附注可选）与删除，并可直接把单个标签或全部标签推送到 `origin`。",
+          "新增 MCP 配置能力。可读写全局与项目级 `mcp.json`、按内置预设添加条目，并对 `url` 做一次 `initialize`、对 `command` 跑 `--version` 探活；配置里的服务器不会被连上，属于「只管理配置」的范围。",
+          "新增插件面板。可安装、卸载、升级、启停 npm 来源的包并写入 `settings.json`；git 来源暂不支持，包内的 TS 扩展 rpi 不会加载。",
+          "新增 qoder-cn 订阅支持。包含设备码登录、PKCE 授权、COSY 签名与推理传输，登录链接通过系统浏览器打开。",
+          "对话 minimap 改为消息区右缘的浮层。节点从方块改为横条并随滚动同步「当前视口」高亮带，长会话由后台逐页补齐历史（上限 1600 条），翻页时保持视口不跳。",
+          "任务进度面板移到输入框上方，活会话读 widget、历史会话从 `task_progress` 工具结果派生；「回到最新」改为实底药丸并加滞回阈值。",
+          "新增三平台发布工作流。推送 `v*` tag 时在 macOS（arm64/x64）、Windows、Linux 上构建 dmg、nsis、deb、AppImage 并创建 Release，构建前先跑 `npm ci` 与 `npm run build` 嵌入真实前端。"
+        ]
+      },
+      {
+        "title": "Changed",
+        "kind": "changed",
+        "items": [
+          "应用、npm、Tauri 和 Cargo 版本号统一为 `0.1.0`。",
+          "重做聊天界面视觉并引入设计 token：中性灰阶、圆角阶与阴影分层，浅色与深色主题共用同一套变量；发送键改为圆形箭头图标键。",
+          "Git 面板的内联样式迁到 CSS 类并改用设计 token，状态色由 `data-status` 驱动，文件行操作改为常驻图标按钮，避免执行中按钮宽度跳动。",
+          "项目更名为 Toiler：crate、二进制、环境变量（`TOILER_*`）与数据目录（`~/.agents/toiler`）同步改名；首次启动从 `~/.pi/agent` 复制一份配置与会话，旧文件保留不删。",
+          "会话系统提示词改为按 pi 的分节结构组装（`preamble → <tools> → <rules> → <project_context> → <cwd>`），并支持界面语言切换后即时重算。"
+        ]
+      },
+      {
+        "title": "Fixed",
+        "kind": "fixed",
+        "items": [
+          "修复 qoder-cn 设备码轮询地址缺少查询分隔符（`?`）的问题。查询参数原先被拼进路径，导致上游返回 401，现抽出 `poll_url` 显式补上分隔符并新增测试。",
+          "修复只在「推送标签」上复现的「没有 token」问题。`fetch` / `pull` / `push` / `push_tag` / `push_tags` 统一走同一套凭据注入与 `rememberCredential` 外壳。",
+          "修复推送不存在的标签时报错含义不清的问题。`push_tag` 先本地校验 `refs/tags/<tag>` 是否存在并返回 `Tag not found: <tag>`，不再把 git 的 `src refspec ... does not match any` 抛给面板。"
+        ]
+      }
+    ]
+  },
+  {
     "version": "1.5.0-alpha.22",
     "date": "2026-11-09",
     "sections": [

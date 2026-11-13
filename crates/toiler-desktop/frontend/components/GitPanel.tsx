@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, GitBranch, Loader2, Minus, Plus, RefreshCw, Trash2, Undo2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, GitBranch, Loader2, Minus, Plus, RefreshCw, Trash2, Undo2, Upload, X } from "lucide-react";
 import { useI18n } from "@/hooks/useI18n";
 import { readApiJson } from "@/lib/api-json";
 import { CHAT_TOP_BAR_HEIGHT } from "@/lib/panel-layout";
@@ -37,7 +37,7 @@ type GitSummary = {
   untrackedPaths: string[];
 };
 
-type Action = "stage" | "unstage" | "discard" | "discard_all" | "commit" | "fetch" | "pull" | "push" | "merge" | "continue" | "abort" | "set_remote_url" | "create_tag" | "delete_tag" | "summarize";
+type Action = "stage" | "unstage" | "discard" | "discard_all" | "commit" | "fetch" | "pull" | "push" | "merge" | "continue" | "abort" | "set_remote_url" | "create_tag" | "delete_tag" | "push_tag" | "push_tags" | "summarize";
 
 const SAVED_CREDENTIAL_MASK = "••••••••";
 
@@ -126,7 +126,8 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
     setBusy(action);
     setError(null);
     try {
-      const isRemoteAction = action === "fetch" || action === "pull" || action === "push";
+      // 远程动作都要带上凭据：推标签同样可能遇到 HTTPS token。
+      const isRemoteAction = action === "fetch" || action === "pull" || action === "push" || action === "push_tag" || action === "push_tags";
       const credentialKind = summary?.credentialKind;
       const credential = isRemoteAction && secret && secret !== SAVED_CREDENTIAL_MASK && (credentialKind === "https" || credentialKind === "ssh")
         ? { kind: credentialKind, secret, ...(credentialKind === "https" ? { username } : {}) }
@@ -343,10 +344,11 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
               <div className="git-actions-row"><ActionButton label={t("git.fetch")} action="fetch" busy={busy} onClick={() => void run("fetch")} /><ActionButton label={t(pullRebase ? "git.pullRebase" : "git.pullMerge")} action="pull" busy={busy} onClick={() => void run("pull", { rebase: pullRebase })} /><ActionButton label={t("git.push")} action="push" busy={busy} onClick={() => void run("push")} /><label className="git-check"><input type="checkbox" checked={pullRebase} onChange={(event) => setPullRebase(event.target.checked)} disabled={disabled} /> {t("git.rebaseWhenPulling")}</label></div>
             </div>
             <div className="git-section"><SectionTitle title={t("git.mergeBranch")} /><div className="git-actions-row"><MergeBranchPicker branches={mergeBranches} value={mergeBranch} disabled={disabled} onChange={setMergeBranch} /><ActionButton label={t("git.merge")} action="merge" busy={busy} disabled={!mergeBranch || mergeBranches.length === 0} onClick={() => void run("merge", { branch: mergeBranch })} /></div></div>
-            {/* 标签只有本地一列：列表 / 创建（带附注则建附注 tag）/ 删除本地。
-                推送 tag 是网络动作，不在这块里做。 */}
+            {/* 标签：本地列表 / 创建（带附注则建附注 tag）/ 删除本地 / 推到远端。
+                推送需要 origin，所以没配 remote 时两处推送按钮都是 disabled，
+                而不是点下去才吃一个 `'origin' does not appear to be a repository`。 */}
             <div className="git-section">
-              <SectionTitle title={t("git.tags")} action={summary.tags.length > 0 ? <span className="git-summary-note">{t("git.tagCount", { count: summary.tags.length })}</span> : undefined} />
+              <SectionTitle title={t("git.tags")} action={summary.tags.length > 0 ? <><span className="git-summary-note">{t("git.tagCount", { count: summary.tags.length })}</span><ActionButton label={t("git.pushAllTags")} action="push_tags" busy={busy} disabled={!summary.remote} onClick={() => void run("push_tags")} /></> : undefined} />
               <div className="git-field">
                 <input className="git-input" value={newTag} onChange={(event) => setNewTag(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && newTag.trim() && !disabled) void run("create_tag", { tag: newTag.trim(), ...(tagMessage.trim() ? { message: tagMessage.trim() } : {}) }); }} placeholder={t("git.tagName")} title={t("git.tagName")} disabled={disabled} />
                 <input className="git-input" value={tagMessage} onChange={(event) => setTagMessage(event.target.value)} placeholder={t("git.tagMessage")} title={t("git.tagMessage")} disabled={disabled} />
@@ -359,6 +361,7 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
                 : <div className="git-file-list">{summary.tags.map((tag) => (
                   <div key={tag} className="git-file-row">
                     <span className="git-tag-name" title={tag}>{tag}</span>
+                    <FileAction label={t("git.pushTag")} icon={Upload} action="push_tag" busy={busy} disabled={!summary.remote} onClick={() => void run("push_tag", { tag })} />
                     <FileAction label={t("git.deleteTag")} icon={Trash2} action="delete_tag" busy={busy} danger onClick={() => setConfirmingDeleteTag(tag)} />
                   </div>
                 ))}</div>}
@@ -400,10 +403,10 @@ function ActionButton({ label, action, busy, disabled, danger, title, onClick }:
 }
 
 /** 文件行的图标按钮：常驻（不靠 hover 淡入）、尺寸固定，正在跑的动作转圈。 */
-function FileAction({ label, icon: Icon, action, busy, danger, onClick }: { label: string; icon: typeof Plus; action: Action; busy: Action | null; danger?: boolean; onClick: () => void }) {
+function FileAction({ label, icon: Icon, action, busy, disabled, danger, onClick }: { label: string; icon: typeof Plus; action: Action; busy: Action | null; disabled?: boolean; danger?: boolean; onClick: () => void }) {
   const pending = busy === action;
   return (
-    <button type="button" className="git-icon-btn" data-tone={danger ? "danger" : undefined} data-pending={pending ? "true" : undefined} title={label} aria-label={label} onClick={onClick} disabled={Boolean(busy)}>
+    <button type="button" className="git-icon-btn" data-tone={danger ? "danger" : undefined} data-pending={pending ? "true" : undefined} title={label} aria-label={label} onClick={onClick} disabled={Boolean(busy) || disabled}>
       {pending ? <Loader2 size={14} strokeWidth={2} aria-hidden="true" /> : <Icon size={14} strokeWidth={2} aria-hidden="true" />}
     </button>
   );

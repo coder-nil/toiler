@@ -898,8 +898,8 @@ pub fn checkout_branch(cwd: &Path, branch: &str) -> Result<String, GitError> {
 }
 
 /// `git.js` 的 20 个白名单动作，加上 toiler 追加的标签管理（`create_tag` /
-/// `delete_tag`，见 `docs/contracts/README.md` 差异 22）。
-pub const ACTIONS: [&str; 22] = [
+/// `delete_tag` / `push_tag` / `push_tags`，见 `docs/contracts/README.md` 差异 22）。
+pub const ACTIONS: [&str; 24] = [
     "stage",
     "unstage",
     "discard",
@@ -922,6 +922,8 @@ pub const ACTIONS: [&str; 22] = [
     "merge_branch",
     "create_tag",
     "delete_tag",
+    "push_tag",
+    "push_tags",
 ];
 
 pub fn is_supported_action(action: &str) -> bool {
@@ -970,6 +972,21 @@ fn validate_tag(root: &Path, raw: &str) -> Result<String, GitError> {
     )
     .map_err(|_| err(format!("Invalid tag name: {trimmed}")))?;
     Ok(trimmed.to_string())
+}
+
+/// 标签名合法、且本地真的有这个 tag。
+///
+/// 不先查就直接 `push refs/tags/<不存在>` 的话，git 报的是
+/// `src refspec ... does not match any`——面板里看不出是名字写错还是标签没建。
+fn require_existing_tag(root: &Path, raw: &str) -> Result<String, GitError> {
+    let tag = validate_tag(root, raw)?;
+    run_git(
+        root,
+        &["rev-parse", "--verify", &format!("refs/tags/{tag}")],
+        STATUS_TIMEOUT,
+    )
+    .map_err(|_| err(format!("Tag not found: {tag}")))?;
+    Ok(tag)
 }
 
 /// 把 `origin/feat` 解析成 `refs/remotes/origin/feat`（`76402.x`）。
@@ -1223,6 +1240,26 @@ fn run_network(
     }
 }
 
+/// 需要凭据的远程动作共用的外壳：解析 origin URL → 注入凭据 → 跑 network →
+/// 按 `rememberCredential` 把凭据交给系统 credential helper（失败不影响主操作）。
+///
+/// `fetch` / `pull` / `push` / `push_tag` / `push_tags` 全走这里：凭据语义必须
+/// 完全一致，否则会出现「拉取能用、推标签却说没有 token」这类只在某一动作上
+/// 复现的问题。
+fn run_remote_action(root: &Path, args: &[&str], body: &Value) -> Result<(), GitError> {
+    let remote = run_git(root, &["remote", "get-url", "origin"], STATUS_TIMEOUT)
+        .ok()
+        .filter(|s| !s.is_empty());
+    let credential = credential_from_body(body)?;
+    run_network(root, args, credential.clone(), remote.as_deref())?;
+    if let Some((_, username, secret)) = credential {
+        if body.get("rememberCredential").and_then(Value::as_bool) == Some(true) {
+            remember_credential(remote.as_deref(), username.as_deref(), &secret);
+        }
+    }
+    Ok(())
+}
+
 /// 复刻 `76402.sX`：执行一个 git 操作，返回操作后的完整状态。
 pub fn action(cwd: &Path, body: &Value) -> Result<Value, GitError> {
     let action = body
@@ -1292,10 +1329,6 @@ pub fn action(cwd: &Path, body: &Value) -> Result<Value, GitError> {
             run_git(&root, &["commit", "-m", message], ACTION_TIMEOUT)?;
         }
         "fetch" | "pull" | "push" => {
-            let remote = run_git(&root, &["remote", "get-url", "origin"], STATUS_TIMEOUT)
-                .ok()
-                .filter(|s| !s.is_empty());
-            let credential = credential_from_body(body)?;
             let args: Vec<&str> = match action {
                 "fetch" => vec!["fetch", "--prune"],
                 "pull" => vec![
@@ -1308,13 +1341,7 @@ pub fn action(cwd: &Path, body: &Value) -> Result<Value, GitError> {
                 ],
                 _ => vec!["push"],
             };
-            run_network(&root, &args, credential.clone(), remote.as_deref())?;
-            if let Some((_, username, secret)) = credential {
-                if body.get("rememberCredential").and_then(Value::as_bool) == Some(true) {
-                    // 交给系统 credential helper；失败不影响主操作
-                    remember_credential(remote.as_deref(), username.as_deref(), &secret);
-                }
-            }
+            run_remote_action(&root, &args, body)?;
         }
         "set_remote_url" => {
             let url = require_str(body, "remoteUrl")?;
@@ -1394,6 +1421,19 @@ pub fn action(cwd: &Path, body: &Value) -> Result<Value, GitError> {
         "delete_tag" => {
             let tag = validate_tag(&root, require_str(body, "tag")?)?;
             run_git(&root, &["tag", "-d", &tag], ACTION_TIMEOUT)?;
+        }
+        // toiler 扩展：把本地标签推到 origin。与 fetch/pull/push 共用同一套凭据
+        // 注入与「记住凭据」语义——HTTPS 远程推标签同样会要 token，少了
+        // `run_remote_action` 就只能推 SSH 远程。
+        "push_tag" => {
+            let tag = require_existing_tag(&root, require_str(body, "tag")?)?;
+            let reference = format!("refs/tags/{tag}");
+            run_remote_action(&root, &["push", "origin", &reference], body)?;
+        }
+        // 全部本地标签一起推。远程已存在同名 tag 且指向不同提交时 git 会拒绝
+        // 整条命令（`--tags` 的既有语义），错误原文会由面板顶部报出来。
+        "push_tags" => {
+            run_remote_action(&root, &["push", "origin", "--tags"], body)?;
         }
         "checkout_remote_branch" => {
             let (remote, branch, _) = resolve_remote_branch(&root, require_str(body, "branch")?)?;
@@ -1624,7 +1664,7 @@ mod tests {
         );
     }
 
-    fn temp_repo(tag: &str) -> PathBuf {
+    fn temp_path(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "toiler-git-{}-{}-{}",
             std::process::id(),
@@ -1636,7 +1676,20 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn temp_repo(tag: &str) -> PathBuf {
+        let dir = temp_path(tag);
         git(&dir, &["init", "-q", "-b", "main"]);
+        dir
+    }
+
+    /// 裸仓库，当作本地 remote：用绝对路径，`credential_kind` 会判成 `none`，
+    /// 测试不需要 askpass 也能跑完整条推送链路。
+    fn temp_bare_repo(tag: &str) -> PathBuf {
+        let dir = temp_path(tag);
+        git(&dir, &["init", "--bare", "-q"]);
         dir
     }
 
@@ -1793,7 +1846,12 @@ mod tests {
         // 轻量 tag：只给名字
         let lightweight = action(&dir, &json!({"action": "create_tag", "tag": "v1.0.0"})).unwrap();
         assert_eq!(lightweight["tags"], json!(["v1.0.0"]));
-        let kind = run_git(&dir, &["cat-file", "-t", "refs/tags/v1.0.0"], STATUS_TIMEOUT).unwrap();
+        let kind = run_git(
+            &dir,
+            &["cat-file", "-t", "refs/tags/v1.0.0"],
+            STATUS_TIMEOUT,
+        )
+        .unwrap();
         assert_eq!(kind, "commit");
 
         // 带 message 则建附注 tag
@@ -1803,7 +1861,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(annotated["tags"], json!(["v1.0.0", "v1.1.0"]));
-        let kind = run_git(&dir, &["cat-file", "-t", "refs/tags/v1.1.0"], STATUS_TIMEOUT).unwrap();
+        let kind = run_git(
+            &dir,
+            &["cat-file", "-t", "refs/tags/v1.1.0"],
+            STATUS_TIMEOUT,
+        )
+        .unwrap();
         assert_eq!(kind, "tag");
 
         // 重复名字与非法名字都报错（与 git 自己的拒绝一致）
@@ -1816,6 +1879,51 @@ mod tests {
         assert!(action(&dir, &json!({"action": "delete_tag", "tag": "v1.0.0"})).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 推送标签是网络动作：remote 用本地裸仓库，重点验证命令形状（单推送
+    /// `refs/tags/<tag>`、全推送 `--tags`）与「标签不存在时在本地就报错」。
+    /// 对应前端 `GitPanel` 标签行的「推送到远程」与标签区标题的「推送全部标签」。
+    #[test]
+    fn push_tag_actions_publish_tags_to_origin() {
+        let remote = temp_bare_repo("tags-push-remote");
+        let dir = temp_repo("tags-push");
+        std::fs::write(dir.join("a.txt"), "x\n").unwrap();
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-qm", "init"]);
+        let remote_url = remote.to_string_lossy().to_string();
+        git(&dir, &["remote", "add", "origin", remote_url.as_str()]);
+
+        action(
+            &dir,
+            &json!({"action": "create_tag", "tag": "v1.0.0", "message": "release"}),
+        )
+        .unwrap();
+        action(&dir, &json!({"action": "create_tag", "tag": "v0.9.0"})).unwrap();
+
+        action(&dir, &json!({"action": "push_tag", "tag": "v1.0.0"})).unwrap();
+        assert_eq!(
+            run_git(&remote, &["tag", "--list"], STATUS_TIMEOUT).unwrap(),
+            "v1.0.0",
+            "push_tag 只推指定的那一个"
+        );
+
+        action(&dir, &json!({"action": "push_tags"})).unwrap();
+        assert_eq!(
+            run_git(&remote, &["tag", "--list"], STATUS_TIMEOUT).unwrap(),
+            "v0.9.0\nv1.0.0",
+            "push_tags 补上剩下的，已推送过的不会让整条命令失败"
+        );
+
+        let missing = action(&dir, &json!({"action": "push_tag", "tag": "v9.9.9"})).unwrap_err();
+        assert!(
+            missing.message.contains("Tag not found"),
+            "{}",
+            missing.message
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
     }
 
     #[test]

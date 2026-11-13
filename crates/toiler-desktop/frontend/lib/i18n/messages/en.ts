@@ -191,6 +191,8 @@ export const enLocale: LocalePlugin = {
     "git.tagMessage": "Annotation (leave empty for a lightweight tag)",
     "git.createTag": "Create tag",
     "git.deleteTag": "Delete tag",
+    "git.pushTag": "Push to remote",
+    "git.pushAllTags": "Push all tags",
     "git.deleteTagConfirm": "Delete the local tag {tag}?",
     "git.deleteTagLocalOnly": "Only the tag in this repository is removed; a tag with the same name on the remote is kept.",
     "git.noTags": "No tags yet",
