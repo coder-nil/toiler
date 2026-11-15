@@ -913,18 +913,28 @@ pub fn defer_thinking_blocks(message: &Value) -> Value {
     out
 }
 
-/// `deferMedia`：把图片块换成一个占位文本块，避免把 base64 正文塞进首帧。
+/// `deferMedia`：把**工具结果**里的图片块换成一个占位文本块，避免把 base64
+/// 正文塞进首帧。
 ///
 /// 前端首屏一直带 `deferMedia=1`（`useAgentSession.ts` 的 `loadSession`），
 /// 而这条参数曾经是空实现：带不带返回的字节数完全一样，一条会话里几张图片就能
 /// 把首帧撑到 1.3MB（实测）。pi 的语义是把 `{type:"image"}` 换掉，这里是同一件事：
 /// 图片块 → 一行 `[image: <mime>, <大小>]` 文本，其它块原样保留。
 ///
+/// **只动 `toolResult`**：工具抓到的图（一次 screenshot 就能几十张）是历史噪声，
+/// 占位合理；而 `user` 消息里的图是用户亲手附上的那几张（前端 `MAX_ATTACHED_IMAGES`
+/// 限 10 张），占位后就**无法取回** —— pi 只给 thinking 留了 `entries/{id}/thinking`
+/// 这一条回捞通道，图片没有，于是重开有图的历史会话时用户提问里的图会永久变成
+/// 一行 `[image: …]` 文字。只处理 `toolResult` 两边都兼顾。
+///
 /// 两种形状都认（v3 文件里两种都存在，前端的 `imageSource()` 也是这么兼容的）：
 ///
 /// - 嵌套：`{type:"image", source:{type:"base64", media_type, data}}`
 /// - 扁平：`{type:"image", data, mimeType}`
 pub fn defer_media_blocks(message: &Value) -> Value {
+    if message.get("role").and_then(Value::as_str) != Some("toolResult") {
+        return message.clone();
+    }
     let Some(blocks) = message.get("content").and_then(Value::as_array) else {
         return message.clone();
     };
@@ -1253,15 +1263,15 @@ mod context_tests {
         assert_eq!(view.model["modelId"], "GLM-5.3");
     }
 
-    /// `deferMedia` 必须真的把图片块换掉：前端首屏一直带这条参数，不生效的话
-    /// 一条有图的会话首帧能到 MB 级（实测 1.38MB → 214KB）。
+    /// `deferMedia` 必须真的把工具结果里的图片换掉：前端首屏一直带这条参数，
+    /// 不生效的话一条有图的会话首帧能到 MB 级（实测 1.38MB → 214KB）。
     /// 两种形状都要认：v3 文件里既有嵌套 `source`、也有扁平的 `data`/`mimeType`。
     #[test]
-    fn defer_media_replaces_image_blocks_in_both_shapes() {
+    fn defer_media_replaces_tool_result_image_blocks_in_both_shapes() {
         let nested = json!({
-            "role": "user",
+            "role": "toolResult",
             "content": [
-                { "type": "text", "text": "看这张图" },
+                { "type": "text", "text": "截图" },
                 {
                     "type": "image",
                     "source": { "type": "base64", "media_type": "image/png", "data": "A".repeat(4096) }
@@ -1290,8 +1300,31 @@ mod context_tests {
         );
 
         // 纯文本消息原样返回（不能平白改写 content）。
-        let plain = json!({"role": "user", "content": [{"type": "text", "text": "hi"}]});
+        let plain = json!({"role": "toolResult", "content": [{"type": "text", "text": "hi"}]});
         assert_eq!(defer_media_blocks(&plain), plain);
+    }
+
+    /// `user` 消息里的图是用户亲手附的，占位后**没有回捞通道**（thinking 有
+    /// `entries/{id}/thinking`，图片没有等价接口），所以必须原样保留。
+    #[test]
+    fn defer_media_keeps_user_attachments() {
+        let user = json!({
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "看这张图" },
+                {
+                    "type": "image",
+                    "source": { "type": "base64", "media_type": "image/png", "data": "A".repeat(4096) }
+                }
+            ]
+        });
+        assert_eq!(defer_media_blocks(&user), user);
+
+        let flat = json!({
+            "role": "user",
+            "content": [{ "type": "image", "data": "B".repeat(2048), "mimeType": "image/jpeg" }]
+        });
+        assert_eq!(defer_media_blocks(&flat), flat);
     }
 
     #[test]

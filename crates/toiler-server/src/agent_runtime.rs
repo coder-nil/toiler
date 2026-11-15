@@ -813,17 +813,25 @@ fn streaming_delivery(command: &Value) -> MessageDelivery {
 }
 
 /// `{message:"文本"}` / `{message:{…}}` / `{message:[blocks]}` → `AgentMessage`。
+///
+/// 附件图片在**平级的 `images` 字段**里（`{type:"image",data,mimeType}` 数组，
+/// 形状见 `frontend/lib/image-attachments.ts` 的 `validateAgentImages`），不在
+/// `message` 里。这里必须把它们拼成内容块，否则图片既不会落进 v3 文件、也
+/// 不会进模型上下文 —— 前端发完就 `loadSession` 重拉，用户看到的缩略图直接
+/// 消失（图片因此「被吞」）。`steer` / `follow_up` 走同一个函数，一并修好。
 fn prompt_message(command: &Value) -> Result<AgentMessage> {
     let now = now_ms();
+    let images = prompt_images(command)?;
     match command.get("message") {
         Some(Value::String(text)) => Ok(AgentMessage::User(rpi_ai::types::UserMessage::new(
-            text.clone(),
+            with_images(text, images),
             now,
         ))),
         Some(Value::Array(blocks)) => {
-            let content: Vec<rpi_ai::types::Content> =
+            let mut content: Vec<rpi_ai::types::Content> =
                 serde_json::from_value(Value::Array(blocks.clone()))
                     .context("message 不是合法的内容块数组")?;
+            content.extend(images);
             Ok(AgentMessage::User(rpi_ai::types::UserMessage::new(
                 rpi_ai::types::UserContent::Blocks(content),
                 now,
@@ -833,6 +841,50 @@ fn prompt_message(command: &Value) -> Result<AgentMessage> {
             .context("message 不是合法的 AgentMessage")?),
         _ => Err(anyhow::anyhow!("prompt 缺少 message")),
     }
+}
+
+/// `command["images"]` → 图片内容块。
+///
+/// 前端发的是扁平的 `{type:"image",data,mimeType}`，与 `rpi_ai` 的
+/// `ImageContent` 序列化形状一致，直接反序列化即可。缺字段 / 类型不对时报错
+/// 而不是静默丢弃：图片是用户明确附上的内容，吞掉它比报错更糟。
+fn prompt_images(command: &Value) -> Result<Vec<rpi_ai::types::Content>> {
+    let Some(raw) = command.get("images") else {
+        return Ok(Vec::new());
+    };
+    if raw.is_null() {
+        return Ok(Vec::new());
+    }
+    let items = raw
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("images 必须是数组"))?;
+    items
+        .iter()
+        .map(|item| {
+            let block: rpi_ai::types::Content = serde_json::from_value(item.clone())
+                .context("images 里存在不合法的附件（需要 {type:\"image\",data,mimeType}）")?;
+            match block {
+                rpi_ai::types::Content::Image(_) => Ok(block),
+                _ => Err(anyhow::anyhow!("images 里只能是 image 块")),
+            }
+        })
+        .collect()
+}
+
+/// 文本 + 图片 → `UserContent`。
+///
+/// 没有图片时保持裸字符串（v3 编码会补成块数组）；只有图片没有文本时不要塞
+/// 一个空 text 块，否则模型会收到一段空的用户正文。
+fn with_images(text: &str, images: Vec<rpi_ai::types::Content>) -> rpi_ai::types::UserContent {
+    if images.is_empty() {
+        return rpi_ai::types::UserContent::Text(text.to_string());
+    }
+    let mut content: Vec<rpi_ai::types::Content> = Vec::with_capacity(images.len() + 1);
+    if !text.trim().is_empty() {
+        content.push(rpi_ai::types::Content::text(text.to_string()));
+    }
+    content.extend(images);
+    rpi_ai::types::UserContent::Blocks(content)
 }
 
 fn now_ms() -> i64 {
@@ -1394,5 +1446,114 @@ mod retry_notice_tests {
     fn retry_scheduled_is_no_longer_projected_as_its_own_frame() {
         // 事件名对齐 pi：旧形状会让前端收到一个它不认识的事件。
         assert!(project_event(&scheduled(1, "boom")).is_none());
+    }
+}
+
+/// prompt 的入参拼装：图片附件在平级的 `images` 字段里，不能丢。
+#[cfg(test)]
+mod prompt_message_tests {
+    use super::*;
+
+    fn image(data: &str) -> Value {
+        json!({ "type": "image", "data": data, "mimeType": "image/png" })
+    }
+
+    fn blocks(message: &AgentMessage) -> Vec<Value> {
+        let AgentMessage::User(user) = message else {
+            panic!("不是 user 消息：{message:?}");
+        };
+        match &user.content {
+            rpi_ai::types::UserContent::Text(text) => vec![json!({ "type": "text", "text": text })],
+            rpi_ai::types::UserContent::Blocks(content) => content
+                .iter()
+                .map(|block| serde_json::to_value(block).unwrap())
+                .collect(),
+        }
+    }
+
+    /// 前端发的是 `{type:"prompt", message:"看这张图", images:[…]}`，图片不在
+    /// `message` 里。以前只读 `message`，图片整块被丢掉（发送后一重拉就消失）。
+    #[test]
+    fn images_ride_along_with_a_kind_of_string_message() {
+        let command = json!({
+            "type": "prompt",
+            "message": "看这张图",
+            "images": [image("QUJD"), image("REVG")]
+        });
+        let message = prompt_message(&command).expect("应当接受带图片的 prompt");
+        let blocks = blocks(&message);
+        assert_eq!(blocks.len(), 3, "{blocks:?}");
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "看这张图");
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["data"], "QUJD");
+        assert_eq!(blocks[1]["mimeType"], "image/png");
+        assert_eq!(blocks[2]["data"], "REVG");
+    }
+
+    #[test]
+    fn images_append_to_an_existing_block_array() {
+        let command = json!({
+            "type": "prompt",
+            "message": [{ "type": "text", "text": "看图" }],
+            "images": [image("QUJD")]
+        });
+        let blocks = blocks(&prompt_message(&command).unwrap());
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert_eq!(blocks[1]["type"], "image");
+    }
+
+    /// 只有图片没有文字时不能塞空 text 块（模型会收到一段空正文）。
+    #[test]
+    fn image_only_prompt_has_no_empty_text_block() {
+        let command = json!({ "type": "prompt", "message": "  ", "images": [image("QUJD")] });
+        let blocks = blocks(&prompt_message(&command).unwrap());
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert_eq!(blocks[0]["type"], "image");
+    }
+
+    /// 不带图片时保持裸字符串：v3 文件里的老形状不能因为这次修改而变。
+    #[test]
+    fn plain_text_prompt_stays_a_string() {
+        let message = prompt_message(&json!({ "type": "prompt", "message": "hi" })).unwrap();
+        let AgentMessage::User(user) = message else {
+            panic!("不是 user 消息");
+        };
+        assert_eq!(user.content.as_text(), Some("hi"));
+    }
+
+    /// 附件不合法时宁可报错也不静默丢掉：图片是用户明确附上的内容。
+    #[test]
+    fn malformed_images_are_rejected_instead_of_dropped() {
+        assert!(prompt_message(&json!({
+            "type": "prompt",
+            "message": "hi",
+            "images": [{ "data": "QUJD", "mimeType": "image/png" }]
+        }))
+        .is_err());
+        assert!(prompt_message(&json!({
+            "type": "prompt",
+            "message": "hi",
+            "images": [{ "type": "text", "text": "hi" }]
+        }))
+        .is_err());
+        assert!(
+            prompt_message(&json!({ "type": "prompt", "message": "hi", "images": "x" })).is_err()
+        );
+    }
+
+    /// `steer` / `follow_up` 走同一个 `prompt_message`，图片同样不能丢。
+    #[test]
+    fn steer_and_follow_up_keep_their_images() {
+        for ty in ["steer", "follow_up"] {
+            let command = json!({
+                "type": ty,
+                "message": "换个方向",
+                "images": [image("QUJD")]
+            });
+            let blocks = blocks(&prompt_message(&command).unwrap());
+            assert_eq!(blocks.len(), 2, "{ty}: {blocks:?}");
+            assert_eq!(blocks[1]["type"], "image", "{ty}");
+        }
     }
 }

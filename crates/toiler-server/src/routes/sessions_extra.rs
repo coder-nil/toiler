@@ -35,6 +35,10 @@ fn error(status: StatusCode, message: &str) -> Response {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct ContextParams {
+    #[serde(rename = "deferThinking")]
+    defer_thinking: Option<String>,
+    #[serde(rename = "deferMedia")]
+    defer_media: Option<String>,
     #[serde(rename = "leafId")]
     leaf_id: Option<String>,
     before: Option<String>,
@@ -65,7 +69,24 @@ pub async fn context(
         ),
         None => session_view::page_tail(&view.messages, params.limit.as_deref()),
     };
-    let messages: Vec<Value> = view.messages[page.start..page.end].to_vec();
+    let messages: Vec<Value> = view.messages[page.start..page.end]
+        .iter()
+        .map(|message| {
+            // 与 `GET /api/sessions/{id}` 用同一套投影：前端翻页时也带这两个
+            // 参数（`useAgentSession.ts` 的 `loadEarlierMessages`），少了它们
+            // 就会「首屏的图是占位、翻上去的图是完整 base64」，同一屏两种表现。
+            let message = if params.defer_thinking.is_some() {
+                session_view::defer_thinking_blocks(message)
+            } else {
+                message.clone()
+            };
+            if params.defer_media.is_some() {
+                session_view::defer_media_blocks(&message)
+            } else {
+                message
+            }
+        })
+        .collect();
     let entry_ids: Vec<String> = view.entry_ids
         [page.start.min(view.entry_ids.len())..page.end.min(view.entry_ids.len())]
         .to_vec();

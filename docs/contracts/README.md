@@ -67,6 +67,8 @@
 
 查询参数：`deferThinking`、`deferMedia`（出现即 true）、`limit`（默认 120，夹在 1..400）。
 
+`GET /api/sessions/{id}/context` 认同一组 `deferThinking` / `deferMedia`（见下）。
+
 ```jsonc
 {
   "sessionId": "<id>",
@@ -93,6 +95,18 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 
 `prompt` 的 `streamingBehavior`（`"steer"` | `"followUp"`，缺省 `steer`）在会话运行中
 决定进哪条队列：`steer` 在工具批处理之后注入，`followUp` 等本轮结束再投递。
+
+`prompt` / `steer` / `follow_up` 的图片附件在**平级的 `images` 字段**里，不在 `message` 里：
+
+```jsonc
+{"type":"prompt", "message":"看这张图",
+ "images":[{"type":"image", "data":"<base64>", "mimeType":"image/png"}]}
+```
+
+服务端把它们拼成 user 消息的内容块（文本块在前、图片块在后；只有图没有文字时不塞空
+文本块），图片因此能落进 v3 文件、也能进模型上下文。`images` 缺失或为 `null` 时走原
+文本路径（裸字符串）。单张上限 10MB、每次最多 10 张（前端 `image-attachments.ts`
+的 `validateAgentImages` 先拦一道）；服务端遇到不合法的附件会**报错**而不是静默丢掉。
 
 `clear_queue` 清空两条队列并返回**被清掉的文本**（`{steering:[…], followUp:[…]}`），
 前端的「撤回排队」按钮拿它回填输入框；空队列返回两个空数组（不是 `null`）。
@@ -451,12 +465,21 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 2. **`models` 元数据不全**：只给前端首屏需要的字段，没有价格/能力目录。
 3. **`deferThinking`** ✅ 阶段 5 已实现：思考正文清空 + 标 `deferred:true`（前端据此显示
    「展开思考」，点开走 `/api/sessions/{id}/entries/{entryId}/thinking`）。
-   **`deferMedia`** ✅ 已实现：`content` 里的图片块换成一行
+   **`deferMedia`** ✅ 已实现，但**只作用于 `toolResult`**：`content` 里的图片块换成一行
    `[image: <mime>, ~<KB> KB]` 文本块（嵌套 `source` 与扁平 `data`/`mimeType` 两种形状都认）。
    前端首屏一直带 `deferMedia=1`，之前是空实现，带不带返回的字节完全一样——
    一条有图的会话首帧能到 1.38MB，实现后降到 214KB（实测同一条会话）。
-   注意：占位只发生在 `GET /api/sessions/{id}` 的 `context.messages` 上，
+
+   **为什么不处理 `user` 消息里的图**：早期实现不分 `role` 一律替换，于是重开有图的
+   历史会话时，用户提问里亲手附的图永久变成一行 `[image: …]` 文字。thinking 有
+   `entries/{id}/thinking` 可以点开回捞，图片没有等价通道，占位后就真取不回来了。
+   工具抓的图（一次 screenshot 可能几十张）是历史噪声，占位合理；用户附的图受前端
+   `MAX_ATTACHED_IMAGES`（10 张）约束，是「我给他看的这张」这种必须有语义的东西。
+
+   注意：占位只发生在 `GET /api/sessions/{id}` 与 `/context` 的 `context.messages` 上，
    `/api/sessions/{id}/entries/...` 取单条、导出、手机投影一律返回原字节。
+   `/context` 必须认这两个参数：前端翻页（`loadEarlierMessages`）也带着它们，少了
+   就会「首屏的图是占位、翻上去的图是完整 base64」，同一屏两种表现。
 4. **tree 的 `compressedEntryIds`** 只在深度超过 200 时出现（与 pi 的代码路径一致，但 pi 的 `visible` 集合还有别的分支，未 100% 验证）。
 5. **自定义 role 的消息**：写 v3 时降级为 `role:"custom"` + `customType`（pi 认的集合有限）。
 6. **auth provider 列表来自写死的内置表**：pi 的列表来自 provider 目录

@@ -1222,6 +1222,107 @@ async fn sessions_defer_thinking_clears_and_marks_blocks() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// `deferMedia` 只占位 **toolResult** 里的图。
+///
+/// 前端首屏一直带 `deferMedia=1`（`useAgentSession.ts` 的 `loadSession`）。
+/// 早期实现不分 role 一律换掉，于是重开有图的历史会话时，用户提问里亲手附的图
+/// 永久变成一行 `[image: …]` —— 而图片没有像 thinking 那样的回捞接口
+/// （`entries/{id}/thinking`），占位后就真的取不回来了。
+#[tokio::test]
+async fn sessions_defer_media_keeps_user_images_but_trims_tool_results() {
+    let root = fixture_root("defermedia");
+    let user_image = format!(
+        r##"{{"type":"image","source":{{"type":"base64","media_type":"image/png","data":"{}"}}}}"##,
+        "A".repeat(4096)
+    );
+    let tool_image = format!(
+        r##"{{"type":"image","data":"{}","mimeType":"image/jpeg"}}"##,
+        "B".repeat(4096)
+    );
+    let user_entry = format!(
+        r#"{{"type":"message","id":"m1","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","message":{{"role":"user","content":[{{"type":"text","text":"看这两张图"}},{user_image}],"timestamp":1794292905000}}}}"#
+    );
+    let tool_entry = format!(
+        r#"{{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-11-10T06:41:46.000Z","message":{{"role":"toolResult","toolCallId":"t1","toolName":"read","content":[{{"type":"text","text":"附件图"}},{tool_image}],"isError":false,"timestamp":1794292906000}}}}"#
+    );
+    write_session(&root, &[&user_entry, &tool_entry]);
+
+    let body = get(
+        app(&root, Path::new("/tmp/demo")),
+        "/api/sessions/sess-a?deferMedia=1",
+    )
+    .await
+    .json();
+    let messages = body["context"]["messages"].as_array().unwrap();
+
+    let user = messages.iter().find(|m| m["role"] == "user").unwrap();
+    assert_eq!(
+        user["content"][1]["type"], "image",
+        "用户提问里的图必须保留：{user}"
+    );
+    assert_eq!(user["content"][1]["source"]["media_type"], "image/png");
+
+    let tool = messages.iter().find(|m| m["role"] == "toolResult").unwrap();
+    assert_eq!(tool["content"][1]["type"], "text", "{tool}");
+    let placeholder = tool["content"][1]["text"].as_str().unwrap();
+    assert!(
+        placeholder.starts_with("[image: image/jpeg"),
+        "{placeholder}"
+    );
+    assert!(!tool.to_string().contains("BBBB"), "工具图正文不能被带出来");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 翻页（`/context?before=…`）与首屏必须用同一套投影：
+/// 前端 `loadEarlierMessages` 也带这两个参数，否则同一屏里「首屏的图是占位、
+/// 翻上去的图是完整 base64」。
+#[tokio::test]
+async fn sessions_context_honours_defer_params_when_paging() {
+    let root = fixture_root("deferpaging");
+    let tool_image = format!(
+        r##"{{"type":"image","data":"{}","mimeType":"image/png"}}"##,
+        "C".repeat(4096)
+    );
+    let entries: Vec<String> = (0..4)
+        .map(|i| {
+            if i == 0 {
+                format!(
+                    r#"{{"type":"message","id":"m0","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","message":{{"role":"toolResult","toolCallId":"t0","toolName":"read","content":[{tool_image}],"isError":false,"timestamp":1794292905000}}}}"#
+                )
+            } else {
+                format!(
+                    r#"{{"type":"message","id":"m{i}","parentId":"m{prev}","timestamp":"2026-11-10T06:41:4{i}.000Z","message":{{"role":"user","content":[{{"type":"text","text":"第 {i} 条"}}],"timestamp":1794292905000}}}}"#,
+                    prev = i - 1
+                )
+            }
+        })
+        .collect();
+    let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+    write_session(&root, &refs);
+
+    let body = get(
+        app(&root, Path::new("/tmp/demo")),
+        "/api/sessions/sess-a/context?before=m1&limit=2&deferThinking=1&deferMedia=1",
+    )
+    .await
+    .json();
+    let messages = body["context"]["messages"].as_array().unwrap();
+    let tool = messages
+        .iter()
+        .find(|m| m["role"] == "toolResult")
+        .unwrap_or_else(|| panic!("没拿到翻页里的 toolResult：{body}"));
+    assert_eq!(tool["content"][0]["type"], "text", "{tool}");
+    assert!(
+        tool["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("[image: image/png"),
+        "{tool}"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
 #[tokio::test]
 async fn sessions_rename_appends_a_session_info_entry() {
     // PATCH 改名走的是「追加 session_info」而不是改 header（pi 的做法）。

@@ -16,6 +16,7 @@ Next 应用来的），保留在原位置作为来源记录。`1.0.0` 是 Toiler
 
 ### Fixed
 
+- 修复提问里的图片被吞掉的问题，两个独立原因。**发送侧**：Rust 的 `prompt_message()` 只读 `command["message"]`，而前端把图片放在平级的 `images` 字段里（`{type:"image",data,mimeType}`），于是图片既没进 v3 文件、也没进模型上下文 —— 界面上发送时能看到缩略图，那只是前端乐观插入的一条消息，`prompt_done` 后的 `loadSession` 一重拉就消失。`steer` / `follow_up` 走同一个函数，一并坏。现在把 `images` 拼成内容块（文本块在前、图片块在后，只有图没有文字时不塞空文本块），附件不合法时报错而不是静默丢掉。**读取侧**：首屏一直带 `deferMedia=1`，而 `defer_media_blocks()` 不分 `role` 一律把图片块换成 `[image: …]` 一行文字，于是重开有图的历史会话，用户提问里亲手附的图永久变成占位文本 —— thinking 有 `entries/{id}/thinking` 可以点开回捞，图片没有等价通道，占位后就真取不回来。现在只占位 `toolResult`（工具抓的图，一次 screenshot 能几十张，属历史噪声），用户提问里的图原样保留。顺带补上 `GET /api/sessions/{id}/context` 对 `deferThinking` / `deferMedia` 的识别：前端翻页时也带这两个参数，之前被忽略，导致「首屏的图是占位、翻上去的图是完整 base64」。
 - 修复普通对话模式在 Rust 后端完全不存在、只看不听的问题。输入框左侧 π 图标切换时前端发 `{"type":"set_chat_mode","on":…}`，但 `agent_runtime` 的命令分发里没有这个分支，于是每次切换都落到 `不支持的 agent 命令：set_chat_mode`，而前端只把它 `console.error` 掉了 —— 界面上图标变强调色、占位符变「随便聊聊…」、工具预设置灰，实际上提示词与工具集全是工作模式的，模型照样去 `read` 项目的 `AGENTS.md`。现在补齐了三处：`set_chat_mode` 命令（切模式同时停用所有工具并重算提示词）、`POST /api/agent/new` 读 body 里的 `chatMode`、`get_state` 回报 `chatMode`。普通对话模式的提示词语义为**整段为空**：`PromptInputs::compose` 返回空串，`rpi_agent` 的 `agent_loop` 对空串发 `None`，请求里连 system 消息都不会有（`<project_context>` 与末尾的语言指令一并不发）。它与「工具预设全关」不是一回事：后者只是工具为空，preamble、行为准则与 `<cwd>` 仍会发出去。
 
 ## [1.0.1] - 2026-11-14
