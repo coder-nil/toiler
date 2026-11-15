@@ -74,6 +74,11 @@ cargo build --release -p toiler-desktop              # build.rs 自动捡 dist/
 从 Finder 双击也行（`bundle` 见 `crates/toiler-desktop/tauri.conf.json`）。
 启动后只监听 `127.0.0.1:<随机端口>`，手机访问要另外在设置页开关。
 
+双击启动时进程 cwd 是 `/`，默认项目按「上次选中的项目 →
+`~/.agents/toiler/workspace/`」的顺序确定，**不会**退回主目录——那样会让
+agent 的工作目录变成 `$HOME`，`find` / `grep` 一递归就撞进 `Documents` /
+`Desktop` / `Pictures` / `Music`，触发 macOS 的隐私授权弹窗。
+
 ### 纯服务（开发 / 远程访问）
 
 ```bash
@@ -104,6 +109,7 @@ cargo build --release -p toiler-server
 ~/.agents/toiler/
 ├── configs/      auth.json / models.json / settings.json / trust.json / desktop-access*
 ├── sessions/     会话
+├── workspace/    兜底项目目录（双击启动且没有上次项目时）
 └── work.sqlite   项目列表
 ```
 
