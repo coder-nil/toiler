@@ -75,6 +75,11 @@ pub struct LiveAgent {
     /// 注释里写得很清楚：面板显示得等于真正发出去的那份），所以放在这里由
     /// [`Self::set_ui_locale`] 和组装点统一维护。
     system_prompt: Mutex<String>,
+    /// 普通对话模式（输入框左侧 π 图标的开关）。
+    ///
+    /// `get_state.chatMode` 要回报它：前端重开面板时靠这个字段校正界面状态，
+    /// 否则浏览器里的 `localStorage` 与实际后端状态可能不一致。
+    chat_mode: Mutex<bool>,
     /// 工具 ↔ 前端的通道（`ask_user` 的问答往返、`task_progress` 的状态推送）。
     ui: Arc<UiBridge>,
     /// 任务列表：既喂工具，也喂 `get_state.extensionStatuses/extensionWidgets`。
@@ -185,6 +190,7 @@ impl LiveAgent {
             prompt_inputs: Mutex::new(prompt_inputs),
             locale: Mutex::new(locale),
             system_prompt: Mutex::new(system_prompt),
+            chat_mode: Mutex::new(false),
             ui,
             tasks,
         }))
@@ -306,6 +312,11 @@ impl LiveAgent {
             // 少了前者，`getPresetFromTools` 拿不到东西，工具列表就是空的。
             "get_tools" => self.tool_infos().await,
             "set_tools" => self.set_tools(command).await,
+            // 输入框左侧 π 图标的工作 / 普通对话开关。以前这个命令在 Rust
+            // 侧根本不存在，前端每次切换都收到「不支持的 agent 命令」，而它只
+            // 把这个错误打进了控制台 —— 界面上看着切了，实际提示词与工具全是
+            // 工作模式（典型症状：普通对话里模型照样 read AGENTS.md）。
+            "set_chat_mode" => self.set_chat_mode(command).await,
             // `ask_user` 的问答往返：前端弹窗回答后发回来。请求已作废（超时/中止）
             // 时不算错误 —— 前端只是晚了一步。
             "extension_ui_response" => {
@@ -518,6 +529,9 @@ impl LiveAgent {
             "thinkingLevel": "off",
             // pi 的面板读的就是这一项；缺了它会显示「系统提示词尚未加载」。
             "systemPrompt": self.current_system_prompt(),
+            // 输入框 π 图标的实际状态：前端重开面板时靠它校正，不能只信
+            // 浏览器里的 `localStorage`（普通对话模式的偏好就是存在那里的）。
+            "chatMode": *self.chat_mode.lock().expect("chat mode"),
             // 任务进度与未回答的 UI 请求：前端靠这三项恢复界面状态。
             "extensionStatuses": self.tasks.status_text().map_or_else(
                 || json!([]),
@@ -592,6 +606,57 @@ impl LiveAgent {
         ))
     }
 
+    /// `{"type":"set_chat_mode","on":bool,"toolNames":[…]}` → `{chatMode, systemPrompt, toolNames}`。
+    ///
+    /// 普通对话模式的全部含义就两条：**不带系统提示词**、**停用所有工具**。
+    /// 提示词走 [`PromptInputs::set_chat_mode`] —— `compose` 直接返回空串，
+    /// `rpi_agent` 的 `agent_loop` 再把空串转成 `None`，于是请求里连 system
+    /// 消息都不会有。工具走 `set_tools` 的空集合。
+    ///
+    /// 请求体里的 `toolNames` 是切**回**工作模式时用的：前端会带上进普通对话
+    /// 模式前的预设，因为记忆只存在浏览器里，重开的面板拿不到这份快照。
+    async fn set_chat_mode(&self, command: &Value) -> Result<Value> {
+        let on = command.get("on").and_then(Value::as_bool).unwrap_or(false);
+        let tools = self.harness.get_tools().await?;
+
+        let active = if on {
+            // 普通对话模式不使用任何工具。与 `set_tools` 一样只换 active 集合，
+            // 注册表不动，切回去时能按预设恢复。
+            Vec::new()
+        } else {
+            let requested: Vec<String> = command
+                .get("toolNames")
+                .and_then(Value::as_array)
+                .map(|names| {
+                    names
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            ordered_active_tools(&tools, &requested)
+        };
+
+        self.harness.set_tools(tools, Some(active.clone())).await?;
+        {
+            let mut inputs = self.prompt_inputs.lock().expect("prompt inputs");
+            inputs.set_chat_mode(on);
+            inputs.set_tool_names(active.clone());
+        }
+        *self.chat_mode.lock().expect("chat mode") = on;
+
+        // 顺序要紧：先改上游状态再 recompose，否则拿到的是旧模式的提示词。
+        let prompt = self.recompose();
+        self.harness.set_system_prompt(Some(prompt)).await?;
+
+        Ok(json!({
+            "chatMode": on,
+            "systemPrompt": self.current_system_prompt(),
+            "toolNames": active,
+        }))
+    }
+
     /// `{"type":"set_tools","toolNames":[…]}` → `null`（与 pi 同形）。
     ///
     /// 空数组就是「全关」（pi 的工具预设 `none` / 普通对话模式）：此时提示词只剩
@@ -611,16 +676,7 @@ impl LiveAgent {
             .unwrap_or_default();
 
         let tools = self.harness.get_tools().await?;
-        // 顺序沿用注册表（即 pi 的默认工具顺序），前端传的顺序不影响提示词。
-        // 桌面工具（`system_time` / `task_progress` / `ask_user`）不受预设控制：
-        // pi 的 `set_tools` 用 `withExtensionTools` 把它们加回激活集合。
-        let ordered: Vec<String> = tools
-            .iter()
-            .map(|tool| tool.tool.schema().name.clone())
-            .filter(|name| {
-                requested.contains(name) || crate::tools::ALWAYS_ON_TOOLS.contains(&name.as_str())
-            })
-            .collect();
+        let ordered = ordered_active_tools(&tools, &requested);
         self.harness.set_tools(tools, Some(ordered.clone())).await?;
 
         self.prompt_inputs
@@ -649,6 +705,24 @@ impl LiveAgent {
         self.running.store(false, Ordering::Relaxed);
         let _ = self.lane.abort().await;
     }
+}
+
+/// 按注册表顺序算出该激活哪些工具。
+///
+/// 顺序沿用注册表（即 pi 的默认工具顺序），前端传的顺序不影响提示词。
+/// 桌面工具（`system_time` / `task_progress` / `ask_user`）不受预设控制：
+/// pi 的 `set_tools` 用 `withExtensionTools` 把它们加回激活集合。
+fn ordered_active_tools(
+    tools: &[rpi_harness::types::HarnessTool],
+    requested: &[String],
+) -> Vec<String> {
+    tools
+        .iter()
+        .map(|tool| tool.tool.schema().name.clone())
+        .filter(|name| {
+            requested.contains(name) || crate::tools::ALWAYS_ON_TOOLS.contains(&name.as_str())
+        })
+        .collect()
 }
 
 /// 从 v3 文件里恢复任务列表：沿分支回溯，取最后一条 `task_progress` 的

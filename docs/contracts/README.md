@@ -133,6 +133,23 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 `set_tools` 同时重算系统提示词的 `<tools>` 段与 `<project_context>` 形态
 （没有 `read` 时退回全文）。
 
+`set_chat_mode`（`{"type":"set_chat_mode","on":true|false,"toolNames":[…]}`）
+是输入框左侧 π 图标的「工作模式 / 普通对话」开关，返回
+`{chatMode, systemPrompt, toolNames}`。`on: true` 时同时做两件事：
+
+- **停用所有工具**（可激活集合置空，注册表不动，切回去时能按预设恢复）；
+- **系统提示词变空串**。空串不是「一个空的 system 消息」：`rpi_agent` 的
+  `agent_loop` 对空 system_prompt 发 `None`，请求里**完全没有 system 消息**。
+  普通对话模式的语义就是「不带系统提示词」，包括 `<project_context>`
+  （AGENTS.md）与末尾的语言指令。
+
+`on: false` 时按请求体里的 `toolNames` 恢复工具集（前端带的是进普通对话模式前的
+预设，因为这份记忆只存在浏览器的 `localStorage`）并重算提示词。
+
+`get_state` 同时回报 `chatMode`，前端重开面板时靠它校正界面状态，不能只信
+`localStorage`。注意与「工具预设全关」的区别：后者只是工具为空，preamble、
+行为准则与 `<cwd>` 仍会发出去，`systemPrompt` 是非空字符串。
+
 `extension_ui_response`（`{"type":"extension_ui_response","id":…,"value"|"confirmed"|"cancelled":true}`）
 回答 `ask_user` 的提问，返回 `null`；请求已作废（超时/中止）时同样返回 `null`
 （前端只是晚了一步，不算错误）。`extension_ui_input`（custom UI 的逐键输入）
@@ -349,7 +366,7 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 | `POST /api/agent/{id}` | ✅ | `prompt`/`steer`/`follow_up`/`clear_queue`/`abort`/`get_state`/`set_model`/`navigate_tree`/`set_steering_mode`/`set_follow_up_mode`（后两个只落盘，`applied:false`，新会话生效；见 `GET/PUT /api/queue-modes`） |
 | `GET /api/agent/{id}` | ✅ | `{running}` / `{running, state}` |
 | `GET /api/agent/{id}/events` | ✅ | SSE，裁剪规则与 pi 逐条对齐 |
-| `POST /api/agent/new` | ✅ | 建 v3 会话 + 登记项目 + 执行 body 里的命令；`{success,sessionId,data,model,thinkingLevel}`。body 的 `toolNames`（前端工具预设，默认 `read/bash/edit/write`，桌面工具始终启用）与 `uiLocale` 也在建会话时应用 |
+| `POST /api/agent/new` | ✅ | 建 v3 会话 + 登记项目 + 执行 body 里的命令；`{success,sessionId,data,model,thinkingLevel}`。body 的 `toolNames`（前端工具预设，默认 `read/bash/edit/write`，桌面工具始终启用）、`uiLocale` 与 `chatMode`（普通对话模式：第一轮就不带系统提示词）也在建会话时应用 |
 | `GET /api/agent/running` | ✅ | `{runningSessionIds, pendingUiSessionIds}`（pi 的 `56429.am()`） |
 | `GET /api/files/{*path}` | ✅ | 六种 `type` 全实现（`list`/`read`/`download`/`meta`/`preview`/`watch`），`Range` 206/416，SSE 命名事件 `connected`/`change` |
 | `PUT /api/files/{*path}` | ✅ | `{content, allowEmpty}`；空覆盖 409 `empty_overwrite_blocked`；256KB 上限 |

@@ -4524,6 +4524,165 @@ async fn system_prompt_tags_own_their_lines_for_the_panel() {
     std::fs::remove_dir_all(&project).ok();
 }
 
+/// 普通对话模式（输入框左侧 π 图标）：**不带系统提示词**，也不带任何工具。
+///
+/// 这条用例守着一次真实踩过的坑：`set_chat_mode` 曾经在 Rust 侧不存在，
+/// 前端删腾后只收到「不支持的 agent 命令」，而它只把错存进 `console.error`。
+/// 于是界面上图标变强调色、占位符变「随便聊聊…」，但实际上提示词与工具
+/// 全是工作模式的 —— 模型照样去 `read` 项目的 `AGENTS.md`。
+///
+/// 前端对应位置：`hooks/useAgentSession.ts` 的模式同步 effect 发
+/// `{"type":"set_chat_mode",“on”:…}`，`components/ChatInput.tsx` 的
+/// `.chat-composer-mark-button` 是开关本体。
+#[tokio::test]
+// 串行锁跨 await 持有是故意的（同其余改 `TOILER_AGENT_DIR` 的用例）。
+#[allow(clippy::await_holding_lock)]
+async fn chat_mode_sends_no_system_prompt_and_no_tools() {
+    let _env = env_guard();
+    let root = fixture_root("chatmode");
+    let agent_dir = fixture_root("chatmode-agent");
+    let project = fixture_root("chatmode-project");
+    std::fs::write(
+        project.join("AGENTS.md"),
+        "# 项目约定\n\n改代码前先跑 cargo test。\n",
+    )
+    .unwrap();
+
+    let previous = std::env::var("TOILER_AGENT_DIR").ok();
+    std::env::set_var("TOILER_AGENT_DIR", &agent_dir);
+
+    let cwd = project.to_string_lossy().to_string();
+    let dir = root.join(toiler_session::session_directory_name(&cwd));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(toiler_session::session_file_name(1794292904431, "sess-a")),
+        format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"sess-a\",\"timestamp\":\"2026-11-10T06:41:44.431Z\",\"cwd\":{}}}\n",
+            serde_json::to_string(&cwd).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let router = app_with_two_models(&root, &project, &agent_dir);
+
+    // 先拿一份工作模式的提示词作对照，确认 AGENTS.md 本来就在上下文里。
+    let work = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"set_ui_locale","locale":"zh-CN"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(work.status, StatusCode::OK, "{}", work.text());
+    let work_prompt = work.json()["data"]["systemPrompt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(work_prompt.contains("<project_context>"), "{work_prompt}");
+
+    // 切到普通对话模式
+    let chat = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"set_chat_mode","on":true}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(chat.status, StatusCode::OK, "{}", chat.text());
+    let chat_json = chat.json();
+    assert_eq!(chat_json["data"]["chatMode"], Value::Bool(true));
+    assert_eq!(
+        chat_json["data"]["systemPrompt"],
+        Value::String(String::new()),
+        "普通对话模式必须不带系统提示词（含语言指令）：{}",
+        chat.text()
+    );
+    assert_eq!(
+        chat_json["data"]["toolNames"],
+        Value::Array(Vec::new()),
+        "普通对话模式不能启任何工具：{}",
+        chat.text()
+    );
+
+    // `get_state` 必须是同一份：面板不能显示一份、实际又发另一份
+    let state = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"get_state"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(state.status, StatusCode::OK, "{}", state.text());
+    let state_json = state.json();
+    let reported = state_json["data"]["systemPrompt"].as_str().unwrap();
+    assert_eq!(reported, "", "get_state 也要报空提示词");
+    assert!(!reported.contains("project_instructions"), "{reported}");
+    assert!(!reported.contains("AGENTS.md"), "{reported}");
+    assert_eq!(state_json["data"]["chatMode"], Value::Bool(true));
+
+    // 工具也是空的：`system_time` 这类桌面工具平时不受预设控制，
+    // 普通对话模式属于「不使用任何工具」，所以它们也得停。
+    let tools = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"get_tools"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(tools.status, StatusCode::OK, "{}", tools.text());
+    for tool in tools.json()["data"].as_array().unwrap() {
+        assert_eq!(
+            tool["active"],
+            Value::Bool(false),
+            "普通对话模式下不能有激活的工具：{}",
+            tools.text()
+        );
+    }
+
+    // 切回工作模式：带上前端记着的预设，提示词与工具都要回来。
+    let back = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"set_chat_mode","on":false,"toolNames":["read","bash","edit","write"]}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(back.status, StatusCode::OK, "{}", back.text());
+    let back_json = back.json();
+    assert_eq!(back_json["data"]["chatMode"], Value::Bool(false));
+    let back_prompt = back_json["data"]["systemPrompt"].as_str().unwrap();
+    assert!(
+        back_prompt.starts_with("你是运行在 toiler 编程代理框架中的专业编程助手"),
+        "切回去要恢复工作模式的提示词：{back_prompt}"
+    );
+    // AGENTS.md 重新回到 `<project_context>`（有 read 时压成路径）
+    assert!(
+        back_prompt.contains(&format!("- {cwd}/AGENTS.md")),
+        "{back_prompt}"
+    );
+    let back_tools: Vec<&str> = back_json["data"]["toolNames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(back_tools.contains(&"read"), "{back_tools:?}");
+    assert!(back_tools.contains(&"bash"), "{back_tools:?}");
+
+    match previous {
+        Some(value) => std::env::set_var("TOILER_AGENT_DIR", value),
+        None => std::env::remove_var("TOILER_AGENT_DIR"),
+    }
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+    std::fs::remove_dir_all(&project).ok();
+}
+
 /// `task_progress` 的任务列表要能从 transcript 恢复，并且必须出现在
 /// `get_state` 的两个扩展字段里 —— 前端任务框读的就是它们
 /// （`useAgentSession.ts` 的 `setExtensionStatuses` / `setExtensionWidgets`）。

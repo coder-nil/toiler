@@ -8,6 +8,16 @@ Toiler 的版本变更记录。界面的「关于」对话框读的是
 Next 应用来的），保留在原位置作为来源记录。`1.0.0` 是 Toiler 自己的第一个版本，
 基线为 pi-desktop `1.5.0-alpha.22`（契约与前端产物的来源版本）。
 
+## [1.0.2] - 2026-11-15
+
+### Changed
+
+- 应用、npm、Tauri 和 Cargo 版本号统一为 `1.0.2`。
+
+### Fixed
+
+- 修复普通对话模式在 Rust 后端完全不存在、只看不听的问题。输入框左侧 π 图标切换时前端发 `{"type":"set_chat_mode","on":…}`，但 `agent_runtime` 的命令分发里没有这个分支，于是每次切换都落到 `不支持的 agent 命令：set_chat_mode`，而前端只把它 `console.error` 掉了 —— 界面上图标变强调色、占位符变「随便聊聊…」、工具预设置灰，实际上提示词与工具集全是工作模式的，模型照样去 `read` 项目的 `AGENTS.md`。现在补齐了三处：`set_chat_mode` 命令（切模式同时停用所有工具并重算提示词）、`POST /api/agent/new` 读 body 里的 `chatMode`、`get_state` 回报 `chatMode`。普通对话模式的提示词语义为**整段为空**：`PromptInputs::compose` 返回空串，`rpi_agent` 的 `agent_loop` 对空串发 `None`，请求里连 system 消息都不会有（`<project_context>` 与末尾的语言指令一并不发）。它与「工具预设全关」不是一回事：后者只是工具为空，preamble、行为准则与 `<cwd>` 仍会发出去。
+
 ## [1.0.1] - 2026-11-14
 
 ### Added

@@ -29,6 +29,7 @@
 //! | `<skills>` 段 | `buildSystemPromptSections` 写入 | 交给 rpi harness 在组装时追加（见 `AgentHarness::compose_prompt`）；toiler 目前不把技能装进 `AgentHarnessResources`，所以这一节通常为空 |
 //! | `<project_context>` | 默认内联全文，由 pi-desktop 的 `digestProjectContext` 压成路径 | 直接生成「路径 + 读取指引」；没有 `read` 工具时退回全文（一条读不到的指引比多花 token 更糟） |
 //! | 语言 | pi-desktop 用 `before_agent_start` 扩展整句替换 + 追加语言指令 | 组装时按 `Locale` 直接选中文/英文文案，并把语言指令追加在末尾 |
+//! | 普通对话模式 | 整段换成一段闲聊提示词（`lib/chat-mode-prompt.ts`） | **完全不带系统提示词**：`compose` 返回空串，`rpi_agent` 的 `agent_loop` 把空串转成 `None`，请求里就不发 system 消息 |
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -65,6 +66,11 @@ pub struct PromptInputs {
     cwd: String,
     tool_names: Vec<String>,
     context_files: Vec<ContextFile>,
+    /// 普通对话模式（输入框左侧 π 图标）：不带任何系统提示词。
+    ///
+    /// 与「工具预设全关」不是一回事 —— 那个只是清空工具集，preamble、行为准则
+    /// 与 `<cwd>` 仍会发出去。这里连提示词本身都不要。
+    chat_mode: bool,
 }
 
 impl PromptInputs {
@@ -80,6 +86,7 @@ impl PromptInputs {
             cwd: cwd.to_string(),
             tool_names: tool_names.to_vec(),
             context_files,
+            chat_mode: false,
         }
     }
 
@@ -93,8 +100,25 @@ impl PromptInputs {
         self.tool_names = names;
     }
 
+    /// 切到 / 切回普通对话模式。
+    pub fn set_chat_mode(&mut self, on: bool) {
+        self.chat_mode = on;
+    }
+
+    pub fn chat_mode(&self) -> bool {
+        self.chat_mode
+    }
+
     /// 组装最终发给模型的文本（含末尾的语言指令）。
+    ///
+    /// 普通对话模式返回空串：`rpi_harness` 的 `compose_prompt` 会把空串原样交给
+    /// `rpi_agent`，而 `agent_loop` 对空 system_prompt 的处理是**整个 system 消息
+    /// 都不发**（`Context.system_prompt = None`）。所以这里的空串等于「不带系统
+    /// 提示词」，不是一个空的 system 消息。
     pub fn compose(&self, locale: Locale) -> String {
+        if self.chat_mode {
+            return String::new();
+        }
         let mut sections: Vec<(&str, String)> = Vec::new();
 
         if let Some(tools) = self.tools_section(locale) {
@@ -465,6 +489,7 @@ mod tests {
             cwd: "/tmp/demo".to_string(),
             tool_names,
             context_files,
+            chat_mode: false,
         }
     }
 
@@ -517,6 +542,36 @@ mod tests {
         let prompt = inputs(standard_tools(), Vec::new()).compose(Locale::ZhCn);
         assert!(!prompt.contains("<project_context>"));
         assert!(prompt.starts_with("你是运行在 toiler 编程代理框架中的专业编程助手"));
+    }
+
+    /// 普通对话模式：连语言指令都不发，整段为空串。
+    ///
+    /// 空串不只是「空内容」：`rpi_agent` 的 `agent_loop` 对它发 `None`，所以请求
+    /// 里根本不会有 system 消息 —— 这正是前端 π 图标那座开关的语义。
+    #[test]
+    fn chat_mode_drops_the_whole_system_prompt() {
+        let files = vec![ContextFile {
+            path: PathBuf::from("/tmp/demo/AGENTS.md"),
+            content: "# 约定\n不要用 cat".to_string(),
+        }];
+        let mut prompt_inputs = inputs(standard_tools(), files);
+        assert!(!prompt_inputs.chat_mode());
+
+        prompt_inputs.set_chat_mode(true);
+        assert!(prompt_inputs.chat_mode());
+        for locale in [Locale::En, Locale::ZhCn] {
+            assert_eq!(
+                prompt_inputs.compose(locale),
+                "",
+                "普通对话模式不能留下任何提示词（含语言指令）"
+            );
+        }
+
+        // 切回去：提示词恢复，AGENTS.md 重新出现在 `<project_context>` 里。
+        prompt_inputs.set_chat_mode(false);
+        let restored = prompt_inputs.compose(Locale::ZhCn);
+        assert!(restored.contains("<project_context>"));
+        assert!(restored.contains("- /tmp/demo/AGENTS.md"));
     }
 
     #[test]
