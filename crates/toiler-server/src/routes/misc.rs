@@ -139,6 +139,7 @@ pub async fn models(State(state): State<AppState>, _trusted: Trusted) -> Respons
         "models": Value::Object(models),
         "modelList": model_list,
         "defaultModel": default_model,
+        "defaultThinkingLevel": state.settings().default_thinking_level(),
         "thinkingLevels": Value::Object(thinking_levels),
         "thinkingLevelMaps": Value::Object(thinking_level_maps),
         "thinkingLevelPins": Value::Object(thinking_level_pins),

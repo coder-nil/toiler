@@ -182,6 +182,22 @@ impl SettingsFile {
         self.write(&root)
     }
 
+    /// 最近显式选择的推理级别；`auto` 表示恢复模型默认行为。
+    pub fn default_thinking_level(&self) -> Option<String> {
+        let raw = self.read();
+        let level = raw.get("defaultThinkingLevel")?.as_str()?;
+        (level == "auto" || THINKING_LEVELS.contains(&level)).then(|| level.to_string())
+    }
+
+    pub fn set_default_thinking_level(&self, level: &str) -> std::io::Result<()> {
+        let mut root = self.read();
+        if !root.is_object() {
+            root = serde_json::json!({});
+        }
+        root["defaultThinkingLevel"] = Value::from(level);
+        self.write(&root)
+    }
+
     /// `(defaultProvider, defaultModel)`。
     pub fn default_model(&self) -> (Option<String>, Option<String>) {
         let raw = self.read();

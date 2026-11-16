@@ -313,6 +313,20 @@ pub async fn new_session(
         }
     }
 
+    // 显式推理级别必须在首轮 prompt 和状态快照之前真正应用到 lane。
+    if let Some(level) = payload.get("thinkingLevel") {
+        if let Err(error) = agent
+            .send(&json!({"type": "set_thinking_level", "level": level}))
+            .await
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error.to_string()})),
+            )
+                .into_response();
+        }
+    }
+
     // 普通对话模式：前端带 `chatMode: true` 建会话时，第一轮就不该带系统提示词。
     // 与 pi 的 `/api/agent/new` 一致。顺序要紧：先 `set_chat_mode` 再 `set_tools`，
     // 否则 `set_tools` 会把工具重新激活，普通对话模式就不再是空的。

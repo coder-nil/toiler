@@ -2814,7 +2814,7 @@ fn app_with_two_models(sessions_root: &Path, cwd: &Path, agent_dir: &Path) -> ax
                     "api": "openai-completions",
                     "baseUrl": "https://second.example.test/v1",
                     "apiKey": "test-key",
-                    "models": [{ "id": "model-b" }]
+                    "models": [{ "id": "model-b", "reasoning": true }]
                 }
             }
         }),
@@ -2831,6 +2831,121 @@ fn app_with_two_models(sessions_root: &Path, cwd: &Path, agent_dir: &Path) -> ax
             toiler_server::trust::TrustStore::at(agent_dir.join("trust.json")),
         );
     routes::router(state)
+}
+
+/// 输入框推理级别选择与 `/api/agent/new`：最近选择在重启后恢复，
+/// 同时保证会话状态、v3 条目和后续默认值一致，不访问真实配置。
+#[tokio::test]
+async fn thinking_level_remembers_selection_and_restores_session_history() {
+    let root = fixture_root("recent-thinking");
+    let agent_dir = fixture_root("recent-thinking-agent");
+    let project = fixture_root("recent-thinking-project");
+    let router = app_with_two_models(&root, &project, &agent_dir);
+    let body = json!({"cwd": project, "type": "ensure_session", "provider":"second", "modelId":"model-b", "thinkingLevel":"high"}).to_string();
+    let created = call(router.clone(), "POST", "/api/agent/new", Some(&body), &[]).await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let created = created.json();
+    assert_eq!(created["thinkingLevel"], "high");
+    let sid = created["sessionId"].as_str().unwrap();
+    let detail = get(router.clone(), &format!("/api/sessions/{sid}"))
+        .await
+        .json();
+    assert_eq!(detail["context"]["thinkingLevel"], "high", "{detail}");
+    let models = get(router.clone(), "/api/models").await.json();
+    assert_eq!(models["defaultThinkingLevel"], "high");
+
+    let url = format!("/api/agent/{sid}");
+    let switched = call(
+        router.clone(),
+        "POST",
+        &url,
+        Some(r#"{"type":"set_thinking_level","level":"low"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(switched.status, StatusCode::OK, "{}", switched.text());
+    assert_eq!(switched.json()["data"]["thinkingLevel"], "low");
+    let invalid = call(
+        router.clone(),
+        "POST",
+        &url,
+        Some(r#"{"type":"set_thinking_level","level":"invalid"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(invalid.status, StatusCode::INTERNAL_SERVER_ERROR);
+    let models = get(router, "/api/models").await.json();
+    assert_eq!(models["defaultThinkingLevel"], "low");
+
+    // 服务重启后缺省新会话采用最近级别，历史会话仍保留自己的级别。
+    let router = app_with_two_models(&root, &project, &agent_dir);
+    let body = json!({"cwd":project, "type":"ensure_session"}).to_string();
+    let next = call(router.clone(), "POST", "/api/agent/new", Some(&body), &[]).await;
+    assert_eq!(next.status, StatusCode::OK, "{}", next.text());
+    assert_eq!(next.json()["thinkingLevel"], "low");
+    let off = call(
+        router.clone(),
+        "POST",
+        &url,
+        Some(r#"{"type":"set_thinking_level","level":"off"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.text());
+    let router = app_with_two_models(&root, &project, &agent_dir);
+    let reopened = call(
+        router.clone(),
+        "POST",
+        &url,
+        Some(r#"{"type":"get_state"}"#),
+        &[],
+    )
+    .await
+    .json();
+    assert_eq!(reopened["data"]["thinkingLevel"], "off");
+    let auto = call(
+        router.clone(),
+        "POST",
+        &url,
+        Some(r#"{"type":"set_thinking_level","level":"auto"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(auto.status, StatusCode::OK, "{}", auto.text());
+    assert_eq!(
+        get(router, "/api/models").await.json()["defaultThinkingLevel"],
+        "auto"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+    std::fs::remove_dir_all(&project).ok();
+}
+
+/// 新会话恢复偏好时，不支持推理的模型只对当前会话回退，不清掉偏好。
+#[tokio::test]
+async fn thinking_level_falls_back_for_unsupported_models_without_losing_preference() {
+    let root = fixture_root("thinking-fallback");
+    let agent_dir = fixture_root("thinking-fallback-agent");
+    let project = fixture_root("thinking-fallback-project");
+    let router = app_with_two_models(&root, &project, &agent_dir);
+    let body = json!({"cwd":project,"type":"ensure_session","provider":"first","modelId":"model-a","thinkingLevel":"high"}).to_string();
+    let created = call(router.clone(), "POST", "/api/agent/new", Some(&body), &[]).await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    assert_eq!(created.json()["thinkingLevel"], "off");
+    assert_eq!(
+        get(router.clone(), "/api/models").await.json()["defaultThinkingLevel"],
+        "high"
+    );
+    let body =
+        json!({"cwd":project,"type":"ensure_session","provider":"second","modelId":"model-b"})
+            .to_string();
+    let next = call(router, "POST", "/api/agent/new", Some(&body), &[]).await;
+    assert_eq!(next.status, StatusCode::OK, "{}", next.text());
+    assert_eq!(next.json()["thinkingLevel"], "high");
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+    std::fs::remove_dir_all(&project).ok();
 }
 
 /// `ModelPicker` 在**已有会话**里切模型 → `POST /api/agent/{id} {"type":"set_model"}`。

@@ -120,6 +120,15 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 使用并在重启后保留；打开历史会话不更新偏好。尚未创建会话的草稿选择由浏览器记住，
 只在模型仍处于可见列表时恢复，并作为显式模型传给建会话请求。
 
+`set_thinking_level`（`{"type":"set_thinking_level","level":"high"}`）会实际更新 lane，
+向 v3 文件追加 `thinking_level_change`，返回 `{thinkingLevel}`（当前模型实际生效的级别）。
+`level` 支持 `auto/off/minimal/low/medium/high/xhigh/max`，其它值报错且不更新偏好。
+同时将用户选择保存为 `settings.json.defaultThinkingLevel`，新会话与重启后沿用；
+`/api/agent/new` 的 `thinkingLevel` 在第一轮 prompt 前应用。历史会话优先恢复自己的
+`thinking_level_change`，不覆盖全局偏好。`auto` 和模型不支持的级别在运行时回落到
+`off`；不支持的级别仍保留原始偏好，切回支持的模型后可恢复。草稿里的选择由浏览器
+暂存，并与建会话请求一起发送（包含显式 `auto` 和 `off`）。
+
 `set_ui_locale`（`{"type":"set_ui_locale","locale":"zh-CN"|"en"}`）返回
 `{systemPrompt}`。前端打开会话、切换界面语言都会发它，返回值直接刷新「系统提示词」
 面板；它同时把提示词换成对应语言（preamble / 工具说明 / 行为准则 / 语言指令）。
@@ -312,6 +321,7 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
   "models": { "<provider>:<id>": "显示名" },        // 字典，不是数组
   "modelList": [{ "provider": "p", "id": "m", "name": "M" }],
   "defaultModel": { "provider": "p", "modelId": "m" } | null,
+  "defaultThinkingLevel": "high" | null,          // Toiler 扩展：最近显式选择，亦可为 auto
   "thinkingLevels": { "<provider>:<id>": ["off", "low", "high"] },
   "thinkingLevelMaps": { "<provider>:<id>": { "max": "max", "minimal": null } },
   "thinkingLevelPins": { "<provider>/<id>": "level" },
@@ -342,6 +352,8 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 
 按 `settings.json` 的 `enabledModels` 白名单过滤（§`settings::visible_models`）。
 `enabledModels` 里写成 `provider/id:level` 的条目会额外进 `thinkingLevelPins`。
+最近显式选择的推理级别优先于该固定级别；未选择时仍按固定级别、`auto` 依次回退。
+`defaultThinkingLevel` 是为跨启动恢复偏好新增的可选字段，旧客户端可直接忽略。
 
 ### `defaultModel` 必须在 `modelList` 里
 

@@ -53,6 +53,7 @@ pub struct LiveAgent {
     running: Arc<AtomicBool>,
     /// 当前模型。`set_model` 会在运行中替换它，所以不是不可变字段。
     model: Mutex<rpi_ai::Model>,
+    thinking_level: Mutex<rpi_ai::ThinkingLevel>,
     /// 切模型时按 `provider/modelId` 查 `rpi_ai::Model`。
     ///
     /// 活会话比一次请求活得久，不能临时从 `AppState` 借引用。
@@ -147,9 +148,25 @@ impl LiveAgent {
         let locale = Locale::En;
         let system_prompt = prompt_inputs.compose(locale);
 
+        let history = std::fs::read_to_string(path).unwrap_or_default();
+        let entries: Vec<Value> = history
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        let branch = crate::session_view::branch_entries(&entries, None);
+        let historical_level = branch.iter().rev().find_map(|entry| {
+            (entry.get("type").and_then(Value::as_str) == Some("thinking_level_change"))
+                .then(|| entry.get("thinkingLevel").and_then(Value::as_str))
+                .flatten()
+        });
+        let saved_level = settings.default_thinking_level();
+        let thinking_level = effective_thinking_level(
+            &model,
+            historical_level.or(saved_level.as_deref()).unwrap_or("off"),
+        );
         let options = AgentHarnessOptions {
             model: model.clone(),
-            thinking_level: rpi_ai::types::ThinkingLevel::Off,
+            thinking_level,
             active_tool_names: tool_names,
             tools: tools.into_iter().map(|(_, tool)| tool).collect(),
             system_prompt: Some(system_prompt.clone()),
@@ -184,6 +201,7 @@ impl LiveAgent {
             events,
             running: Arc::new(AtomicBool::new(false)),
             model: Mutex::new(model),
+            thinking_level: Mutex::new(thinking_level),
             catalog: catalog.clone(),
             changes: Mutex::new(None),
             settings: settings.clone(),
@@ -305,6 +323,7 @@ impl LiveAgent {
                 Ok(json!({ "accepted": true }))
             }
             "set_model" => self.set_model(command).await,
+            "set_thinking_level" => self.set_thinking_level(command).await,
             // 前端每次打开会话、切换界面语言都会发它，并直接用返回值刷新
             // 「系统提示词」面板；不实现的话面板永远停在「尚未加载」。
             "set_ui_locale" => self.set_ui_locale(command).await,
@@ -407,12 +426,57 @@ impl LiveAgent {
             .context("写 model_change 失败")?;
 
         self.lane.set_model(model.clone()).await?;
+        let current_level = *self.thinking_level.lock().expect("thinking level");
+        let next_level = effective_thinking_level(
+            &model,
+            serde_json::to_value(current_level)?
+                .as_str()
+                .unwrap_or("off"),
+        );
+        self.lane.set_thinking_level(next_level).await?;
+        *self.thinking_level.lock().expect("thinking level") = next_level;
         *self.model.lock().expect("model") = model.clone();
         self.settings
             .set_default_model(provider, model_id)
             .context("保存最近选择的模型失败")?;
 
         Ok(json!({ "id": model.id, "provider": model.provider.as_str() }))
+    }
+
+    /// 推理偏好与会话条目分开保存，打开历史会话不会覆盖最近选择。
+    async fn set_thinking_level(&self, command: &Value) -> Result<Value> {
+        let level = command
+            .get("level")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("缺少 level"))?;
+        if level != "auto" {
+            serde_json::from_value::<rpi_ai::ThinkingLevel>(json!(level))
+                .context("无效的推理级别")?;
+        }
+        let model = self.model.lock().expect("model").clone();
+        let effective = effective_thinking_level(&model, level);
+        self.lane.set_thinking_level(effective).await?;
+        let session = self.harness.session();
+        session
+            .append_entry(
+                ProvisionedEntry {
+                    id: session.id_generator().next(),
+                    kind: ProvisionedKind::ThinkingLevel {
+                        thinking_level: serde_json::to_value(effective)?
+                            .as_str()
+                            .unwrap_or("off")
+                            .to_string(),
+                    },
+                },
+                "main",
+            )
+            .await
+            .context("写 thinking_level_change 失败")?;
+        *self.thinking_level.lock().expect("thinking level") = effective;
+        self.settings
+            .set_default_thinking_level(level)
+            .context("保存最近选择的推理级别失败")?;
+        Ok(json!({ "thinkingLevel": effective }))
     }
 
     /// `{"type":"navigate_tree","targetId":…,"hideTarget":bool}` → `{cancelled, leafId}`。
@@ -529,7 +593,7 @@ impl LiveAgent {
                 "id": model.id,
                 "name": model.name,
             },
-            "thinkingLevel": "off",
+            "thinkingLevel": *self.thinking_level.lock().expect("thinking level"),
             // pi 的面板读的就是这一项；缺了它会显示「系统提示词尚未加载」。
             "systemPrompt": self.current_system_prompt(),
             // 输入框 π 图标的实际状态：前端重开面板时靠它校正，不能只信
@@ -726,6 +790,15 @@ fn ordered_active_tools(
             requested.contains(name) || crate::tools::ALWAYS_ON_TOOLS.contains(&name.as_str())
         })
         .collect()
+}
+
+/// 不支持的偏好只对当前模型回退，不覆盖用户原来的选择。
+fn effective_thinking_level(model: &rpi_ai::Model, level: &str) -> rpi_ai::ThinkingLevel {
+    if crate::catalog::supported_thinking_levels(model).contains(&level) {
+        serde_json::from_value(json!(level)).unwrap_or(rpi_ai::ThinkingLevel::Off)
+    } else {
+        rpi_ai::ThinkingLevel::Off
+    }
 }
 
 /// 从 v3 文件里恢复任务列表：沿分支回溯，取最后一条 `task_progress` 的
