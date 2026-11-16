@@ -40,7 +40,9 @@ crates/
 docs/contracts/        /api 契约（逆向产物，事实来源）
 tools/
 ├── pi-contract/       从 pi-desktop 产物抽契约源码（extract.py）
-└── frontend/          把外部前端产物嵌进 release 二进制的脚本（可选路径）
+├── frontend/          把外部前端产物嵌进 release 二进制的脚本（可选路径）
+├── bump-version.py    升级 / 校验版本号（版本号散在 8 个文件里，勿手工改）
+└── release/           发布辅助（Windows Defender 扫描等）
 ```
 
 `toiler-server/src/` 里值得先认识的模块：
@@ -130,6 +132,12 @@ cargo test -p toiler-server --test regression  # 只跑前端契约回归（最�
 
 # 带真实前端构建并启动（前端有改动才重建，否则秒过）
 tools/run-desktop.sh
+
+# 版本号：升级 / 校验（版本号散落 8 个文件，别手工改）
+tools/bump-version.py --check                 # 只校验各处是否一致（CI 也可用）
+tools/bump-version.py --dry-run               # 看下一个 patch 会改什么
+tools/bump-version.py                         # 1.0.4 → 1.0.5，含 CHANGELOG 骨架
+tools/bump-version.py --minor                 # 1.0.4 → 1.1.0
 
 # 跑起来
 ./target/release/toiler-desktop                        # 桌面形态（127.0.0.1:随机端口）

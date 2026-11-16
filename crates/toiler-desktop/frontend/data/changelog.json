@@ -4,6 +4,13 @@
     "date": "2026-11-16",
     "sections": [
       {
+        "title": "Changed",
+        "kind": "changed",
+        "items": [
+          "应用、npm、Tauri 和 Cargo 版本号统一为 `1.0.4`。"
+        ]
+      },
+      {
         "title": "Fixed",
         "kind": "fixed",
         "items": [

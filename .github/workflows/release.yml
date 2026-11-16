@@ -9,7 +9,8 @@
 # 发布流程：
 #   git tag v1.0.0 && git push origin v1.0.0
 # tag 必须与 `crates/toiler-desktop/tauri.conf.json` 的 version 一致（有校验步骤）；
-# 换版本时改 tauri.conf.json（以及各 crate 的 version）后提交，再打 tag。
+# 换版本时跑 `tools/bump-version.py`（它会把 tauri.conf.json、各 crate 的
+# version、前端 package.json 与两份变更记录一次性对齐），提交后再打 tag。
 name: Release
 
 on:

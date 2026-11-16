@@ -10,6 +10,10 @@ Next 应用来的），保留在原位置作为来源记录。`1.0.0` 是 Toiler
 
 ## [1.0.4] - 2026-11-16
 
+### Changed
+
+- 应用、npm、Tauri 和 Cargo 版本号统一为 `1.0.4`。
+
 ### Fixed
 
 - 修复新会话输入框显示的模型与实际对话使用的模型不一致（选择器写着 `GPT 5.6 Sol`，回复却来自 `DeepSeek`）。根因是「界面显示的默认模型」与「建会话用的默认模型」走了两套解析：`GET /api/models` 的 `defaultModel` 取 `catalog.default_entry()`（`models.json` 里第一个可用项，本机是 `OpenAI/gpt-5.4`），而 `POST /api/agent/new` 用的是 `AppState::default_model_ref()`（`settings.json` 的 `defaultProvider`/`defaultModel` 优先，本机是 `apisets/deepseek-v4.1-flash`）。`gpt-5.4` 不在 `enabledModels` 白名单里，所以它也不在 `/api/models` 的 `modelList` 里，前端的 `const displayModel = match ?? nextModelList[0]` 静默退回列表第一项 —— 界面显示 `GPT 5.6 Sol`，实际请求发给 `DeepSeek`，且切换前后都不给任何提示。现在两边共用同一套解析：`settings.json` 的默认模型 > catalog 默认项 > 可见范围里第一个能解析的模型，**每一步都校验 `enabledModels` 可见范围**，保证 `defaultModel` 必定是 `modelList` 里的一项。
