@@ -235,17 +235,23 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
     // 红绿灯浮在网页内容上，所以页内那条顶栏的左边要让出约 86px，
     // 否则侧栏标题会压在红绿灯底下。非 macOS 平台菜单里没有这个值（false）。
     let overlay_titlebar = cfg!(target_os = "macos");
+    let custom_titlebar = cfg!(target_os = "windows");
     let mut script = format!(
         "window.__PI_WEB_API_ORIGIN__ = {origin};\
          window.__PI_WEB_DESKTOP__ = true;\
          window.__TOILER_DESKTOP__ = true;\
          window.__TOILER_OVERLAY_TITLEBAR__ = {overlay_titlebar};\
+         window.__TOILER_CUSTOM_TITLEBAR__ = {custom_titlebar};\
          window.addEventListener('pi-app-ready', function () {{\
            if (window.__TAURI_INTERNALS__) {{\
              window.__TAURI_INTERNALS__.invoke('hide_startup_overlay').catch(function () {{}});\
            }}\
          }}, {{ once: true }});"
     );
+    if custom_titlebar {
+        // 不依赖 React 布局：导航到独立导出页后仍要保留关闭/还原入口。
+        script.push_str(include_str!("../frontend/public/window-controls.js"));
+    }
     if let Some(guard) = context_menu_guard_script() {
         script.push_str(guard);
     }
@@ -265,6 +271,12 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
             .hidden_title(true);
+    }
+
+    // Windows 使用页内顶栏与窗口控制按钮，避免再叠一层系统标题栏。
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder.decorations(false);
     }
 
     builder
