@@ -164,8 +164,12 @@ impl AgentTool for AskUserTool {
         let total = questions.len();
         let mut answers = serde_json::Map::new();
         let mut status = "answered";
+        // 草稿保存 UI 的原始标签，避免选项 value 与标签不同导致回退后被当成自定义答案。
+        let mut drafts = vec![Value::Null; total];
+        let mut index = 0;
 
-        for (index, question) in questions.iter().enumerate() {
+        while index < total {
+            let question = &questions[index];
             if signal.is_cancelled() {
                 status = "aborted";
                 break;
@@ -183,8 +187,29 @@ impl AgentTool for AskUserTool {
             };
 
             let id = new_request_id();
-            let frame = request_frame(question, index, total, &id);
+            let mut frame = request_frame(question, index, total, &id);
+            frame["canGoBack"] = json!(index > 0);
+            if !drafts[index].is_null() {
+                frame["initialAnswer"] = drafts[index].clone();
+            }
             let response = self.ui.request(&id, frame, timeout, signal.clone()).await;
+
+            if response["action"] == "back" {
+                if index > 0 {
+                    if let Some(value) = response.get("value").filter(|value| value.is_string()) {
+                        if value.as_str().unwrap().chars().count() <= MAX_TEXT_LENGTH {
+                            drafts[index] = value.clone();
+                        }
+                    }
+                    index -= 1;
+                }
+                continue;
+            }
+            drafts[index] = response
+                .get("value")
+                .or_else(|| response.get("confirmed"))
+                .cloned()
+                .unwrap_or(Value::Null);
 
             match question.kind {
                 QuestionKind::SingleSelect => {
@@ -239,6 +264,7 @@ impl AgentTool for AskUserTool {
                     );
                 }
             }
+            index += 1;
         }
 
         let result = json!({ "status": status, "answers": answers });
@@ -654,6 +680,204 @@ mod tests {
             "我自己写的答案"
         );
         assert_eq!(result.details["answers"]["scope"]["custom"], true);
+    }
+
+    // 对应桌面 ExtensionDialog / 手机 MobilePromptCard 的上一题：往返后仍恢复草稿，
+    // 选择题标签不能变成自定义答案，确认题的 false 不能丢失。
+    #[tokio::test]
+    async fn back_restores_answers_and_drafts_and_replaces_old_answers() {
+        for (kind, first, revised) in [
+            (
+                "single_select",
+                json!({"value": "选项 A"}),
+                json!({"value": "选项 B"}),
+            ),
+            (
+                "single_select",
+                json!({"value": "自定义"}),
+                json!({"value": "新自定义"}),
+            ),
+            (
+                "confirm",
+                json!({"confirmed": false}),
+                json!({"confirmed": true}),
+            ),
+            (
+                "text",
+                json!({"value": "旧文本"}),
+                json!({"value": "新文本"}),
+            ),
+            (
+                "editor",
+                json!({"value": "旧正文"}),
+                json!({"value": "新正文"}),
+            ),
+        ] {
+            let (events, mut rx) = tokio::sync::broadcast::channel(32);
+            let ui = UiBridge::new(events);
+            let tool = create_ask_user_tool(ui.clone());
+            let options = if kind == "single_select" {
+                json!([{"value": "a", "label": "选项 A"}, {"value": "b", "label": "选项 B"}])
+            } else {
+                json!([])
+            };
+            let params = json!({"timeoutMs": 60_000, "questions": [
+                {"id": "first", "prompt": "第一题", "kind": kind, "options": options},
+                {"id": "second", "prompt": "第二题", "kind": "text", "options": []},
+                {"id": "third", "prompt": "第三题", "kind": "editor", "options": []}
+            ]});
+            let handle = tokio::spawn(async move {
+                tool.execute(
+                    "back-test",
+                    params,
+                    CancellationToken::new(),
+                    Arc::new(|_| {}),
+                )
+                .await
+            });
+            let mut original_id = Value::Null;
+            let mut expires_at = 0;
+            for (step, response) in [
+                first.clone(),
+                json!({"action": "back", "value": "第二题草稿"}),
+                revised.clone(),
+                json!({"value": "第二题答案"}),
+                json!({"action": "back", "value": "第三题草稿"}),
+                json!({"action": "back", "value": "第二题新草稿"}),
+                revised.clone(),
+                json!({"value": "最终第二题"}),
+                json!({"value": "最终第三题"}),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let frame = tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        let frame = rx.recv().await.unwrap();
+                        if frame["type"] == "extension_ui_request" {
+                            break frame;
+                        }
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(ui.pending_requests(), vec![frame.clone()]);
+                if step == 0 {
+                    assert_eq!(frame["canGoBack"], false);
+                    original_id = frame["id"].clone();
+                    expires_at = frame["expiresAt"].as_i64().unwrap();
+                } else {
+                    assert_ne!(frame["id"], original_id);
+                    assert!((frame["expiresAt"].as_i64().unwrap() - expires_at).abs() <= 2);
+                }
+                match step {
+                    1 | 3 | 4 | 5 | 7 | 8 => assert_eq!(frame["canGoBack"], true),
+                    _ => assert_eq!(frame["canGoBack"], false),
+                }
+                match step {
+                    2 => assert_eq!(
+                        frame["initialAnswer"],
+                        first
+                            .get("value")
+                            .or_else(|| first.get("confirmed"))
+                            .unwrap()
+                            .clone()
+                    ),
+                    3 => assert_eq!(frame["initialAnswer"], "第二题草稿"),
+                    5 => assert_eq!(frame["initialAnswer"], "第二题答案"),
+                    6 => assert_eq!(
+                        frame["initialAnswer"],
+                        revised
+                            .get("value")
+                            .or_else(|| revised.get("confirmed"))
+                            .unwrap()
+                            .clone()
+                    ),
+                    7 => assert_eq!(frame["initialAnswer"], "第二题新草稿"),
+                    8 => assert_eq!(frame["initialAnswer"], "第三题草稿"),
+                    _ => {}
+                }
+                let mut response = response;
+                response["id"] = frame["id"].clone();
+                assert!(ui.respond(&response));
+            }
+            let result = handle.await.unwrap().unwrap();
+            assert_eq!(result.details["status"], "answered");
+            let expected = if kind == "single_select" && revised["value"] == "选项 B" {
+                json!("b")
+            } else {
+                revised
+                    .get("value")
+                    .or_else(|| revised.get("confirmed"))
+                    .unwrap()
+                    .clone()
+            };
+            assert_eq!(result.details["answers"]["first"]["value"], expected);
+            assert_eq!(result.details["answers"]["second"]["value"], "最终第二题");
+            assert_eq!(result.details["answers"]["third"]["value"], "最终第三题");
+            assert!(!ui.has_pending());
+        }
+    }
+
+    // 返回操作不应绕过首题边界，也不能让取消/中止/总预算失效。
+    #[tokio::test]
+    async fn back_respects_boundaries_and_termination() {
+        for status in ["cancelled", "aborted", "expired"] {
+            let (events, mut rx) = tokio::sync::broadcast::channel(32);
+            let ui = UiBridge::new(events);
+            let tool = create_ask_user_tool(ui.clone());
+            let signal = CancellationToken::new();
+            let cancel = signal.clone();
+            let params = json!({"timeoutMs": 1000, "questions": [
+                {"id": "first", "prompt": "第一题", "kind": "text", "options": []},
+                {"id": "second", "prompt": "第二题", "kind": "editor", "options": []}
+            ]});
+            let handle = tokio::spawn(async move {
+                tool.execute("stop-test", params, signal, Arc::new(|_| {}))
+                    .await
+            });
+            for (step, response) in [
+                json!({"action": "back"}),
+                json!({"value": "旧答案"}),
+                json!({"action": "back", "value": "草稿"}),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let frame = loop {
+                    let frame = rx.recv().await.unwrap();
+                    if frame["type"] == "extension_ui_request" {
+                        break frame;
+                    }
+                };
+                assert_eq!(frame["canGoBack"], step == 2);
+                let mut response = response;
+                response["id"] = frame["id"].clone();
+                assert!(ui.respond(&response));
+            }
+            let frame = loop {
+                let frame = rx.recv().await.unwrap();
+                if frame["type"] == "extension_ui_request" {
+                    break frame;
+                }
+            };
+            assert_eq!(frame["initialAnswer"], "旧答案");
+            match status {
+                "cancelled" => {
+                    assert!(ui.respond(&json!({"id": frame["id"], "cancelled": true})));
+                }
+                "aborted" => cancel.cancel(),
+                _ => {}
+            }
+            let result = tokio::time::timeout(Duration::from_secs(3), handle)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.details["status"], status);
+            assert!(!ui.has_pending());
+            assert!(!ui.respond(&json!({"id": frame["id"], "value": "迟到答案"})));
+        }
     }
 
     #[test]

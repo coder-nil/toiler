@@ -25,6 +25,8 @@ export interface MobileUiRequest {
   message?: string;
   options?: string[];
   placeholder?: string;
+  initialAnswer?: string | boolean;
+  canGoBack?: boolean;
   prefill?: string;
   sensitive?: boolean;
   lines?: string[];
@@ -32,7 +34,7 @@ export interface MobileUiRequest {
   expiresAt?: number;
 }
 
-type PromptResponse = { value: string } | { confirmed: boolean } | { cancelled: true };
+type PromptResponse = { value: string } | { confirmed: boolean } | { cancelled: true } | { action: "back"; value?: string };
 
 interface MobilePromptCardProps {
   request: MobileUiRequest;
@@ -43,16 +45,20 @@ interface MobilePromptCardProps {
 
 export function MobilePromptCard({ request, onRespond, busy = false }: MobilePromptCardProps) {
   const { t } = useI18n();
-  const [value, setValue] = useState(request.method === "editor" ? request.prefill ?? "" : "");
+  const initialValue = typeof request.initialAnswer === "string"
+    ? request.initialAnswer
+    : request.method === "editor" ? request.prefill ?? "" : "";
+  const initialCustomAnswer = request.method === "select" && !!initialValue && !(request.options ?? []).includes(initialValue);
+  const [value, setValue] = useState(initialValue);
   // 选择题永远多带一项「自定义答案」：模型给的选项再多也可能不是用户想说的那个词，
   // 没有这条出口时手机上只能取消，整轮就卡在取消上。
-  const [customAnswer, setCustomAnswer] = useState(false);
+  const [customAnswer, setCustomAnswer] = useState(initialCustomAnswer);
 
   // 换到另一条请求（同一会话连续问两个问题）时重置输入。
   useEffect(() => {
-    setValue(request.method === "editor" ? request.prefill ?? "" : "");
-    setCustomAnswer(false);
-  }, [request.id, request.method, request.prefill]);
+    setValue(initialValue);
+    setCustomAnswer(initialCustomAnswer);
+  }, [request.id, initialValue, initialCustomAnswer]);
 
   const options = request.options ?? [];
   const customValue = value.trim();
@@ -108,13 +114,14 @@ export function MobilePromptCard({ request, onRespond, busy = false }: MobilePro
           {options.map((option) => (
             <button
               key={option}
+              aria-pressed={request.initialAnswer === option}
               type="button"
               className="mobile-tap"
               disabled={busy}
               onClick={() => onRespond(request, { value: option })}
               style={{
                 minHeight: 40, padding: "8px 11px", borderRadius: MOBILE_RADIUS.chip,
-                border: "1px solid var(--border)", background: "var(--bg-panel)",
+                border: request.initialAnswer === option ? "1px solid var(--accent)" : "1px solid var(--border)", background: "var(--bg-panel)",
                 color: "var(--text)", fontSize: 13, textAlign: "left", cursor: busy ? "default" : "pointer",
                 overflowWrap: "anywhere",
               }}
@@ -192,6 +199,17 @@ export function MobilePromptCard({ request, onRespond, busy = false }: MobilePro
       )}
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
+        {request.canGoBack && (
+          <button
+            type="button"
+            className="mobile-tap"
+            disabled={busy}
+            onClick={() => onRespond(request, { action: "back", ...(request.method !== "confirm" ? { value } : {}) })}
+            style={{ marginRight: "auto", minHeight: 36, padding: "0 12px", borderRadius: MOBILE_RADIUS.round, border: "1px solid var(--border)", background: "none", color: "var(--text)", cursor: busy ? "default" : "pointer" }}
+          >
+            上一题
+          </button>
+        )}
         <button
           type="button"
           className="mobile-tap"
@@ -205,8 +223,21 @@ export function MobilePromptCard({ request, onRespond, busy = false }: MobilePro
         >
           {t("chat.cancel")}
         </button>
+        {request.method === "confirm" && request.canGoBack !== undefined && (
+          <button
+            type="button"
+            className="mobile-tap"
+            disabled={busy}
+            aria-pressed={request.initialAnswer === false}
+            onClick={() => onRespond(request, { confirmed: false })}
+            style={{ minHeight: 36, padding: "0 12px", borderRadius: MOBILE_RADIUS.round, border: request.initialAnswer === false ? "1px solid var(--accent)" : "1px solid var(--border)", background: "none", color: "var(--text)", cursor: busy ? "default" : "pointer" }}
+          >
+            否
+          </button>
+        )}
         {request.method !== "select" && request.method !== "custom" && (
           <button
+            aria-pressed={request.method === "confirm" ? request.initialAnswer === true : undefined}
             type="button"
             className="mobile-tap"
             disabled={busy}

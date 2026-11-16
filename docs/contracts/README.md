@@ -166,7 +166,9 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 
 `extension_ui_response`（`{"type":"extension_ui_response","id":…,"value"|"confirmed"|"cancelled":true}`）
 回答 `ask_user` 的提问，返回 `null`；请求已作废（超时/中止）时同样返回 `null`
-（前端只是晚了一步，不算错误）。`extension_ui_input`（custom UI 的逐键输入）
+（前端只是晚了一步，不算错误）。Toiler 为多题问答增加 `{id, action:"back", value?:"<当前输入草稿>"}`
+响应：回到上一题，不提交当前草稿，也不重置整个问卷的超时预算；重新作答会覆盖旧答案。
+`extension_ui_input`（custom UI 的逐键输入）
 收下即忽略：toiler 不提供 custom 渲染。
 
 `navigate_tree`（`{"type":"navigate_tree","targetId":"<entryId>"}`）把 main lane 的叶子
@@ -211,6 +213,9 @@ v3 文件里没有 leaf 记录（pi 也没有）：只挪内存指针，重开�
    - `agent_end`：只留 `{type}`
 3. 扩展 UI 请求：`{"type":"extension_ui_request","id":…,"method":"select"|"confirm"|"input"|"editor",…}`，
    请求作废（回答/超时/中止）时补一帧 `{"type":"extension_ui_resolved","id":…}`；
+   `ask_user` 额外携带 `canGoBack:boolean`（首题为 false）与可选的
+   `initialAnswer:string|boolean`（上次作答或返回时暂存的输入），供桌面/手机恢复答案；
+   返回上一题也先作废旧请求，再用新 id 发送目标题，快照回放沿用同一完整请求帧。
    `method` 还有 `setStatus` / `setWidget`（`task_progress` 的展示，非阻塞）。
 3.5 排队变化：`{"type":"queue_update","steering":["<文本>"],"followUp":[]}`。
    入队（`prompt` 运行中 / `steer` / `follow_up`）、清空（`clear_queue` / `abort`）

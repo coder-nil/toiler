@@ -19,7 +19,7 @@ import { useI18n } from "@/hooks/useI18n";
 import { useAgentSession, type AgentPhase, type NoticeItem } from "@/hooks/useAgentSession";
 import { useDragDrop } from "@/hooks/useDragDrop";
 import { useIsMobile } from "@/hooks/useIsMobile";
-import type { SessionStatsInfo } from "@/lib/pi-types";
+import type { SessionStatsInfo } from "@/lib/session-stats";
 import {
   captureScrollDistance,
   getNextVisibleCount,
@@ -1079,21 +1079,24 @@ function ExtensionDialog({
   onRespond,
 }: {
   request: ExtensionDialogRequest;
-  onRespond: (request: ExtensionDialogRequest, response: { value: string } | { confirmed: boolean } | { cancelled: true }) => void;
+  onRespond: (request: ExtensionDialogRequest, response: { value: string } | { confirmed: boolean } | { cancelled: true } | { action: "back"; value?: string }) => void;
 }) {
   const { t } = useI18n();
-  const initialValue = request.method === "editor" ? request.prefill ?? "" : "";
+  const initialValue = typeof request.initialAnswer === "string"
+    ? request.initialAnswer
+    : request.method === "editor" ? request.prefill ?? "" : "";
+  const initialCustomAnswer = request.method === "select" && !!initialValue && !request.options.includes(initialValue);
   const [value, setValue] = useState(initialValue);
   // 选择题永远带一个「自定义答案」入口：模型的选项再全，也可能不是用户想要的那个说法，
   // 没有这条出口时用户只能取消整轮对话。开关按 id 重置，和输入内容一起清掉。
-  const [customAnswer, setCustomAnswer] = useState(false);
+  const [customAnswer, setCustomAnswer] = useState(initialCustomAnswer);
 
   // 按 id 重置，而不是按请求对象：状态对账每 15s 会带来一个新对象，
   // 按对象重置会把用户正在输入的内容抹掉。
   useEffect(() => {
     setValue(initialValue);
-    setCustomAnswer(false);
-  }, [request.id, initialValue]);
+    setCustomAnswer(initialCustomAnswer);
+  }, [request.id, initialValue, initialCustomAnswer]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1159,12 +1162,13 @@ function ExtensionDialog({
               {request.options.map((option) => (
                 <button
                   key={option}
+                  aria-pressed={request.initialAnswer === option}
                   onClick={() => onRespond(request, { value: option })}
                   style={{
                     width: "100%",
                     padding: "9px 10px",
                     borderRadius: 7,
-                    border: "1px solid var(--border)",
+                    border: request.initialAnswer === option ? "1px solid var(--accent)" : "1px solid var(--border)",
                     background: "var(--bg-panel)",
                     color: "var(--text)",
                     cursor: "pointer",
@@ -1270,6 +1274,15 @@ function ExtensionDialog({
         </div>
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)" }}>
+          {request.canGoBack && (
+            <button
+              type="button"
+              onClick={() => onRespond(request, { action: "back", ...(request.method !== "confirm" ? { value } : {}) })}
+              style={{ marginRight: "auto", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", cursor: "pointer" }}
+            >
+              上一题
+            </button>
+          )}
           <button
             onClick={() => onRespond(request, { cancelled: true })}
             style={{
@@ -1283,8 +1296,19 @@ function ExtensionDialog({
           >
              {t("chat.cancel")}
           </button>
+          {request.method === "confirm" && request.canGoBack !== undefined && (
+            <button
+              type="button"
+              aria-pressed={request.initialAnswer === false}
+              onClick={() => onRespond(request, { confirmed: false })}
+              style={{ padding: "6px 10px", borderRadius: 6, border: request.initialAnswer === false ? "1px solid var(--accent)" : "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", cursor: "pointer" }}
+            >
+              否
+            </button>
+          )}
           {request.method === "confirm" ? (
             <button
+              aria-pressed={request.initialAnswer === true}
               onClick={submitValue}
               style={{
                 padding: "6px 10px",

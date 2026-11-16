@@ -41,7 +41,7 @@ import {
   isThinkingExpandedByDefault,
   setThinkingExpandedByDefault,
 } from "@/lib/thinking-expansion-preference";
-import { APPLICATION_VERSION, PI_VERSION } from "@/lib/changelog";
+import { APPLICATION_VERSION } from "@/lib/changelog";
 import { MCP_CATALOG, type McpCatalogEntry } from "@/lib/mcp-catalog";
 import { KEYBOARD_SHORTCUT_GROUPS, KEYBOARD_SHORTCUTS } from "@/lib/keyboard-shortcuts";
 import { ModelsConfig } from "./ModelsConfig";
@@ -492,7 +492,7 @@ export function SettingsPanel({ cwd, hasProject, projectTrusted, sessionId, onCl
     <SettingsRow
       icon={Info}
       title={t("settings.about")}
-      description={t("settings.aboutDescription", { version: APPLICATION_VERSION, piVersion: PI_VERSION })}
+      description={t("settings.aboutDescription", { version: APPLICATION_VERSION })}
       monospaceDescription
     />
   );

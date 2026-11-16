@@ -11,7 +11,6 @@ export type { ChangelogRelease };
 export const CHANGELOG: ChangelogRelease[] = changelog as ChangelogRelease[];
 
 export const APPLICATION_VERSION = process.env.NEXT_PUBLIC_PACKAGE_VERSION ?? "0.0.0";
-export const PI_VERSION = process.env.NEXT_PUBLIC_PI_VERSION ?? "0.0.0";
 
 export function currentRelease(): ChangelogRelease | undefined {
   return CHANGELOG.find((release) => release.version === APPLICATION_VERSION) ?? CHANGELOG[0];

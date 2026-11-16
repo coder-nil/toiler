@@ -53,7 +53,7 @@ import {
 import type { BlockingExtensionUiRequest, SessionInfo, SessionTreeNode } from "@/lib/types";
 import type { AppUpdateResponse, ProjectTrustStatus } from "@/lib/api-types";
 import type { ChatInputHandle } from "./ChatInput";
-import type { SessionStatsInfo } from "@/lib/pi-types";
+import type { SessionStatsInfo } from "@/lib/session-stats";
 import { chatLinkModeHint, type FileViewerState } from "@/lib/file-viewer-state";
 import { skillExpansionToCommand } from "@/lib/slash-display";
 import { FileViewer } from "./FileViewer";

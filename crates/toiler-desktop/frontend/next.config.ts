@@ -17,27 +17,16 @@ import { fileURLToPath } from "url";
 // | `allowedDevOrigins` | 删掉 | 不做 Next dev server |
 //
 // 保留的部分是真正影响产物的：`images.unoptimized`（静态导出不能用优化器）与
-// 四个 `NEXT_PUBLIC_*` 版本变量（关于对话框读它们）。
+// 两个 `NEXT_PUBLIC_*` 版本变量（关于对话框读它们）。
 
 const configDir = dirname(fileURLToPath(import.meta.url));
 
-let piVersion = "unknown";
 let packageVersion = "0.0.0";
-try {
-  // pi-coding-agent 的版本会显示在「关于」里，是唯一需要读 node_modules 的地方。
-  const piPkgPath = join(
-    configDir,
-    "node_modules/@earendil-works/pi-coding-agent/package.json",
-  );
-  piVersion = (JSON.parse(readFileSync(piPkgPath, "utf8")) as { version: string }).version;
-} catch {
-  /* 没装依赖时给默认值，不让构建直接失败 */
-}
 try {
   const packagePath = join(configDir, "package.json");
   packageVersion = (JSON.parse(readFileSync(packagePath, "utf8")) as { version: string }).version;
 } catch {
-  /* 同上 */
+  /* 配置缺失时保留默认版本 */
 }
 
 const nextConfig: NextConfig = {
@@ -48,7 +37,6 @@ const nextConfig: NextConfig = {
   env: {
     NEXT_PUBLIC_APP_VERSION: packageVersion,
     NEXT_PUBLIC_PACKAGE_VERSION: packageVersion,
-    NEXT_PUBLIC_PI_VERSION: piVersion,
   },
 };
 

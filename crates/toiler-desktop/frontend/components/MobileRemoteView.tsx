@@ -496,7 +496,7 @@ export function MobileRemoteView() {
 
   // 回答扩展请求（`ask_user` 等）：同一个会话，同一个答案；桌面端会收到
   // `extension_ui_resolved` 把自己的弹窗收掉，这里则由下一次快照把卡片移除。
-  const answerPrompt = useCallback(async (request: MobileUiRequest, response: { value: string } | { confirmed: boolean } | { cancelled: true }) => {
+  const answerPrompt = useCallback(async (request: MobileUiRequest, response: { value: string } | { confirmed: boolean } | { cancelled: true } | { action: "back"; value?: string }) => {
     const sid = target?.session ?? null;
     if (!sid || answeringPrompt) return;
     setAnsweringPrompt(true);

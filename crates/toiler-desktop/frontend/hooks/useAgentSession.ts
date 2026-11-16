@@ -20,7 +20,7 @@ import { clearDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-stor
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
 import { getPreferredChatMode, setPreferredChatMode, type ChatMode } from "@/lib/chat-mode-preference";
 import { getPresetFromActiveNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
-import type { SessionStatsInfo } from "@/lib/pi-types";
+import type { SessionStatsInfo } from "@/lib/session-stats";
 import { userMessageKey } from "@/lib/prompt-recovery";
 import { AgentEventConnection, isAgentEventStreamAbort } from "@/lib/agent-event-connection";
 import { isSystemMessageEvent } from "@/lib/agent-event-wire";
@@ -896,7 +896,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const respondToExtensionUi = useCallback(async (
     request: ExtensionUiDialogRequest,
-    response: { value: string } | { confirmed: boolean } | { cancelled: true },
+    response: { value: string } | { confirmed: boolean } | { cancelled: true } | { action: "back"; value?: string },
   ) => {
     const sid = sessionIdRef.current;
     setExtensionDialog((current) => current?.id === request.id ? null : current);

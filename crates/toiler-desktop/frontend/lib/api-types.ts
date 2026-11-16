@@ -1,4 +1,11 @@
-import type { ResourceDiagnostic } from "@earendil-works/pi-coding-agent";
+/** 对应 Rust 技能接口返回的诊断信息。 */
+export interface ResourceDiagnostic {
+  type: "warning" | "error";
+  message: string;
+  source?: string;
+  path?: string;
+  code?: string;
+}
 
 export interface SkillSearchResult {
   package: string;

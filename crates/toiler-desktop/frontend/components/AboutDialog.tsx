@@ -8,7 +8,6 @@ import type { ChangelogRelease, ChangelogSectionKind } from "@/data/changelog-ty
 import {
   APPLICATION_VERSION,
   CHANGELOG,
-  PI_VERSION,
   changelogToMarkdown,
   currentRelease,
 } from "@/lib/changelog";
@@ -154,8 +153,7 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
   const handleCopy = useCallback(async () => {
     const text = [
       `Toiler v${APPLICATION_VERSION}`,
-      // 不再列 `pi v${PI_VERSION}`：toiler 的后端是 rpi 而不是 pi，
-      // 两个版本写在一起会让人以为界面版本来自 pi。
+      // 后端已经改用 rpi，不再展示旧 Node SDK 的版本。
       `platform ${typeof navigator === "undefined" ? "unknown" : navigator.platform}`,
       "",
       changelogToMarkdown(releases),
@@ -196,7 +194,6 @@ export function AboutDialog({ onClose }: { onClose: () => void }) {
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text-muted)" }}>v{APPLICATION_VERSION}</span>
           </div>
           <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: "2px 14px", color: "var(--text-dim)", fontSize: 11 }}>
-            <span>{t("about.piVersion")} <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>v{PI_VERSION}</span></span>
             <span>{t("about.platform")} <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>{typeof navigator === "undefined" ? "unknown" : navigator.platform}</span></span>
           </div>
         </div>

@@ -131,7 +131,13 @@ export interface SystemMessage {
 /** Any message a `message` session entry can store, including transcript system messages. */
 export type SessionMessage = AgentMessage | SystemMessage;
 
-export type ExtensionUiRequest =
+/** ask_user 的逐题导航；普通扩展不发送这些可选字段。 */
+type QuestionNavigation = {
+  canGoBack?: boolean;
+  initialAnswer?: string | boolean;
+};
+
+export type ExtensionUiRequest = QuestionNavigation & (
   | {
       type: "extension_ui_request";
       id: string;
@@ -209,7 +215,7 @@ export type ExtensionUiRequest =
       method: "custom";
       lines: string[];
       closed?: boolean;
-    };
+    });
 
 export type BlockingExtensionUiRequest = Extract<
   ExtensionUiRequest,
@@ -219,7 +225,8 @@ export type BlockingExtensionUiRequest = Extract<
 export type ExtensionUiResponse =
   | { type: "extension_ui_response"; id: string; value: string }
   | { type: "extension_ui_response"; id: string; confirmed: boolean }
-  | { type: "extension_ui_response"; id: string; cancelled: true };
+  | { type: "extension_ui_response"; id: string; cancelled: true }
+  | { type: "extension_ui_response"; id: string; action: "back"; value?: string };
 
 export interface ExtensionStatusItem {
   key: string;

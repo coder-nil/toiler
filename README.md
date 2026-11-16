@@ -71,6 +71,16 @@ cargo build --release -p toiler-desktop              # build.rs 自动捡 dist/
 已去掉 Node 后端部分）。产物由 `crates/toiler-server/build.rs` 自动发现，不需要
 手动复制或设环境变量。
 
+如果在 macOS 的 Node **22.13.0** 下构建报 `Cannot find module 'next/package.json'`，
+但 `node -p 'require.resolve("next/package.json")'` 能找到文件，先尝试更新 Node：
+本机同一份源码与依赖在 **22.23.5** 下已验证构建成功，无需修改依赖锁文件。
+也可以只为这次构建使用指定版本，不替换系统 Node：
+
+```bash
+cd crates/toiler-desktop/frontend
+npm exec --yes --package=node@22.23.5 -- node scripts/build.mjs
+```
+
 从 Finder 双击也行（`bundle` 见 `crates/toiler-desktop/tauri.conf.json`）。
 启动后只监听 `127.0.0.1:<随机端口>`，手机访问要另外在设置页开关。
 
@@ -431,10 +441,10 @@ cargo build -p toiler-desktop                       # 自动嵌入 dist/
 | `app/m/` | 手机页面（`force-dynamic`） | **不搬**，`output:export` 会因预渲染失败 |
 | `proxy.ts` / `serverExternalPackages` / `headers()` | pi 的 server 侧特性 | 删掉；安全头改由 `assets.rs` 发 |
 
-> `lib/` 里有少数文件 import 了 node 内置模块（`path` / `fs` / `node:module`）。
-> 它们本来是 pi 的后端工具，但 `lib/paths.ts` 的 `samePath` 同时被浏览器端的
-> `FileExplorer` 用。webpack 会把 `path` polyfill 成前端实现，已实测产物正常；
-> 改动这几个文件时注意不要引入只有 Node 能跑的 API。
+> 旧 Node 服务模块和 `@earendil-works/pi-*` 依赖已移除。`lib/` 只保留界面所需的
+> 浏览器逻辑与本地接口类型；`samePath` 不再依赖 Node 的 `path` 模块。
+> Node 仅用于构建与测试，不参与应用运行。代码边界及验证命令见
+> [前端说明](./crates/toiler-desktop/frontend/README.md)。
 
 ### 验收
 
