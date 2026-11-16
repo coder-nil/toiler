@@ -11,7 +11,7 @@ use crate::paths::AllowedRoots;
 use crate::projects::ProjectStore;
 use crate::security::TrustPolicy;
 use crate::sessions_store::SessionList;
-use crate::settings::SettingsFile;
+use crate::settings::{self, ModelRef, SettingsFile};
 use crate::trust::TrustStore;
 
 #[derive(Clone)]
@@ -375,18 +375,75 @@ impl AppState {
         &self.inner.default_cwd
     }
 
-    /// 默认模型：`settings.json` 的 `defaultProvider`/`defaultModel` 优先，
-    /// 其次 [`ModelCatalog::default_entry`]（两者都要能在目录里解析到）。
+    /// 目录里的全部模型（`enabledModels` 过滤前的全集）。
+    pub fn catalog_model_refs(&self) -> Vec<ModelRef> {
+        self.catalog()
+            .entries
+            .iter()
+            .map(|entry| ModelRef {
+                provider: entry.provider.clone(),
+                id: entry.id.clone(),
+            })
+            .collect()
+    }
+
+    /// `enabledModels` 白名单里的模型（= 模型选择器里看得见的那些）。
+    pub fn visible_model_refs(&self) -> Vec<ModelRef> {
+        let patterns = self.settings().enabled_models();
+        settings::visible_models(patterns.as_deref(), &self.catalog_model_refs())
+    }
+
+    /// 默认模型：**模型选择器里看得见**的那一个。
+    ///
+    /// 顺序与 pi 的 `selectInitialModelScope`（`lib/model-scope.ts`）一致：
+    ///
+    /// | 顺序 | 来源 |
+    /// |---|---|
+    /// | 1 | `settings.json` 的 `defaultProvider`/`defaultModel` |
+    /// | 2 | [`ModelCatalog::default_entry`]（启动时由 `TOILER_MODEL` / 上次用过的模型定下） |
+    /// | 3 | 可见范围里第一个能解析的模型 |
+    ///
+    /// # 为什么每一步都要校验 `enabledModels` 可见范围
+    ///
+    /// `/api/models` 的 `modelList` 只发可见模型，而前端的 `loadModels()` 拿
+    /// `defaultModel` 去 `modelList` 里 `find`，**找不到就退回 `modelList[0]`**
+    /// （`useAgentSession.ts`）：
+    ///
+    /// ```ts
+    /// const displayModel = match ?? nextModelList[0];
+    /// ```
+    ///
+    /// 所以「设置里选的默认模型」被 `enabledModels` 挡在可见范围外时，输入框会
+    /// 静默显示成列表里排第一的那个模型 —— 而真正建会话用的仍是设置里那个。
+    /// 用户看到选择器写着 A、实际对话走 B，且切换前后界面都不给任何提示。
+    ///
+    /// 历史故障正是这一条：`/api/models` 的 `defaultModel` 走的是
+    /// `catalog.default_entry()`（`models.json` 里第一个可用项 = `gpt-5.4`），
+    /// 它不在 `enabledModels` 里，于是界面显示 `modelList[0]`（`GPT 5.6 Sol`），
+    /// 实际会话是 `settings.json` 的 `apisets/deepseek-v4.1-flash`。
     pub fn default_model_ref(&self) -> Option<(String, String)> {
+        let catalog = self.catalog();
+        let visible = self.visible_model_refs();
+        let usable = |provider: &str, id: &str| {
+            visible.iter().any(|m| m.provider == provider && m.id == id)
+                && catalog.model_for(provider, id).is_some()
+        };
+
         let (provider, model) = self.settings().default_model();
         if let (Some(provider), Some(model)) = (provider, model) {
-            if self.catalog().model_for(&provider, &model).is_some() {
+            if usable(&provider, &model) {
                 return Some((provider, model));
             }
         }
-        self.catalog()
-            .default_entry()
-            .map(|entry| (entry.provider.clone(), entry.id.clone()))
+        if let Some(entry) = catalog.default_entry() {
+            if usable(&entry.provider, &entry.id) {
+                return Some((entry.provider.clone(), entry.id.clone()));
+            }
+        }
+        visible
+            .into_iter()
+            .find(|m| catalog.model_for(&m.provider, &m.id).is_some())
+            .map(|m| (m.provider, m.id))
     }
 
     /// 把「会话里出现的 cwd / projectRoot + 默认 cwd + 已存项目」灌进允许根。

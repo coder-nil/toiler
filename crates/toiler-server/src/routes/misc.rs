@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use crate::mobile_view;
 use crate::security::Trusted;
 use crate::session_view;
-use crate::settings::{self, ModelPattern, ModelRef, QueueMode, QueueModePatch};
+use crate::settings::{self, ModelPattern, QueueMode, QueueModePatch};
 use crate::state::AppState;
 use rpi_ai::ThinkingLevel;
 
@@ -55,15 +55,7 @@ pub async fn models(State(state): State<AppState>, _trusted: Trusted) -> Respons
     // 可见范围：`settings.json` 的 `enabledModels` 白名单（`None` = 全部可见）。
     // 不过滤的话，前端会显示所有 provider 的模型，而后端根本连不上其中一部分。
     let patterns = state.settings().enabled_models();
-    let all: Vec<ModelRef> = catalog
-        .entries
-        .iter()
-        .map(|e| ModelRef {
-            provider: e.provider.clone(),
-            id: e.id.clone(),
-        })
-        .collect();
-    let visible = settings::visible_models(patterns.as_deref(), &all);
+    let visible = state.visible_model_refs();
 
     let mut models = serde_json::Map::new();
     let mut model_list: Vec<Value> = Vec::new();
@@ -132,10 +124,14 @@ pub async fn models(State(state): State<AppState>, _trusted: Trusted) -> Respons
         }
     }
 
-    let default_model = catalog.default_entry().map(|m| {
+    // `defaultModel` 必须是 `modelList` 里的一项，否则前端 `loadModels()` 的
+    // `modelList.find(...)` 会落空、退回 `modelList[0]`，界面显示的模型与实际
+    // 建会话用的模型就分家了（详细因由见 `AppState::default_model_ref`）。
+    // 所以这里跟建会话共用同一套解析，而不是 `catalog.default_entry()`。
+    let default_model = state.default_model_ref().map(|(provider, model_id)| {
         json!({
-            "provider": m.provider,
-            "modelId": m.id,
+            "provider": provider,
+            "modelId": model_id,
         })
     });
 

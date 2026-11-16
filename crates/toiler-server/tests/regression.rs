@@ -101,6 +101,31 @@ fn app_with_agent_dir(sessions_root: &Path, cwd: &Path, agent_dir: Option<&Path>
     routes::router(state)
 }
 
+/// 同 [`app_with_agent_dir`]，但模型目录取自 `agent_dir/models.json` 的实际内容。
+///
+/// `app_with_agent_dir` 用的是空目录（只关心静态站与 files 接口），而
+/// 「默认模型 / 可见范围」这类行为必须真的能解析到模型 —— 光写文件不够，
+/// `ModelCatalog` 是启动时一次性构建的。
+fn app_with_models_from_agent_dir(
+    sessions_root: &Path,
+    cwd: &Path,
+    agent_dir: &Path,
+) -> axum::Router {
+    let text = std::fs::read_to_string(agent_dir.join("models.json")).unwrap();
+    let raw: Value = serde_json::from_str(&text).unwrap();
+    let catalog = ModelCatalog::from_config(raw, Some(agent_dir.join("models.json"))).unwrap();
+    let state = AppState::with_cwd(sessions_root, catalog, cwd)
+        .with_binding("127.0.0.1", 30141)
+        .with_stores(
+            toiler_server::auth::AuthStore::new(agent_dir.join("auth.json")),
+            toiler_server::models_json::ModelsFile::at(agent_dir.join("models.json")),
+            toiler_server::settings::SettingsFile::at(agent_dir.join("settings.json")),
+            toiler_server::projects::ProjectStore::at(agent_dir.join("work.sqlite")),
+            toiler_server::trust::TrustStore::at(agent_dir.join("trust.json")),
+        );
+    routes::router(state)
+}
+
 async fn call(
     router: axum::Router,
     method: &str,
@@ -1032,7 +1057,16 @@ async fn default_model_ref_prefers_settings_over_catalog() {
         }
     });
     let catalog = ModelCatalog::from_config(models, None).unwrap();
-    let state = AppState::with_cwd(&root, catalog, &root);
+    // 空 settings：`SettingsFile::default()` 会读用户真实的 `settings.json`，
+    // 那样这个用例的结果就取决于本机配置（违背「测试不碰真实数据目录」）。
+    let settings_path = root.join("settings.json");
+    let state = AppState::with_cwd(&root, catalog, &root).with_stores(
+        toiler_server::auth::AuthStore::default(),
+        toiler_server::models_json::ModelsFile::default(),
+        toiler_server::settings::SettingsFile::at(&settings_path),
+        toiler_server::projects::ProjectStore::default(),
+        toiler_server::trust::TrustStore::default(),
+    );
     // 不设 settings 时退回 catalog 默认（first/model-a）
     assert_eq!(
         state.default_model_ref(),
@@ -1040,7 +1074,6 @@ async fn default_model_ref_prefers_settings_over_catalog() {
     );
 
     // settings.json 指向 second/model-b → 必须跟着变
-    let settings_path = root.join("settings.json");
     std::fs::write(
         &settings_path,
         r#"{"defaultProvider":"second","defaultModel":"model-b"}"#,
@@ -5082,4 +5115,275 @@ async fn context_model_falls_back_to_assistant_message() {
         session["context"]["model"]["modelId"], "deepseek-flash",
         "{session}"
     );
+}
+
+/// `/api/models` 的 `defaultModel` 必须真的出现在 `modelList` 里。
+///
+/// 前端 `useAgentSession.ts:loadModels()` 拿 `defaultModel` 去 `modelList` 里
+/// `find`，找不到就**静默**退回 `modelList[0]`：
+///
+/// ```ts
+/// const displayModel = match ?? nextModelList[0];
+/// ```
+///
+/// 而 `/api/agent/new` 建会话用的是 `AppState::default_model_ref()`（`settings.json`
+/// 优先）。两边以前是两套解析：`/api/models` 取 `catalog.default_entry()`
+/// （`models.json` 里第一个可用项），它被 `enabledModels` 挡在可见范围外时，
+/// 界面就显示成列表里排第一的模型，实际对话却用设置里那个 —— 用户看到选择器
+/// 写着 `GPT 5.6 Sol`、回复却来自 `DeepSeek`，且切换前后都不给任何提示。
+///
+/// 这里用一份真实形状的配置把那个场景钉死：`models.json` 的排第一项是
+/// `OpenAI/gpt-5.4`，`enabledModels` 只放行 `OpenAI/gpt-5.6-sol` 等，
+/// `settings.json` 的默认模型指向 `apisets/deepseek-v4.1-flash`。
+#[tokio::test]
+async fn default_model_is_inside_the_visible_model_list() {
+    let root = fixture_root("default-model-visible");
+    let agent_dir = fixture_root("default-model-visible-agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("models.json"),
+        r#"{"providers":{
+            "OpenAI":{
+                "api":"openai-responses",
+                "baseUrl":"https://openai.example.test/v1",
+                "apiKey":"k",
+                "models":[
+                    {"id":"gpt-5.4","name":"GPT 5.4"},
+                    {"id":"gpt-5.6-sol","name":"GPT 5.6 Sol","reasoning":true}
+                ]
+            },
+            "apisets":{
+                "api":"openai-completions",
+                "baseUrl":"https://apisets.example.test/v1",
+                "apiKey":"k",
+                "models":[{"id":"deepseek-v4.1-flash","name":"DeepSeek Flash"}]
+            }
+        }}"#,
+    )
+    .unwrap();
+    // `gpt-5.4` 是 `models.json` 里的第一项（= catalog 默认），但**不在**可见范围内。
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        r#"{"defaultProvider":"apisets","defaultModel":"deepseek-v4.1-flash",
+            "enabledModels":["OpenAI/gpt-5.6-sol","apisets/deepseek-v4.1-flash"]}"#,
+    )
+    .unwrap();
+
+    let router = app_with_models_from_agent_dir(&root, &root, &agent_dir);
+    let body = get(router.clone(), "/api/models").await.json();
+
+    let list = body["modelList"].as_array().expect("modelList 必须是数组");
+    let ids: Vec<(&str, &str)> = list
+        .iter()
+        .map(|m| (m["provider"].as_str().unwrap(), m["id"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            ("OpenAI", "gpt-5.6-sol"),
+            ("apisets", "deepseek-v4.1-flash")
+        ],
+        "enabledModels 决定可见范围，gpt-5.4 不该出现：{body}"
+    );
+
+    let default_model = &body["defaultModel"];
+    let (provider, model_id) = (
+        default_model["provider"]
+            .as_str()
+            .expect("默认模型不该是 null"),
+        default_model["modelId"].as_str().unwrap(),
+    );
+    assert!(
+        ids.contains(&(provider, model_id)),
+        "defaultModel {provider}/{model_id} 不在 modelList 里，前端会静默退回 \
+         modelList[0]（界面显示与实际使用的模型分家）：{body}"
+    );
+    // 设置里选的那一项优先，而不是 catalog 的 gpt-5.4 也不是 modelList[0]。
+    assert_eq!(
+        (provider, model_id),
+        ("apisets", "deepseek-v4.1-flash"),
+        "settings.json 的默认模型必须优先：{body}"
+    );
+
+    // 建会话拿到的模型必须与 `/api/models` 的 `defaultModel` 一致 —— 这正是
+    // 用户报的「选择器写着 A、实际对话走 B」那条断链。
+    let request = json!({ "cwd": root.to_string_lossy(), "type": "ensure_session" }).to_string();
+    let created = call(
+        router,
+        "POST",
+        "/api/agent/new",
+        Some(request.as_str()),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let created = created.json();
+    assert_eq!(
+        (
+            created["model"]["provider"].as_str(),
+            created["model"]["modelId"].as_str()
+        ),
+        (Some(provider), Some(model_id)),
+        "建会话用的模型必须就是模型选择器显示的那一个：{created}"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+}
+
+/// 可见范围里没有 catalog 默认项时，`defaultModel` 退到可见范围的第一个。
+///
+/// 与上一条同源：只要 `defaultModel` 落在 `modelList` 外，前端的 `?? nextModelList[0]`
+/// 就会把它悄悄换掉。这里把 `models.json` 的第一项整个排除掉，验证退路也走可见范围。
+#[tokio::test]
+async fn default_model_falls_back_within_the_visible_scope() {
+    let root = fixture_root("default-model-scope");
+    let agent_dir = fixture_root("default-model-scope-agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("models.json"),
+        r#"{"providers":{
+            "hidden":{"api":"openai-completions","baseUrl":"https://a.example.test/v1","apiKey":"k","models":[{"id":"secret"}]},
+            "shown":{"api":"openai-completions","baseUrl":"https://b.example.test/v1","apiKey":"k","models":[{"id":"m1"},{"id":"m2"}]}
+        }}"#,
+    )
+    .unwrap();
+    // 设置里的默认模型指向被 `enabledModels` 排除的 provider。
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        r#"{"defaultProvider":"hidden","defaultModel":"secret","enabledModels":["shown/*"]}"#,
+    )
+    .unwrap();
+
+    let body = get(
+        app_with_models_from_agent_dir(&root, &root, &agent_dir),
+        "/api/models",
+    )
+    .await
+    .json();
+    let list = body["modelList"].as_array().unwrap();
+    assert_eq!(list.len(), 2, "只有 shown/* 可见：{body}");
+    let default_model = &body["defaultModel"];
+    assert_eq!(
+        default_model["provider"], "shown",
+        "设置里的默认模型不可见时必须退到可见范围内：{body}"
+    );
+    assert_eq!(default_model["modelId"], "m1", "{body}");
+
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+}
+
+/// 新会话里选的模型必须真的被采用，不能被默认模型顶掉。
+///
+/// 前端 `useAgentSession.ts:ensureNewSession()` 在草稿页选过模型时会把那一对
+/// 放进 body：
+///
+/// ```ts
+/// ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {})
+/// ```
+///
+/// 而 `POST /api/agent/new` 早先**完全不看这两个字段**，一律用
+/// `AppState::default_model_ref()` 建会话。于是「新会话里不管选什么都会被重置」
+/// 就这么发生了：响应里的 `model` 是默认模型，前端 `ensureNewSession()` 又直接拿
+/// 它当新会话默认值（`if (!selectedModel) setNewSessionDefaultModel(result.model)`），
+/// 界面当场跳回默认模型，看起来像选择被静默回滚。
+///
+/// 这里钉两条：选中的模型要进响应，且第一个 prompt 真的发给它。
+#[tokio::test]
+async fn new_session_honours_the_requested_model() {
+    let root = fixture_root("newmodel");
+    let agent_dir = fixture_root("newmodel-agent");
+    let project = fixture_root("newmodel-project");
+    let router = app_with_two_models(&root, &project, &agent_dir);
+
+    // 这个 Router 的 catalog 里 first/model-a 是第一个可用项（= 默认模型），
+    // 所以选 second/model-b 能区分「用了选择」与「用了默认」。
+    let body = json!({
+        "cwd": project.to_string_lossy(),
+        "type": "ensure_session",
+        "provider": "second",
+        "modelId": "model-b",
+    })
+    .to_string();
+    let created = call(
+        router.clone(),
+        "POST",
+        "/api/agent/new",
+        Some(body.as_str()),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let created = created.json();
+    assert_eq!(
+        (
+            created["model"]["provider"].as_str(),
+            created["model"]["modelId"].as_str()
+        ),
+        (Some("second"), Some("model-b")),
+        "响应里的 model 必须是用户选的那个，否则前端会把默认模型写回界面：{created}"
+    );
+
+    // `get_state` 也要是选中的模型（前端切换后会读它校正界面）。
+    let sid = created["sessionId"].as_str().unwrap().to_string();
+    let state = call(
+        router.clone(),
+        "POST",
+        &format!("/api/agent/{sid}"),
+        Some(r#"{"type":"get_state"}"#),
+        &[],
+    )
+    .await
+    .json();
+    assert_eq!(
+        state["data"]["model"]["provider"], "second",
+        "get_state 也必须是选中的模型：{state}"
+    );
+    assert_eq!(state["data"]["model"]["id"], "model-b", "{state}");
+
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+    std::fs::remove_dir_all(&project).ok();
+}
+
+/// `provider` / `modelId` 必须成对出现，只给一个要 400。
+///
+/// 与 pi 一致（`tools/pi-contract/raw/agent_new.js`）：
+/// `if (m && !o || !m && o) throw Error("provider and modelId must be provided together")`。
+/// 静默容忍半个参数会让「选了模型却没生效」更难定位。
+#[tokio::test]
+async fn new_session_rejects_a_half_specified_model() {
+    let root = fixture_root("newmodel-half");
+    let agent_dir = fixture_root("newmodel-half-agent");
+    let project = fixture_root("newmodel-half-project");
+    let router = app_with_two_models(&root, &project, &agent_dir);
+
+    for body in [
+        json!({ "cwd": project.to_string_lossy(), "type": "ensure_session", "provider": "second" }),
+        json!({ "cwd": project.to_string_lossy(), "type": "ensure_session", "modelId": "model-b" }),
+    ] {
+        let reply = call(
+            router.clone(),
+            "POST",
+            "/api/agent/new",
+            Some(body.to_string().as_str()),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "半个参数必须 400：{body}"
+        );
+        assert!(
+            reply.text().contains("must be provided together"),
+            "错误文案要说明原因：{}",
+            reply.text()
+        );
+    }
+
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+    std::fs::remove_dir_all(&project).ok();
 }

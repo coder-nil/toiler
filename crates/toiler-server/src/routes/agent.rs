@@ -174,6 +174,23 @@ pub async fn running(State(state): State<AppState>, _trusted: Trusted) -> Respon
 ///
 /// 形状对齐 pi：`{success, sessionId, data, model:{provider, modelId}, thinkingLevel}`，
 /// body 里除了 `cwd` 之外的字段会原样交给 agent 当命令（`prompt` / `get_state` …）。
+///
+/// # body 里的 `provider` / `modelId`
+///
+/// 新会话在输入框里选过模型时，前端 `ensureNewSession()` 会把那一对放在这里。
+/// pi 把它作为 `initialModel` 交给会话构造（`tools/pi-contract/raw/agent_new.js`）：
+///
+/// ```js
+/// let { provider: m, modelId: o, … } = l;
+/// if (m && !o || !m && o) throw Error("provider and modelId must be provided together");
+/// …{ ...(m && o ? { initialModel: { provider: m, modelId: o } } : {}) }
+/// ```
+///
+/// 早先这里**根本不看这两个字段**，一律用 `AppState::default_model_ref()` 建会话，
+/// 于是用户在草稿页选中的模型 100% 被丢掉：界面选择器明明写着 A，首条消息却发给
+/// B。更隐蔽的是前端随后并不报错 —— `ensureNewSession()` 直接采用响应里的
+/// `model` 作为新会话默认值，所以界面会当场跳回默认模型，看起来像「选什么都
+/// 被重置」。
 pub async fn new_session(
     State(state): State<AppState>,
     _trusted: Trusted,
@@ -210,6 +227,29 @@ pub async fn new_session(
     }
     let cwd = cwd.to_string();
 
+    // 前端明确选过的模型优先，缺省才用默认模型（下一步在 `ensure_agent` 里解析）。
+    // 成对校验与 pi 一致：只给一个说明调用方写错了，静默容忍会让「选了却没生效」
+    // 这类问题更难查。
+    let requested_model = match (
+        payload.get("provider").and_then(Value::as_str),
+        payload.get("modelId").and_then(Value::as_str),
+    ) {
+        (Some(provider), Some(model_id)) => Some((provider.to_string(), model_id.to_string())),
+        (None, None) => None,
+        _ => {
+            let mut body = serde_json::Map::new();
+            body.insert(
+                "error".into(),
+                json!("provider and modelId must be provided together"),
+            );
+            if is_prompt {
+                body.insert("code".into(), json!("prompt_rejected"));
+                body.insert("accepted".into(), json!(false));
+            }
+            return (StatusCode::BAD_REQUEST, Json(Value::Object(body))).into_response();
+        }
+    };
+
     let repo = toiler_session::V3SessionRepo::new(state.sessions().root());
     let created_at = now_ms();
     let id = uuid::Uuid::now_v7().to_string();
@@ -242,7 +282,9 @@ pub async fn new_session(
         .projects()
         .upsert(&crate::paths::project_key(&hint.root), &hint.root, &cwd);
 
-    let agent = match ensure_agent(&state, &id).await {
+    // 新会话没有 `model_change` 条目，所以「用户在草稿页选的那个模型」只能靠
+    // 这里传下去 —— 不传就等于把选择丢掉，会话会静默用默认模型建起来。
+    let agent = match ensure_agent_with_model(&state, &id, requested_model.clone()).await {
         Ok(agent) => agent,
         Err(AgentError::NotFound) => {
             return (
@@ -345,6 +387,20 @@ enum AgentError {
 
 /// 有活 agent 就用它；没有就按 id 找文件、建一个。
 async fn ensure_agent(state: &AppState, id: &str) -> Result<Arc<LiveAgent>, AgentError> {
+    ensure_agent_with_model(state, id, None).await
+}
+
+/// 同 [`ensure_agent`]，但可以指定初始模型。
+///
+/// `requested` 来自 `POST /api/agent/new` body 里的 `provider`/`modelId`（用户在新会话
+/// 里选过的模型），只在**首次建 agent** 时有意义：活会话已经在内存里就直接用它，
+/// 中途换模型走 `set_model` 命令（它会往会话文件追加 `model_change`），不能靠重建
+/// harness 来实现 —— 重建会把正在跑的轮次、已经连上的 SSE 流一起拆掉。
+async fn ensure_agent_with_model(
+    state: &AppState,
+    id: &str,
+    requested: Option<(String, String)>,
+) -> Result<Arc<LiveAgent>, AgentError> {
     if let Some(agent) = state.live().get(id) {
         return Ok(agent);
     }
@@ -365,8 +421,13 @@ async fn ensure_agent(state: &AppState, id: &str) -> Result<Arc<LiveAgent>, Agen
         }
     }
 
-    let preferred = state.default_model_ref();
     let catalog = state.catalog();
+    // 用户在新会话里选过的模型 > `settings.json` 的默认模型 > catalog 默认项。
+    //
+    // 中间这一层不能省：`preferred` 是自己指定模型时**必须**尽先，否则选择器里
+    // 选什么都回到默认模型（用户报的「不管选什么都会被重置」就是这条）；
+    // 而在没指定时仍要看 `enabledModels` 可见范围，见 `default_model_ref`。
+    let preferred = requested.or_else(|| state.default_model_ref());
     let started = LiveAgent::start(id, &path, &cwd, &catalog, preferred, state.settings()).await;
     state.live().clear_starting(id);
     match started {

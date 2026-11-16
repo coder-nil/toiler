@@ -333,6 +333,35 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 按 `settings.json` 的 `enabledModels` 白名单过滤（§`settings::visible_models`）。
 `enabledModels` 里写成 `provider/id:level` 的条目会额外进 `thinkingLevelPins`。
 
+### `defaultModel` 必须在 `modelList` 里
+
+`defaultModel` 与 `POST /api/agent/new` **共用同一套解析**
+（`AppState::default_model_ref()`），顺序与 pi 的 `selectInitialModelScope` 一致：
+
+| 顺序 | 来源 |
+|---|---|
+| 1 | `settings.json` 的 `defaultProvider`/`defaultModel` |
+| 2 | `ModelCatalog::default_entry()`（启动时由 `TOILER_MODEL` / 上次用过的模型定下）|
+| 3 | 可见范围里第一个能解析的模型 |
+
+**每一步都要校验 `enabledModels` 可见范围**。前端 `useAgentSession.ts:loadModels()`
+拿 `defaultModel` 去 `modelList` 里 `find`，找不到就**静默**退回 `modelList[0]`：
+
+```ts
+const displayModel = match ?? nextModelList[0];
+```
+
+所以只要 `defaultModel` 落在 `modelList` 外，输入框就会显示成列表里排第一的模型，
+而真正建会话用的是设置里那个 —— 选择器写着 A、回复来自 B，切换前后都不给提示。
+
+历史故障：`/api/models` 早先用的是 `catalog.default_entry()`（`models.json` 里第一个
+可用项），它被 `enabledModels` 排除在外（如 `OpenAI/gpt-5.4`，而可见范围里只有
+`OpenAI/gpt-5.6-sol` 等），于是界面显示 `GPT 5.6 Sol`、实际会话走
+`settings.json` 的 `apisets/deepseek-v4.1-flash`。
+
+回归用例：`tests/regression.rs::default_model_is_inside_the_visible_model_list`、
+`tests/regression.rs::default_model_falls_back_within_the_visible_scope`。
+
 ### 历史故障：`models` 曾经是数组
 
 阶段 2 实现返回的是 `{models: [{…}], default: {…}, source}`，缺少
@@ -386,7 +415,7 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 | `PUT /api/files/{*path}` | ✅ | `{content, allowEmpty}`；空覆盖 409 `empty_overwrite_blocked`；256KB 上限 |
 | `PATCH /api/files/{*path}` | ✅ | 重命名；纯文件名校验；撞名 409 `already_exists` |
 | `POST /api/files/{*path}` | ✅ | `?type=upload-check` / `?type=upload&conflict=error\|overwrite\|skip`；25MB 单文件 / 100MB 总量；部分成功 207 |
-| `GET /api/models` | ✅ | `{models, modelList, defaultModel, thinkingLevels, thinkingLevelMaps, thinkingLevelPins, source}` 全对齐；`models` 是 `provider:id` 字典 |
+| `GET /api/models` | ✅ | `{models, modelList, defaultModel, thinkingLevels, thinkingLevelMaps, thinkingLevelPins, source}` 全对齐；`models` 是 `provider:id` 字典；`defaultModel` 与建会话共用 `AppState::default_model_ref()`，**必定是 `modelList` 里的一项**（见下方「`defaultModel` 必须在 `modelList` 里」） |
 | `GET /api/skills` | ⚠️ | 项目技能：`$project/.agents/skills`（项目根 = 最近 git 根，需已信任）；用户技能：`~/.agents/skills` + `~/.pi/agent/skills` + `~/.agents/toiler/skills`，三者按名字去重；两组合并返回（同名不互相顶掉）。pi 的 `skillPaths`/package 技能没有（无 package 系统），`usageCount` 与缓存也不提供（`cacheHit` 恒 false） |
 | `POST /api/skills/search` | ❌ | 501：技能市场（PLAN 已砍） |
 | `POST /api/skills/install` | ❌ | 501：技能市场（PLAN 已砍） |
