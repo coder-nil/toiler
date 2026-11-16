@@ -59,9 +59,10 @@ jobs:
           - label: Windows (x64)
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            bundles: nsis
+            bundles: nsis,msi
             paths: |
               target/**/release/bundle/nsis/*.exe
+              target/**/release/bundle/msi/*.msi
 
     steps:
       - uses: actions/checkout@v4
@@ -126,6 +127,11 @@ jobs:
         # 所以下面的 upload-artifact glob 都带这一层。
         run: npx --yes @tauri-apps/cli@^2 build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
+      - name: Windows 发布前 Defender 扫描
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tools/release/scan-windows.ps1 -ReleaseDirectory "target/${{ matrix.target }}/release"
+
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
@@ -144,6 +150,13 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: 生成安装包 SHA-256 清单
+        shell: bash
+        working-directory: artifacts
+        run: |
+          set -euo pipefail
+          find . -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+
       - name: 创建 Release 并附上安装包
         uses: softprops/action-gh-release@v2
         with:
@@ -158,6 +171,11 @@ jobs:
 
             - **macOS**：安装包未做代码签名/公证，首次打开请右键 →「打开」，
               或执行 `xattr -dr com.apple.quarantine /Applications/Toiler.app`。
-            - **Windows**：未签名，SmartScreen 会提示，选「更多信息」→「仍要运行」。
+            - **Windows**：提供 NSIS（`.exe`）和 MSI（`.msi`）两种安装包，当前均未签名。
+              发布前会在 Windows CI 上执行 Defender 扫描，但不保证所有终端都不拦截。
+              若被隔离/删除，请查看 Windows 安全中心「保护历史记录」的威胁名称，
+              不要关闭防护或直接恢复运行；排查与签名说明见仓库 `docs/windows-release.md`。
+            - **校验下载**：`SHA256SUMS.txt` 包含本次安装包的 SHA-256，供核对文件完整性，
+              不等同于安全证明或代码签名。
             - **Linux**：`.deb` 用 `sudo apt install ./xxx.deb`；`.AppImage` 先
               `chmod +x` 再运行（需要系统有 WebKitGTK 4.1）。

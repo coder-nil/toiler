@@ -74,6 +74,13 @@ cargo build --release -p toiler-desktop              # build.rs 自动捡 dist/
 从 Finder 双击也行（`bundle` 见 `crates/toiler-desktop/tauri.conf.json`）。
 启动后只监听 `127.0.0.1:<随机端口>`，手机访问要另外在设置页开关。
 
+### Windows 安装与拦截排查
+
+Release 提供 NSIS（`.exe`）和 MSI（`.msi`）安装包，发布前在 Windows CI 上扫描
+应用本体与安装器，并附带 `SHA256SUMS.txt` 校验清单。当前仍未做代码签名，扫描
+通过也不保证所有终端都不拦截。Defender 若隔离或删除文件，应先查看保护历史记录，
+不要直接关闭防护或恢复运行。详见 [Windows 发布与签名说明](./docs/windows-release.md)。
+
 ### 纯服务（开发 / 远程访问）
 
 ```bash
