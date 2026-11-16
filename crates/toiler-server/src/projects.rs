@@ -234,6 +234,33 @@ impl ProjectStore {
         }
     }
 
+    /// 只读取上次选中的项目根，**绝不写盘**（不建目录、不建表、不迁移）。
+    ///
+    /// 为什么不能直接用 [`Self::selected`]：它走 [`Self::open`]，那里会
+    /// `create_dir_all` 并 `CREATE TABLE IF NOT EXISTS`。而
+    /// [`Self::migrate_from_pi_if_needed`] 的前提是「当前库还不存在」，一旦
+    /// 被抢先在启动早期建出空库，用户从 `pi.sqlite` 搬过来的项目列表就永远
+    /// 导不进来了。这个方法只在一个只读连接里读一行。
+    pub fn selected_read_only(&self) -> Option<(String, String)> {
+        if !self.db.is_file() {
+            return None;
+        }
+        let conn =
+            Connection::open_with_flags(&self.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .ok()?;
+        let raw: String = conn
+            .query_row(
+                "SELECT value FROM app_preferences WHERE key = 'last_selected_project'",
+                [],
+                |row| row.get(0),
+            )
+            .ok()?;
+        let value: Value = serde_json::from_str(&raw).ok()?;
+        let key = value.get("projectKey").and_then(Value::as_str)?;
+        let root = value.get("projectRoot").and_then(Value::as_str)?;
+        (!key.is_empty() && !root.is_empty()).then(|| (key.to_string(), root.to_string()))
+    }
+
     /// 首次建库时从旧的 `pi.sqlite` 导入项目与选中项。
     ///
     /// 触发条件（三者必须同时满足）：
@@ -389,6 +416,29 @@ mod tests {
             Some(("/tmp/a".to_string(), "/tmp/a".to_string()))
         );
         assert_eq!(store.selected_json()["projectRoot"], "/tmp/a");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 只读查询不能建库：建出来就会让旧库迁移的「当前库还不存在」前提失效。
+    ///
+    /// 这是桌面壳启动时选默认项目的那条路径（`server::remembered_project_root`）。
+    #[test]
+    fn read_only_selection_lookup_never_creates_the_database() {
+        let dir = std::env::temp_dir().join(format!("toiler-projects-ro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = dir.join("work.sqlite");
+        let store = ProjectStore::at(&db);
+
+        assert_eq!(store.selected_read_only(), None, "没有库就是没有");
+        assert!(!dir.exists(), "不能建目录");
+        assert!(!db.exists(), "不能建库");
+
+        // 写进去之后能读回；库里存的是什么就读出什么。
+        store.set_selected("/tmp/x", "/tmp/x").unwrap();
+        assert_eq!(
+            store.selected_read_only(),
+            Some(("/tmp/x".to_string(), "/tmp/x".to_string()))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

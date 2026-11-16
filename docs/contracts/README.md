@@ -67,6 +67,8 @@
 
 查询参数：`deferThinking`、`deferMedia`（出现即 true）、`limit`（默认 120，夹在 1..400）。
 
+`GET /api/sessions/{id}/context` 认同一组 `deferThinking` / `deferMedia`（见下）。
+
 ```jsonc
 {
   "sessionId": "<id>",
@@ -93,6 +95,18 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 
 `prompt` 的 `streamingBehavior`（`"steer"` | `"followUp"`，缺省 `steer`）在会话运行中
 决定进哪条队列：`steer` 在工具批处理之后注入，`followUp` 等本轮结束再投递。
+
+`prompt` / `steer` / `follow_up` 的图片附件在**平级的 `images` 字段**里，不在 `message` 里：
+
+```jsonc
+{"type":"prompt", "message":"看这张图",
+ "images":[{"type":"image", "data":"<base64>", "mimeType":"image/png"}]}
+```
+
+服务端把它们拼成 user 消息的内容块（文本块在前、图片块在后；只有图没有文字时不塞空
+文本块），图片因此能落进 v3 文件、也能进模型上下文。`images` 缺失或为 `null` 时走原
+文本路径（裸字符串）。单张上限 10MB、每次最多 10 张（前端 `image-attachments.ts`
+的 `validateAgentImages` 先拦一道）；服务端遇到不合法的附件会**报错**而不是静默丢掉。
 
 `clear_queue` 清空两条队列并返回**被清掉的文本**（`{steering:[…], followUp:[…]}`），
 前端的「撤回排队」按钮拿它回填输入框；空队列返回两个空数组（不是 `null`）。
@@ -132,6 +146,23 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 `mcp` / `browser` / `goal` 系工具不提供（见 AGENTS.md「明确不做的事」）。
 `set_tools` 同时重算系统提示词的 `<tools>` 段与 `<project_context>` 形态
 （没有 `read` 时退回全文）。
+
+`set_chat_mode`（`{"type":"set_chat_mode","on":true|false,"toolNames":[…]}`）
+是输入框左侧 π 图标的「工作模式 / 普通对话」开关，返回
+`{chatMode, systemPrompt, toolNames}`。`on: true` 时同时做两件事：
+
+- **停用所有工具**（可激活集合置空，注册表不动，切回去时能按预设恢复）；
+- **系统提示词变空串**。空串不是「一个空的 system 消息」：`rpi_agent` 的
+  `agent_loop` 对空 system_prompt 发 `None`，请求里**完全没有 system 消息**。
+  普通对话模式的语义就是「不带系统提示词」，包括 `<project_context>`
+  （AGENTS.md）与末尾的语言指令。
+
+`on: false` 时按请求体里的 `toolNames` 恢复工具集（前端带的是进普通对话模式前的
+预设，因为这份记忆只存在浏览器的 `localStorage`）并重算提示词。
+
+`get_state` 同时回报 `chatMode`，前端重开面板时靠它校正界面状态，不能只信
+`localStorage`。注意与「工具预设全关」的区别：后者只是工具为空，preamble、
+行为准则与 `<cwd>` 仍会发出去，`systemPrompt` 是非空字符串。
 
 `extension_ui_response`（`{"type":"extension_ui_response","id":…,"value"|"confirmed"|"cancelled":true}`）
 回答 `ask_user` 的提问，返回 `null`；请求已作废（超时/中止）时同样返回 `null`
@@ -349,7 +380,7 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 | `POST /api/agent/{id}` | ✅ | `prompt`/`steer`/`follow_up`/`clear_queue`/`abort`/`get_state`/`set_model`/`navigate_tree`/`set_steering_mode`/`set_follow_up_mode`（后两个只落盘，`applied:false`，新会话生效；见 `GET/PUT /api/queue-modes`） |
 | `GET /api/agent/{id}` | ✅ | `{running}` / `{running, state}` |
 | `GET /api/agent/{id}/events` | ✅ | SSE，裁剪规则与 pi 逐条对齐 |
-| `POST /api/agent/new` | ✅ | 建 v3 会话 + 登记项目 + 执行 body 里的命令；`{success,sessionId,data,model,thinkingLevel}`。body 的 `toolNames`（前端工具预设，默认 `read/bash/edit/write`，桌面工具始终启用）与 `uiLocale` 也在建会话时应用 |
+| `POST /api/agent/new` | ✅ | 建 v3 会话 + 登记项目 + 执行 body 里的命令；`{success,sessionId,data,model,thinkingLevel}`。body 的 `toolNames`（前端工具预设，默认 `read/bash/edit/write`，桌面工具始终启用）、`uiLocale` 与 `chatMode`（普通对话模式：第一轮就不带系统提示词）也在建会话时应用 |
 | `GET /api/agent/running` | ✅ | `{runningSessionIds, pendingUiSessionIds}`（pi 的 `56429.am()`） |
 | `GET /api/files/{*path}` | ✅ | 六种 `type` 全实现（`list`/`read`/`download`/`meta`/`preview`/`watch`），`Range` 206/416，SSE 命名事件 `connected`/`change` |
 | `PUT /api/files/{*path}` | ✅ | `{content, allowEmpty}`；空覆盖 409 `empty_overwrite_blocked`；256KB 上限 |
@@ -371,7 +402,7 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 | `GET /api/agent/{id}/bash-output` | ✅ | `?path=&download=1`；5 MiB 上限（413）、越权 403、`pi-bash-*.log` 白名单 |
 | `GET /api/agent/running/events` | ✅ | SSE：首帧快照 + 变化即推 + 30s 心跳 |
 | `GET /api/sessions/{id}/context` | ✅ | `{context,paging}`，形状同 detail 的 `context` |
-| `GET /api/sessions/{id}/export` | ⚠️ | 单文件 HTML 下载（header/文件名规则同 pi，内容是线性转写稿，不是 pi 的树状视图） |
+| `GET /api/sessions/{id}/export` | ⚠️ | 单文件 HTML（header/文件名规则同 pi）；内容是自己渲染的转写稿：左侧大纲 + 系统提示词分节 + 按轮次分组 + markdown 渲染 + 工具调用与结果按 id 合并成一个折叠块 + 思考折叠；`?theme=light\|dark` 控制深浅色，见差异 12 |
 | `GET /api/sessions/{id}/entries/{entryId}/thinking` | ✅ | `?blockIndex=N` → `{thinking}` |
 | `POST /api/sessions/{id}/auto-name` | ✅ | 用会话自己的模型起标题，写回 `session_info` → `{title,usage}` |
 | `GET /api/auth/providers` | ✅ | **OAuth / 订阅**列表：`{id,name,baseUrl?,usesCallbackServer,loggedIn,supportsApiKey}`，11 家（含 `qoder-cn`，见差异 6） |
@@ -434,12 +465,21 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 2. **`models` 元数据不全**：只给前端首屏需要的字段，没有价格/能力目录。
 3. **`deferThinking`** ✅ 阶段 5 已实现：思考正文清空 + 标 `deferred:true`（前端据此显示
    「展开思考」，点开走 `/api/sessions/{id}/entries/{entryId}/thinking`）。
-   **`deferMedia`** ✅ 已实现：`content` 里的图片块换成一行
+   **`deferMedia`** ✅ 已实现，但**只作用于 `toolResult`**：`content` 里的图片块换成一行
    `[image: <mime>, ~<KB> KB]` 文本块（嵌套 `source` 与扁平 `data`/`mimeType` 两种形状都认）。
    前端首屏一直带 `deferMedia=1`，之前是空实现，带不带返回的字节完全一样——
    一条有图的会话首帧能到 1.38MB，实现后降到 214KB（实测同一条会话）。
-   注意：占位只发生在 `GET /api/sessions/{id}` 的 `context.messages` 上，
+
+   **为什么不处理 `user` 消息里的图**：早期实现不分 `role` 一律替换，于是重开有图的
+   历史会话时，用户提问里亲手附的图永久变成一行 `[image: …]` 文字。thinking 有
+   `entries/{id}/thinking` 可以点开回捞，图片没有等价通道，占位后就真取不回来了。
+   工具抓的图（一次 screenshot 可能几十张）是历史噪声，占位合理；用户附的图受前端
+   `MAX_ATTACHED_IMAGES`（10 张）约束，是「我给他看的这张」这种必须有语义的东西。
+
+   注意：占位只发生在 `GET /api/sessions/{id}` 与 `/context` 的 `context.messages` 上，
    `/api/sessions/{id}/entries/...` 取单条、导出、手机投影一律返回原字节。
+   `/context` 必须认这两个参数：前端翻页（`loadEarlierMessages`）也带着它们，少了
+   就会「首屏的图是占位、翻上去的图是完整 base64」，同一屏两种表现。
 4. **tree 的 `compressedEntryIds`** 只在深度超过 200 时出现（与 pi 的代码路径一致，但 pi 的 `visible` 集合还有别的分支，未 100% 验证）。
 5. **自定义 role 的消息**：写 v3 时降级为 `role:"custom"` + `customType`（pi 认的集合有限）。
 6. **auth provider 列表来自写死的内置表**：pi 的列表来自 provider 目录
@@ -488,15 +528,81 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
    `user/plan`、`quota/usage` 这些用量接口没移植。
 9. **`/api/auth/api-key/{provider}` 的 `displayName`** 取 `models.json` 的 `name`，缺省用 id
    （pi 取 models.dev 的展示名）。
-10. **git 凭据**：pi 用 AES-256-GCM 加密存进 `git-credentials.json`（密钥在 macOS Keychain）。
-   toiler 把凭据交给系统 credential helper（`git credential approve`），因此
-   `hasSavedCredential` / `savedCredentialUsername` 恒为 `false` / `null`；
-   「记住凭据」对后续 `git` 命令仍然生效。
+10. **git 凭据**：与 pi 同格式 —— AES-256-GCM 加密存进 `git-credentials.json`
+   （`<toilerHome>/configs/` 下），密钥是 macOS Keychain 里那条
+   `pi-desktop-git-credentials` / `encryption-key`。两边**共用同一个钥匙串条目**，
+   所以 pi 存过的密文 toiler 能直接解开，首次启动也会把它那份文件复制过来
+   （见 `paths::SEEDED_CONFIG_FILES`）；反之亦然。
+   差异：
+   - 文件位置的 `agentDir` 换成 toiler 自己的 `configs/`（数据目录改名的一部分）；
+   - 非 macOS 平台没有等价的系统密钥库，所以**不启用**加密存储（明确回「不可用」，
+     而不是退回同一目录下的一把明文密钥）。这时仍可走 git 自己的 credential
+     helper（`osxkeychain` / `manager` / `store`），只是 SSH 私钥口令无法记住。
+   - `/api/git` 的返回体多一个 `canRememberCredential: boolean`（pi 没有），
+     前端据此把「记住凭据」勾选框置灰并说明原因。
+
+   `hasSavedCredential` / `savedCredentialUsername` 现在是**真实状态**（早先是写死的
+   `false` / `null`）。这不是纯新增字段 —— 它修的是一个真问题：前端靠这两个字段
+   决定「口令框该不该被清空」，写死 `false` 就等于每次推/拉之后把刚记住的口令抹掉，
+   于是勾了「在此设备上加密记住凭据」也永远要重输。同时 `fetch` / `pull` / `push` /
+   `push_tag` / `push_tags` 在请求体不带 `credential` 时会自动取已存的那份，
+   不再依赖 credential helper（那条路对 SSH 口令无效）。
+   credential helper（`git credential approve`）**仍然写**，但只对 HTTPS：
+   它能让用户在终端里自己跑的 `git push` 也受益。
 11. **`/api/git/commit-message` 的流**：pi 每收到一段就发一行 `update`；toiler 攒完再一次
     `update` + `done`（字段相同，少了中间增量）。
 12. **`/api/sessions/{id}/export` 的 HTML**：响应头与文件名规则与 pi 一致，但内容是自己渲染的
-    线性转写稿（pi 用 `pi` CLI 生成带树状导航的 HTML）。`?inline=1` / `?desktop=1` / `returnTo`
-    都支持。
+    转写稿（pi 用 `pi` CLI 生成带树状导航的 HTML）。`?inline=1` / `?desktop=1` / `returnTo`
+    都支持。另外 toiler 多一个 `?lang=zh-CN|en`（影响导出页自己的文案与 `<html lang>`）。
+    页面结构与 pi 不同，按「可扫读」重排：
+    - **按用户提问切轮次**：每条提问开一个 `<section class="turn" id="turn-N">`，
+      它后面的助手正文与该轮工具调用都归进这一轮。第一条提问之前的内容归 `turn-0`
+      （没有就不出现）。真实会话里工具输出占 76%，平铺会把主线淹掉。
+    - **工具调用与它的结果合成一个折叠条**（`<details class="tool">`，默认收起）：
+      v3 里「调用」和「结果」是**两条独立消息**，只靠 `toolCall.id` ↔
+      `toolResult.toolCallId` 关联，所以渲染前先按 id 配对（`collect_tool_results`），
+      调用块里固定两段「参数」与「结果」，摘要行带真实工具名、首行参数、结果行数与
+      失败标记；没配上结果时明说一句而不是只剩参数。配对键要同时认 `id`（v3 原文）
+      与 `toolCallId`（`context_view` 归一化后），只认一个会整页变成「没有记录到结果」。
+      思考单独一个折叠条（`class="thinking"`）。折叠正文超过 4000 字会截断并提示原文长度。
+    - **正文走 markdown 渲染**（`pulldown-cmark`：表格 / 删除线 / 任务列表），
+      不再是转义后的纯文本（那会让 `\n\n` 被 HTML 折成空格、列表与围栏全部失效）。
+    - **左侧常驻大纲**（`.outline`，260px 粘滞在左边）：首项是「系统提示词」，
+      后面每轮一项（提问首行 + 时间 + 轮次号）。窄屏（≤1000px）改成顶部横向
+      滚动的胶囊列表，不再占侧边宽度。
+    - **系统提示词面板**：v3 文件把它存在 `message.sections` 里（`content` 是空串）。
+      同一分支上会有**多条**（切工具 / 换模型时重发），后面的是**增量**——实测
+      一份会话后两条只带 `tools`+`rules`，`project_context`（8 KB）只在第一条里。
+      所以按分支顺序**合并**、同名分节以后者为准，不能只取最后一条。分节按
+      `preamble → tools → rules → project_instructions → project_context → skills
+      → docs → cwd → env` 排列，每个分节一张可折叠卡片（首个展开），纯文本
+      原样展示（不跑 markdown：这里要看的是实际发出去的字节）。
+    - 每条消息带 `timestamp` 的 `HH:MM:SS`（UTC）。
+    - 工具字段**两种形状都认**：`{toolName,input}`（`normalize_tool_calls` 归一化后的）
+      与 `{name,arguments}`（v3 文件原始形状）。只读后者会全部渲染成「🔧 tool」+ `null`。
+
+    `?inline=1` 或 `?desktop=1`（页面被展示而不是下载）时额外注入一个常驻的
+    「返回对话」按钮 + 一个「`Esc` 返回对话」提示条：桌面壳里 `window.open` 不建子窗口，
+    前端是把 WebView **整页导航**到本页的，页面上没有浏览器后退键，用户进得去出不来。
+    有白名单内的 `returnTo` 就 `location.replace` 回跳，否则 `history.back()`，
+    没有历史时 `window.close()`。
+
+    Esc 也能返回，但这个手势没有任何可见线索——不提示就等于不存在，所以进页面时
+    在**页面底部居中**浮一个 toast（可点 `×` 关掉、6 秒后自动收起，`sessionStorage`
+    记住本次停留已提示过）。toast 的背景/文字走 `--toast-bg` / `--toast-ink` 等
+    主题变量，浅色与深色各一套，不要写死颜色。
+
+    `?overlayChrome=1`（桌面壳按 `window.__TOILER_OVERLAY_TITLEBAR__` 传）给 `<html>`
+    挂 `overlay-chrome`：macOS 用的是覆盖式标题栏，红绿灯浮在网页内容上（距顶约 42px、
+    左侧约 76px），左侧大纲不往下让位的话第一项「会话目录」正好被按钮盖住。
+    下载形态（`attachment`）不注入任何界面元素。
+
+    `?theme=light|dark` 是**应用里已解析的主题**，前端从 `useTheme().theme` 透传。
+    导出页是独立 HTML（桌面壳里还是整页导航），拿不到应用的 React 状态；只靠
+    `@media (prefers-color-scheme)` 的话「系统深色 + 应用里选浅色」会让导出页永远黑着。
+    显式主题落成 `<html class="theme-light|theme-dark">` + `<meta name="color-scheme">`，
+    CSS 里类选择器 `html.theme-*`（权重 0,1,1）高于 media 里的 `:root`（0,1,0），因此
+    即使系统是深色也能回到浅色。不传（`auto`）或值认不出时不挂类，交由系统偏好决定。
 13. **`/api/agent/{id}/bash-output` 的会话归属校验**：pi 只认
     `role:"bashExecution"` 的顶层 `fullOutputPath`；toiler 额外接受新工具形态
     （`role:"toolResult"` 的 `details.fullOutputPath`），因为当前 pi 就是这么写的。

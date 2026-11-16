@@ -81,6 +81,11 @@ Release 提供 NSIS（`.exe`）和 MSI（`.msi`）安装包，发布前在 Windo
 通过也不保证所有终端都不拦截。Defender 若隔离或删除文件，应先查看保护历史记录，
 不要直接关闭防护或恢复运行。详见 [Windows 发布与签名说明](./docs/windows-release.md)。
 
+双击启动时进程 cwd 是 `/`，默认项目按「上次选中的项目 →
+`~/.agents/toiler/workspace/`」的顺序确定，**不会**退回主目录——那样会让
+agent 的工作目录变成 `$HOME`，`find` / `grep` 一递归就撞进 `Documents` /
+`Desktop` / `Pictures` / `Music`，触发 macOS 的隐私授权弹窗。
+
 ### 纯服务（开发 / 远程访问）
 
 ```bash
@@ -111,6 +116,7 @@ cargo build --release -p toiler-server
 ~/.agents/toiler/
 ├── configs/      auth.json / models.json / settings.json / trust.json / desktop-access*
 ├── sessions/     会话
+├── workspace/    兜底项目目录（双击启动且没有上次项目时）
 └── work.sqlite   项目列表
 ```
 
@@ -302,8 +308,9 @@ POST /api/agent/{id} {type:"prompt"}
 - **项目库独立**：`~/.agents/toiler/work.sqlite`（`added_projects` /
   `app_preferences`）；首次创建时从旧的 `~/.pi/agent/pi.sqlite` **只读**
   导入一次，之后两边各自独立演进。
-- **git 走 CLI**：20 个动作、worktree、diff 全部包在 `gitsvc.rs`，每个仓库一把锁；
-  凭据走临时 `GIT_ASKPASS`（不落明文到命令行）。
+- **git 走 CLI**：24 个动作、worktree、diff 全部包在 `gitsvc.rs`，每个仓库一把锁；
+  凭据走临时 `GIT_ASKPASS`（不落明文到命令行），勾了「记住」则 AES-256-GCM
+  加密存进 `configs/git-credentials.json`（密钥在 macOS 钥匙串，与 pi 共用条目）。
 - **真模型的三处调用**：`auto-name`（起标题）、`git/commit-message`（写提交信息）、
   `models-config/test`（连通性自检）都复用 `oneshot.rs` 的一次性补全。
 - **`projectRoot` 修好了**：改成真 `git rev-parse` 探测，worktree 会话会带

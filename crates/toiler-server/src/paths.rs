@@ -130,6 +130,22 @@ pub fn plugins_dir() -> PathBuf {
     toiler_home().join("plugins")
 }
 
+/// 兜底的默认项目目录：`<toilerHome>/workspace`。
+///
+/// 只有**进程 cwd 不可用**、且没有上次选中的项目时才会落到这里（从 Finder /
+/// 启动台双击启动，LaunchServices 给的 cwd 是 `/`）。
+///
+/// 为什么不用 `$HOME` 兜底：主目录下有 `Documents` / `Desktop` / `Pictures` /
+/// `Music` 这些受 TCC 保护的子目录，把主目录当成「当前项目」会让文件面板、
+/// `find` / `grep` 的递归扫描和 agent 的 cwd 一起指向它们，macOS 就会逐个弹
+/// 隐私授权。给一个自己的空目录，启动即安静，用户再在界面上选真正的项目。
+///
+/// 也不用 pi 的 `~/pi-cwd-YYYYMMDD`：那是按天新建的一次性目录，隔天就换一个，
+/// 用户在里放的东西会看起来「消失」。这里固定一个名字，跨启动延续。
+pub fn workspace_dir() -> PathBuf {
+    toiler_home().join("workspace")
+}
+
 /// 项目库：`<toilerHome>/work.sqlite`。
 pub fn project_db() -> PathBuf {
     toiler_home().join("work.sqlite")
@@ -163,8 +179,17 @@ pub fn legacy_project_db() -> PathBuf {
 ///
 /// `models-store.json` 另有一层原因：toiler 自己会写这份文件（`apisets` 的远端
 /// 模型目录，见 [`crate::apisets`]），从 pi 搬一份两个进程会互相覆盖。
-pub const SEEDED_CONFIG_FILES: [&str; 4] =
-    ["auth.json", "models.json", "settings.json", "trust.json"];
+///
+/// `git-credentials.json` 能搬是因为两边用的是**同一个 Keychain 条目**
+/// （`pi-desktop-git-credentials` / `encryption-key`），密文搬过来直接用得了；
+/// 与 pi 各自一份文件、各自加密的情况不同（那才真不能搬）。
+pub const SEEDED_CONFIG_FILES: [&str; 5] = [
+    "auth.json",
+    "models.json",
+    "settings.json",
+    "trust.json",
+    "git-credentials.json",
+];
 
 /// 手机访问的三份状态文件也要跟着走，否则配对地址与开关全丢。
 const SEEDED_DESKTOP_ACCESS: [&str; 3] = [
@@ -505,6 +530,7 @@ mod tests {
             ("sessions", sessions_dir()),
             ("plugins", plugins_dir()),
             ("work.sqlite", project_db()),
+            ("workspace", workspace_dir()),
         ] {
             assert!(
                 path.starts_with(&toiler),
@@ -515,6 +541,11 @@ mod tests {
         }
         assert_eq!(config_file("auth.json"), configs_dir().join("auth.json"));
         assert_eq!(project_db().file_name().unwrap(), "work.sqlite");
+        assert_eq!(workspace_dir(), toiler.join("workspace"));
+
+        // 兜底项目目录必须与主目录区分：主目录下的 TCC 保护子目录很多。
+        assert_ne!(workspace_dir(), home_dir());
+        assert!(!workspace_dir().starts_with(home_dir().join("Documents")));
 
         // 通用根下不该出现 toiler 的私有文件
         assert!(!agents.join("work.sqlite").exists());
@@ -534,6 +565,9 @@ mod tests {
         std::fs::write(source.join("models.json"), r#"{"providers":{}}"#).unwrap();
         std::fs::write(source.join("settings.json"), "{}").unwrap();
         std::fs::write(source.join("trust.json"), "{}").unwrap();
+        // 加密凭据：两边共用同一个 Keychain 密钥，密文搬过来直接用得了
+        let credential_file = r#"{"version":1,"entries":{}}"#;
+        std::fs::write(source.join("git-credentials.json"), credential_file).unwrap();
         std::fs::write(source.join("desktop-access.json"), "{}").unwrap();
         // pi 自己的缓存，不该被搬
         std::fs::write(source.join("mcp-cache.json"), "x").unwrap();
@@ -546,8 +580,8 @@ mod tests {
         assert!(report.acted);
         assert_eq!(
             report.configs.len(),
-            5,
-            "4 个配置 + desktop-access：{report:?}"
+            6,
+            "5 个配置 + desktop-access：{report:?}"
         );
         assert_eq!(report.sessions, 2);
 
@@ -557,10 +591,16 @@ mod tests {
             "models.json",
             "settings.json",
             "trust.json",
+            "git-credentials.json",
             "desktop-access.json",
         ] {
             assert!(configs.join(name).is_file(), "{name} 应被复制");
         }
+        // 加密凭据是逐字节搬的（重新序列化会丢掉未知字段）
+        assert_eq!(
+            std::fs::read_to_string(configs.join("git-credentials.json")).unwrap(),
+            credential_file
+        );
         assert!(!configs.join("mcp-cache.json").exists(), "pi 的缓存不搬");
         assert!(target.join("sessions/--a--/s1.jsonl").is_file());
         assert!(!target.join("sessions/--a--/notes.txt").exists());

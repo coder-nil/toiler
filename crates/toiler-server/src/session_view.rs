@@ -913,18 +913,28 @@ pub fn defer_thinking_blocks(message: &Value) -> Value {
     out
 }
 
-/// `deferMedia`：把图片块换成一个占位文本块，避免把 base64 正文塞进首帧。
+/// `deferMedia`：把**工具结果**里的图片块换成一个占位文本块，避免把 base64
+/// 正文塞进首帧。
 ///
 /// 前端首屏一直带 `deferMedia=1`（`useAgentSession.ts` 的 `loadSession`），
 /// 而这条参数曾经是空实现：带不带返回的字节数完全一样，一条会话里几张图片就能
 /// 把首帧撑到 1.3MB（实测）。pi 的语义是把 `{type:"image"}` 换掉，这里是同一件事：
 /// 图片块 → 一行 `[image: <mime>, <大小>]` 文本，其它块原样保留。
 ///
+/// **只动 `toolResult`**：工具抓到的图（一次 screenshot 就能几十张）是历史噪声，
+/// 占位合理；而 `user` 消息里的图是用户亲手附上的那几张（前端 `MAX_ATTACHED_IMAGES`
+/// 限 10 张），占位后就**无法取回** —— pi 只给 thinking 留了 `entries/{id}/thinking`
+/// 这一条回捞通道，图片没有，于是重开有图的历史会话时用户提问里的图会永久变成
+/// 一行 `[image: …]` 文字。只处理 `toolResult` 两边都兼顾。
+///
 /// 两种形状都认（v3 文件里两种都存在，前端的 `imageSource()` 也是这么兼容的）：
 ///
 /// - 嵌套：`{type:"image", source:{type:"base64", media_type, data}}`
 /// - 扁平：`{type:"image", data, mimeType}`
 pub fn defer_media_blocks(message: &Value) -> Value {
+    if message.get("role").and_then(Value::as_str) != Some("toolResult") {
+        return message.clone();
+    }
     let Some(blocks) = message.get("content").and_then(Value::as_array) else {
         return message.clone();
     };
@@ -970,6 +980,14 @@ pub fn defer_media_blocks(message: &Value) -> Value {
 pub fn context_view(entries: &[Value], leaf_id: Option<&str>) -> ContextView {
     let branch = branch_entries(entries, leaf_id);
     let mut view = ContextView::default();
+    // 分支上没有 `model_change` 时的兜底：最后一条 assistant 消息自带的
+    // `provider` / `model`。
+    //
+    // pi 早期版本（以及个别新建路径）不写 `model_change` 条目，只把模型记在
+    // 每条 assistant 消息里。只认 `model_change` 的话这类会话的 `context.model`
+    // 恒为 null，前端输入框的模型按钮就退化成文案「选择模型」——用户看到的是
+    // 「模型名偶尔丢失」。这与 `boot.rs::last_used_model` 的回退顺序一致。
+    let mut assistant_model: Option<Value> = None;
     for entry in &branch {
         match entry.get("type").and_then(Value::as_str) {
             Some("model_change") => {
@@ -982,6 +1000,11 @@ pub fn context_view(entries: &[Value], leaf_id: Option<&str>) -> ContextView {
                     view.thinking_level = level.clone();
                 }
             }
+            Some("message") => {
+                if let Some(found) = assistant_message_model(entry) {
+                    assistant_model = Some(found);
+                }
+            }
             _ => {}
         }
         if let Some(message) = context_entry_message(entry) {
@@ -991,7 +1014,31 @@ pub fn context_view(entries: &[Value], leaf_id: Option<&str>) -> ContextView {
             view.messages.push(message);
         }
     }
+    if view.model.is_null() {
+        if let Some(found) = assistant_model {
+            view.model = found;
+        }
+    }
     view
+}
+
+/// 从一条 assistant 消息里取 `{provider, modelId}`（v3 原文的字段是 `model`，
+/// 不是 `modelId`；已归一化的形状两个都认）。非 assistant / 缺字段返回 None。
+fn assistant_message_model(entry: &Value) -> Option<Value> {
+    let message = entry.get("message")?;
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let provider = message
+        .get("provider")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())?;
+    let model_id = message
+        .get("model")
+        .or_else(|| message.get("modelId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())?;
+    Some(json!({ "provider": provider, "modelId": model_id }))
 }
 
 /// 会话当前的叶子 id（最后一条带 id 的条目）。
@@ -1168,15 +1215,63 @@ mod context_tests {
         assert_eq!(view.thinking_level, "high");
     }
 
-    /// `deferMedia` 必须真的把图片块换掉：前端首屏一直带这条参数，不生效的话
-    /// 一条有图的会话首帧能到 MB 级（实测 1.38MB → 214KB）。
+    /// 没有 `model_change` 条目时用最后一条 assistant 消息的 `provider`/`model` 兜底。
+    ///
+    /// pi 早期会话（以及个别新建路径）不写 `model_change`，只把模型记在 assistant
+    /// 消息里。只认 `model_change` 的话 `context.model` 恒为 null，前端输入框的
+    /// 模型按钮退化成文案「选择模型」——用户看到的就是「模型名偶尔丢失」。
+    #[test]
+    fn context_view_falls_back_to_assistant_message_model() {
+        let mut first = entry("a1", None, "message");
+        first["message"] = json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hi"}],
+            "provider": "local",
+            "model": "deepseek-flash",
+        });
+        let mut second = entry("a2", Some("a1"), "message");
+        second["message"] = json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "again"}],
+            "provider": "apisets",
+            "model": "glm-5.3",
+        });
+
+        let view = context_view(&[first, second], None);
+        // 取最后一条：切过模型的旧会话也应该回显当前的
+        assert_eq!(view.model["provider"], "apisets");
+        assert_eq!(view.model["modelId"], "glm-5.3");
+    }
+
+    /// `model_change` 存在时以它为准，assistant 消息不得把它覆盖掉。
+    #[test]
+    fn context_view_prefers_model_change_over_assistant() {
+        let mut change = entry("m", None, "model_change");
+        change["provider"] = json!("qoder");
+        change["modelId"] = json!("GLM-5.3");
+        let mut message = entry("a", Some("m"), "message");
+        message["message"] = json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hi"}],
+            // 用户刚切了模型、还没发消息时，旧 assistant 消息记的是老模型
+            "provider": "local",
+            "model": "deepseek-flash",
+        });
+
+        let view = context_view(&[change, message], None);
+        assert_eq!(view.model["provider"], "qoder");
+        assert_eq!(view.model["modelId"], "GLM-5.3");
+    }
+
+    /// `deferMedia` 必须真的把工具结果里的图片换掉：前端首屏一直带这条参数，
+    /// 不生效的话一条有图的会话首帧能到 MB 级（实测 1.38MB → 214KB）。
     /// 两种形状都要认：v3 文件里既有嵌套 `source`、也有扁平的 `data`/`mimeType`。
     #[test]
-    fn defer_media_replaces_image_blocks_in_both_shapes() {
+    fn defer_media_replaces_tool_result_image_blocks_in_both_shapes() {
         let nested = json!({
-            "role": "user",
+            "role": "toolResult",
             "content": [
-                { "type": "text", "text": "看这张图" },
+                { "type": "text", "text": "截图" },
                 {
                     "type": "image",
                     "source": { "type": "base64", "media_type": "image/png", "data": "A".repeat(4096) }
@@ -1205,8 +1300,31 @@ mod context_tests {
         );
 
         // 纯文本消息原样返回（不能平白改写 content）。
-        let plain = json!({"role": "user", "content": [{"type": "text", "text": "hi"}]});
+        let plain = json!({"role": "toolResult", "content": [{"type": "text", "text": "hi"}]});
         assert_eq!(defer_media_blocks(&plain), plain);
+    }
+
+    /// `user` 消息里的图是用户亲手附的，占位后**没有回捞通道**（thinking 有
+    /// `entries/{id}/thinking`，图片没有等价接口），所以必须原样保留。
+    #[test]
+    fn defer_media_keeps_user_attachments() {
+        let user = json!({
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "看这张图" },
+                {
+                    "type": "image",
+                    "source": { "type": "base64", "media_type": "image/png", "data": "A".repeat(4096) }
+                }
+            ]
+        });
+        assert_eq!(defer_media_blocks(&user), user);
+
+        let flat = json!({
+            "role": "user",
+            "content": [{ "type": "image", "data": "B".repeat(2048), "mimeType": "image/jpeg" }]
+        });
+        assert_eq!(defer_media_blocks(&flat), flat);
     }
 
     #[test]

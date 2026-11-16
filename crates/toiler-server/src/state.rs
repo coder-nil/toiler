@@ -141,6 +141,17 @@ impl AppState {
         }
         self
     }
+    /// 覆盖默认项目目录。必须在任何 `clone()` 之前调用（靠 `Arc::get_mut`）。
+    ///
+    /// 为什么不在 [`Self::with_cwd`] 里算：那里是纯构造函数，拿不到「上次选中的
+    /// 项目」这种需要读盘的信息，而读盘又会与测试的「不许碰用户数据」硬要求冲突。
+    pub fn with_default_cwd(mut self, default_cwd: impl Into<PathBuf>) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.default_cwd = default_cwd.into();
+        }
+        self
+    }
+
     /// 覆盖各配置文件路径（测试用）。
     pub fn with_stores(
         mut self,

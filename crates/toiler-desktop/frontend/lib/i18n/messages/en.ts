@@ -175,6 +175,7 @@ export const enLocale: LocalePlugin = {
     "git.passwordOrToken": "Password or access token",
     "git.keyPassphrase": "Private key passphrase",
     "git.rememberCredential": "Remember encrypted credential on this device",
+    "git.rememberCredentialUnavailable": "This platform has no system keychain, so credentials cannot be stored encrypted; HTTPS remotes can still be remembered by git's own credential helper.",
     "git.savedCredential": "Saved encrypted credential will be used when this field is empty",
     "git.nativeProtocolAnonymous": "The git:// protocol does not support authentication.",
     "git.fetch": "Fetch",

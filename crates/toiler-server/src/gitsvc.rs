@@ -11,12 +11,17 @@
 //! 所有命令都带 `LC_ALL=C`、`GIT_TERMINAL_PROMPT=0`、`GIT_EDITOR=true`，
 //! 并以 `--no-ext-diff --no-color` 保证输出可解析。
 //!
-//! **已知简化**（写进 `docs/contracts/README.md`）：pi 会把 git 凭据用
-//! AES-256-GCM 加密后存进 `git-credentials.json`（密钥在 macOS Keychain）。
-//! 这里改成把凭据交给系统 credential helper（`git credential approve`），
-//! 因此 `hasSavedCredential` / `savedCredentialUsername` 恒为
-//! `false` / `null`——「记住密码」对后续 `git` 命令仍然生效，只是前端
-//! 不再显示已存用户名。
+//! **凭据有两条路，缺一不可**（与 pi 的差异见 `docs/contracts/README.md` 差异 10）：
+//!
+//! | 路径 | 作用范围 | 实现在哪 |
+//! |---|---|---|
+//! | 加密文件 `git-credentials.json` | HTTPS 令牌 + **SSH 私钥口令** | [`crate::git_credentials`] |
+//! | 系统 credential helper（`git credential approve`） | 仅 HTTPS | 本文件的 [`remember_credential`] |
+//!
+//! 只有 credential helper 的时候，「记住凭据」对 SSH 远程是静默失效的（SSH 没
+//! 有 helper 这一层，口令只能走 askpass），面板也无法回答「我到底存过没有」——
+//! 于是每次远程动作完都把口令框清空，用户得反复重输同一个口令。现在加密文件
+//! 是主路径，credential helper 退化成「顺手也给命令行 git 一份」的补充。
 
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -25,6 +30,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
+
+use crate::git_credentials::{CredentialStore, GitCredential};
 
 /// 单文件参与 diff / 行数统计的上限（pi 的 `1060._4`，256 KiB）。
 pub const MAX_DIFF_FILE_BYTES: u64 = 262_144;
@@ -523,7 +530,14 @@ fn operation_in_progress(root: &Path) -> Option<&'static str> {
 }
 
 /// 复刻 `76402.JD`：完整的仓库面板状态。
+///
+/// 用默认位置（`<toilerHome>/configs/git-credentials.json`）的凭据存储。
 pub fn full_status(cwd: &Path) -> Value {
+    full_status_with_store(cwd, &CredentialStore::default())
+}
+
+/// [`full_status`] 的可注入版本：测试用临时目录里的凭据文件，不碰用户真实配置。
+pub fn full_status_with_store(cwd: &Path, store: &CredentialStore) -> Value {
     let Some(root) = repository_root(cwd) else {
         return json!({
             "isGitRepository": false,
@@ -536,6 +550,7 @@ pub fn full_status(cwd: &Path) -> Value {
             "credentialKind": "none",
             "hasSavedCredential": false,
             "savedCredentialUsername": Value::Null,
+            "canRememberCredential": crate::git_credentials::secure_storage_available(),
             "operation": Value::Null,
             "branches": [],
             "tags": [],
@@ -565,6 +580,17 @@ pub fn full_status(cwd: &Path) -> Value {
     let local_branches = branches(&root, "refs/heads");
     let changes = status(cwd);
 
+    // 面板要显示的已存凭据：只有远程是 https / ssh 才可能有（`none` 类型不存
+    // 也不问，否则每个 git:// 仓库都会白读一次加密文件）。
+    let kind = credential_kind(remote.as_deref());
+    let saved = if kind == "none" {
+        None
+    } else {
+        remote
+            .as_deref()
+            .and_then(|url| store.saved_username(url, kind))
+    };
+
     let (mut ahead, mut behind) = (0i64, 0i64);
     if let Some(upstream) = upstream.as_deref() {
         if let Ok(counts) = run_git(
@@ -591,9 +617,20 @@ pub fn full_status(cwd: &Path) -> Value {
         "ahead": ahead,
         "behind": behind,
         "remote": remote,
-        "credentialKind": credential_kind(remote.as_deref()),
-        "hasSavedCredential": false,
-        "savedCredentialUsername": Value::Null,
+        "credentialKind": kind,
+        // 已存凭据的面板状态：`hasSavedCredential` 决定前端那句「留空时将使用已加密
+        // 保存的凭据」，也决定远程动作后口令框该不该被清空。这里必须问真存储，
+        // 不能像以前那样写死 false —— 写死会让每次推/拉之后口令框都变空。
+        "hasSavedCredential": saved.is_some(),
+        "savedCredentialUsername": saved
+            .as_ref()
+            .and_then(|username| username.clone())
+            .map(Value::String)
+            .unwrap_or(Value::Null),
+        // 本平台能不能加密保存。非 macOS 没有等价的系统密钥库（见
+        // `git_credentials` 模块文档），勾选框应该置灰并说明原因，而不是让
+        // 用户勾一个永远不会生效的框。
+        "canRememberCredential": crate::git_credentials::secure_storage_available(),
         "operation": operation_in_progress(&root),
         "branches": local_branches,
         "tags": branches(&root, "refs/tags"),
@@ -1240,24 +1277,88 @@ fn run_network(
     }
 }
 
-/// 需要凭据的远程动作共用的外壳：解析 origin URL → 注入凭据 → 跑 network →
-/// 按 `rememberCredential` 把凭据交给系统 credential helper（失败不影响主操作）。
+/// 需要凭据的远程动作共用的外壳：解析 origin URL → 解析凭据（请求体里没给就用
+/// 已加密保存的）→ 跑 network → 按 `rememberCredential` 落盘。
 ///
 /// `fetch` / `pull` / `push` / `push_tag` / `push_tags` 全走这里：凭据语义必须
 /// 完全一致，否则会出现「拉取能用、推标签却说没有 token」这类只在某一动作上
 /// 复现的问题。
+///
+/// **两个兜底方向都要有**，它们对应两个真实的失败现象：
+///
+/// * 面板留空就用已存的（前端拿 `SAVED_CREDENTIAL_MASK` 占位，不会回传明文）。
+///   以前这里只能用 credential helper 解 HTTPS，SSH 口令在第二次操作起就必须
+///   重输；
+/// * 勾了「记住」就真的存下来。以前只调 `git credential approve`，于是 SSH 远程
+///   勾了也无事发生，下次仍然空着。
 fn run_remote_action(root: &Path, args: &[&str], body: &Value) -> Result<(), GitError> {
+    run_remote_action_with_store(root, args, body, &CredentialStore::default())
+}
+
+/// [`run_remote_action`] 的可注入版本（测试用临时凭据文件）。
+fn run_remote_action_with_store(
+    root: &Path,
+    args: &[&str],
+    body: &Value,
+    store: &CredentialStore,
+) -> Result<(), GitError> {
     let remote = run_git(root, &["remote", "get-url", "origin"], STATUS_TIMEOUT)
         .ok()
         .filter(|s| !s.is_empty());
-    let credential = credential_from_body(body)?;
+    let kind = credential_kind(remote.as_deref());
+
+    // 1. 显式传入的凭据优先；没传就看存过的有没有。
+    let credential = resolve_credential(store, remote.as_deref(), kind, body)?;
+
     run_network(root, args, credential.clone(), remote.as_deref())?;
-    if let Some((_, username, secret)) = credential {
+
+    // 2. 只有这次真的用了凭据、且用户勾了记住，才写盘。失败不回滚主操作：
+    //    推送已经成功了，没必要因为存不下凭据就把整次操作报成失败。
+    if let Some((kind, username, secret)) = credential {
         if body.get("rememberCredential").and_then(Value::as_bool) == Some(true) {
-            remember_credential(remote.as_deref(), username.as_deref(), &secret);
+            let Some(url) = remote.as_deref() else {
+                return Ok(());
+            };
+            let entry = GitCredential::new(kind.as_str(), username.clone(), secret.clone());
+            if let Err(message) = store.save(url, &entry) {
+                // 非 macOS 是预期内的（没有系统密钥库），debug 级别即可；
+                // 其它失败（文件损坏、钥匙串拒统）是真正的「勾了却没记住」，
+                // 必须让用户看得见。
+                if message.contains("unavailable") {
+                    tracing::debug!(%message, "未保存 Git 凭据");
+                } else {
+                    tracing::warn!(%message, "保存 Git 凭据失败");
+                }
+            }
+            // credential helper 只管 HTTPS；对 SSH 传 password 进去是错的。
+            if kind == "https" {
+                remember_credential(remote.as_deref(), username.as_deref(), &secret);
+            }
         }
     }
     Ok(())
+}
+
+/// 决定这次远程动作到底用哪份凭据：**请求体里的 > 已加密保存的 > 没有**。
+///
+/// 抽成函数是为了能直接测「面板留空时会不会真的用上存过的那份」—— 这是之前
+/// 实际坏的环节（前端留空占位，后端却不会去读文件，于是第二次操作就报
+/// `Permission denied (publickey)`）。
+fn resolve_credential(
+    store: &CredentialStore,
+    remote: Option<&str>,
+    kind: &str,
+    body: &Value,
+) -> Result<Option<(String, Option<String>, String)>, GitError> {
+    if let Some(explicit) = credential_from_body(body)? {
+        return Ok(Some(explicit));
+    }
+    if kind == "none" {
+        return Ok(None);
+    }
+    Ok(remote
+        .and_then(|url| store.load(url, kind))
+        .map(|saved| (saved.kind, saved.username, saved.secret)))
 }
 
 /// 复刻 `76402.sX`：执行一个 git 操作，返回操作后的完整状态。
@@ -1555,6 +1656,10 @@ pub fn action(cwd: &Path, body: &Value) -> Result<Value, GitError> {
 }
 
 /// 把凭据交给系统 credential helper（等价于 `git credential approve`）。
+///
+/// 只对 HTTPS 有意义（helper 体系的字段就是 protocol / host / username /
+/// password）；SSH 口令没有这一层，靠 [`CredentialStore`]。保留它是因为它能让
+/// 用户终端里自己跑的 `git push` 也受益。
 fn remember_credential(url: Option<&str>, username: Option<&str>, secret: &str) {
     let Some(url) = url else { return };
     let Some(parsed) = url::Url::parse(url).ok() else {
@@ -1735,6 +1840,131 @@ mod tests {
         assert_eq!(credential_kind(Some("ssh://git@host/y.git")), "ssh");
         assert_eq!(credential_kind(Some("file:///tmp/x")), "none");
         assert_eq!(credential_kind(None), "none");
+    }
+
+    /// 测试用的凭据存储：临时文件 + 固定密钥（不碰系统钥匙串，否则 CI 与未授权
+    /// 的机器上会成批失败）。
+    fn temp_credential_store(tag: &str) -> (CredentialStore, PathBuf) {
+        let dir = temp_path(tag);
+        let store = CredentialStore::with_key(dir.join("git-credentials.json"), vec![7u8; 32]);
+        (store, dir)
+    }
+
+    /// 回归：【勾了「在此设备上加密记住凭据」，口令还是会被清空】的直接用例。
+    ///
+    /// 面板的行为是「状态里 `hasSavedCredential` 为真 → 口令框留占位符、下次留空
+    /// 就用已存的」。所以存下去之后 `full_status` 必须能读出用户名，否则前端下一
+    /// 次刷新又把框清空，用户永远得重输。
+    #[test]
+    fn remembered_credential_shows_up_in_the_panel_status() {
+        let (store, dir) = temp_credential_store("remember-status");
+        let repo = temp_repo("remember-status-repo");
+        // `credential_kind` 只认 https / ssh，所以这里给个不用真连的 https 远程。
+        git(
+            &repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.invalid/acme/repo.git",
+            ],
+        );
+
+        let before = full_status_with_store(&repo, &store);
+        assert_eq!(before["credentialKind"], "https");
+        assert_eq!(before["hasSavedCredential"], false, "存之前不能报已存");
+        assert_eq!(before["savedCredentialUsername"], Value::Null);
+
+        store
+            .save(
+                "https://example.invalid/acme/repo.git",
+                &GitCredential::new("https", Some("alice".into()), "token-123"),
+            )
+            .unwrap();
+
+        let after = full_status_with_store(&repo, &store);
+        assert_eq!(
+            after["hasSavedCredential"], true,
+            "存过之后必须报已存，否则前端会把口令框清空：{after}"
+        );
+        assert_eq!(after["savedCredentialUsername"], "alice");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// 回归：面板留空（只带占位符，不回传明文）时，后端必须自己把已存的凭据
+    /// 取出来用 —— 这是「第二次推送就不用再输口令」的前提。
+    #[test]
+    fn empty_form_falls_back_to_the_saved_credential() {
+        let (store, dir) = temp_credential_store("fallback");
+        let remote = "git@example.invalid:acme/repo.git";
+        store
+            .save(remote, &GitCredential::new("ssh", None, "passphrase"))
+            .unwrap();
+
+        // 面板留空：请求体里没有 credential 字段。
+        let resolved =
+            resolve_credential(&store, Some(remote), "ssh", &json!({ "action": "push" }))
+                .unwrap()
+                .expect("留空时必须用已存的凭据");
+        assert_eq!(resolved.0, "ssh");
+        assert_eq!(resolved.1, None);
+        assert_eq!(resolved.2, "passphrase");
+
+        // 显式填的优先（用户换了 token）。
+        let explicit = resolve_credential(
+            &store,
+            Some(remote),
+            "ssh",
+            &json!({"credential": {"kind": "ssh", "secret": "typed-in"}}),
+        )
+        .unwrap()
+        .expect("显式凭据不能用已存的覆盖");
+        assert_eq!(explicit.2, "typed-in");
+
+        // 没存过、也没填：不报错，交给 git 自己的凭据链路。
+        assert!(resolve_credential(
+            &store,
+            Some("git@example.invalid:acme/untouched.git"),
+            "ssh",
+            &json!({}),
+        )
+        .unwrap()
+        .is_none());
+
+        // `none` 类型的远程（file:// / 本地裸仓库）不问存储：没有凭据这回事。
+        assert!(resolve_credential(&store, Some(remote), "none", &json!({}))
+            .unwrap()
+            .is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 回归：勾了「记住」之后真的落盘，且**只**在勾了的时候落盘。
+    /// 早先这里只调 `git credential approve`，SSH 远程勾了等于没勾。
+    #[test]
+    fn remember_flag_persists_the_credential_for_ssh() {
+        let (store, dir) = temp_credential_store("remember-save");
+        let remote = "git@example.invalid:acme/repo.git";
+
+        // 跑 git 会失败（域名不存在），但凭据存储发生在 network **成功**之后，
+        // 所以这里只验「保存」这一段自己的语义，不依赖网络。
+        store
+            .save(remote, &GitCredential::new("ssh", None, "passphrase"))
+            .unwrap();
+        assert_eq!(
+            store.saved_username(remote, "ssh"),
+            Some(None),
+            "SSH 凭据没有用户名，但必须算「存过」"
+        );
+
+        // 换一个仓库不能串：面板按远程散列取键，串了就会把别人的口令发出去。
+        assert!(store
+            .saved_username("git@example.invalid:acme/other.git", "ssh")
+            .is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// askpass 脚本必须能区分用户名与密码两个 prompt，且用文件读而不是把凭据

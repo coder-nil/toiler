@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod desktop_tools;
 pub mod docx;
 pub mod filemeta;
+pub mod git_credentials;
 pub mod gitsvc;
 pub mod mobile_access;
 pub mod mobile_view;

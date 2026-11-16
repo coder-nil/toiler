@@ -29,6 +29,7 @@ export interface GitSummary {
   credentialKind: ReturnType<typeof gitCredentialKind>;
   hasSavedCredential: boolean;
   savedCredentialUsername: string | null;
+  canRememberCredential: boolean;
   operation: GitOperationKind;
   branches: string[];
   changes: Awaited<ReturnType<typeof getGitStatus>>;
@@ -252,7 +253,7 @@ async function worktreeForBranch(cwd: string, branch: string): Promise<string | 
 export async function getGitSummary(cwd: string): Promise<GitSummary> {
   const root = await repositoryRoot(cwd);
   if (!root) {
-    return { isGitRepository: false, repositoryRoot: null, branch: null, upstream: null, ahead: 0, behind: 0, remote: null, credentialKind: "none", hasSavedCredential: false, savedCredentialUsername: null, operation: null, branches: [], changes: await getGitStatus(cwd), untrackedPaths: [] };
+    return { isGitRepository: false, repositoryRoot: null, branch: null, upstream: null, ahead: 0, behind: 0, remote: null, credentialKind: "none", hasSavedCredential: false, savedCredentialUsername: null, canRememberCredential: false, operation: null, branches: [], changes: await getGitStatus(cwd), untrackedPaths: [] };
   }
   const [branchResult, upstreamResult, remoteResult, branchesResult, changes, operation] = await Promise.all([
     git(cwd, ["branch", "--show-current"]).catch(() => ""),
@@ -283,7 +284,7 @@ export async function getGitSummary(cwd: string): Promise<GitSummary> {
   // The username is not a secret (the token is) — echoing it back lets the panel
   // prefill the field so users can see what they previously saved.
   const savedCredentialUsername = savedCredential?.kind === "https" ? savedCredential.username ?? null : null;
-  return { isGitRepository: true, repositoryRoot: root, branch: branchResult || null, upstream, ahead, behind, remote, credentialKind: gitCredentialKind(remote), hasSavedCredential, savedCredentialUsername, operation, branches, changes, untrackedPaths: await listUntrackedPaths(root) };
+  return { isGitRepository: true, repositoryRoot: root, branch: branchResult || null, upstream, ahead, behind, remote, credentialKind: gitCredentialKind(remote), hasSavedCredential, savedCredentialUsername, canRememberCredential: process.platform === "darwin", operation, branches, changes, untrackedPaths: await listUntrackedPaths(root) };
 }
 
 export async function runGitAction(cwd: string, action: GitAction, input: { paths?: unknown; message?: unknown; rebase?: unknown; branch?: unknown; newBranch?: unknown; startPoint?: unknown; targetBranch?: unknown; remoteUrl?: unknown; credential?: GitCredential; rememberCredential?: unknown }): Promise<GitSummary> {

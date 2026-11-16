@@ -177,6 +177,49 @@ fn schedule_traffic_lights(app: &tauri::AppHandle) {
     });
 }
 
+/// release 关掉 WebView 自带的右键菜单（「重新载入 / 后退 / 检查元素」那一套）。
+///
+/// 桌面 App 里这几个条目是纯负担：`重新载入` 会把整页刷掉，正在跑的那一轮对话
+/// 直接从界面上消失；`检查元素` 对最终用户没有意义。开发版（debug）保留，调试时
+/// 还要靠它刷新和看 DOM。
+///
+/// 两个例外必须放行：
+/// * 输入框 / 文本域 / contenteditable —— 那里的右键是系统级的复制粘贴菜单；
+/// * 内置终端（`.xterm`）—— xterm 自己不接管右键，去掉原生菜单就只剩快捷键盘能
+///   粘贴，终端里右键粘贴是习惯动作；
+/// * 会话列表行 —— 它自己派发自定义右键菜单（`lib/session-row-context-menu.ts`）。
+///   监听挂的是捕获阶段的 `preventDefault`，只会取消原生默认动作，不会
+///   `stopPropagation`，所以 React 的 `onContextMenu` 照常触发，自定义菜单不受影响。
+///
+/// 注入脚本一律写成多行常量，不用字符串行尾续行拼接：行尾 `\` 会连同换行一起
+/// 吃掉，脚本一旦被压成一行，里面的 `//` 注释就会吃掉后续所有代码（导出页踩过
+/// 这个坑，注释一律用 `/* */`）。
+const SUPPRESS_CONTEXT_MENU_SCRIPT: &str = r#"
+(function () {
+  function isEditable(target) {
+    if (!target || target.nodeType !== 1) return false;
+    var tag = target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (target.isContentEditable) return true;
+    if (target.closest(".xterm")) return true;
+    return !!target.closest("input, textarea, select, [contenteditable='true'], [contenteditable='']");
+  }
+  window.addEventListener("contextmenu", function (event) {
+    if (isEditable(event.target)) return;
+    event.preventDefault();
+  }, true);
+})();
+"#;
+
+/// 只有 release 注入：开发版留着原生右键（刷新 / 检查元素）。
+fn context_menu_guard_script() -> Option<&'static str> {
+    if cfg!(debug_assertions) {
+        None
+    } else {
+        Some(SUPPRESS_CONTEXT_MENU_SCRIPT)
+    }
+}
+
 /// 创建主窗口：直接加载内嵌服务的地址（同源，`/api` 与前端一个端口）。
 fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<(), String> {
     let base = server.base_url();
@@ -192,7 +235,7 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
     // 红绿灯浮在网页内容上，所以页内那条顶栏的左边要让出约 86px，
     // 否则侧栏标题会压在红绿灯底下。非 macOS 平台菜单里没有这个值（false）。
     let overlay_titlebar = cfg!(target_os = "macos");
-    let script = format!(
+    let mut script = format!(
         "window.__PI_WEB_API_ORIGIN__ = {origin};\
          window.__PI_WEB_DESKTOP__ = true;\
          window.__TOILER_DESKTOP__ = true;\
@@ -203,6 +246,9 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
            }}\
          }}, {{ once: true }});"
     );
+    if let Some(guard) = context_menu_guard_script() {
+        script.push_str(guard);
+    }
 
     let mut builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
         .title("Toiler")
@@ -439,6 +485,34 @@ mod tests {
         assert!(safe_external_url("http://127.0.0.1:3000").is_ok());
         assert!(safe_external_url("file:///etc/passwd").is_err());
         assert!(safe_external_url("javascript:alert(1)").is_err());
+    }
+
+    #[test]
+    fn context_menu_guard_only_in_release() {
+        // 开发版必须保留原生右键：刷新页面与检查元素都靠它。
+        assert_eq!(
+            context_menu_guard_script().is_some(),
+            !cfg!(debug_assertions)
+        );
+    }
+
+    #[test]
+    fn context_menu_guard_keeps_editable_targets() {
+        let script = SUPPRESS_CONTEXT_MENU_SCRIPT;
+        // 监听必须在捕获阶段挂到 window 上：页面里的 React 处理器注册得比这更晚。
+        assert!(script.contains("addEventListener(\"contextmenu\""));
+        assert!(script.contains("}, true);"), "监听必须走捕获阶段：{script}");
+        // 输入框 / contenteditable 要放行，否则终端与编辑器没法右键粘贴。
+        for allowed in ["INPUT", "TEXTAREA", "isContentEditable", ".xterm"] {
+            assert!(script.contains(allowed), "缺少例外 {allowed}：{script}");
+        }
+        // 只预置默认动作，不能 stopPropagation —— 会话列表行的自定义右键靠冒泡。
+        assert!(
+            !script.contains("stopPropagation"),
+            "不能吞掉事件：{script}"
+        );
+        // 脚本会被原样注入，`//` 注释在压平后是灾难（与导出页同一条铁律）。
+        assert!(!script.contains("//"), "注入脚本里不能有 // 注释：{script}");
     }
 
     #[test]

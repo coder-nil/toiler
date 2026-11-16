@@ -260,11 +260,18 @@ pub async fn new_session(
         }
     };
 
-    // 工具预设：前端新会话会带上 `toolNames`（`getToolNamesForPreset`，默认
-    // `read/bash/edit/write`）。忽略它会让会话始终 7 个工具全开，前端选的预设
-    // 也就形同虚设；而 pi 的「用 bash 做 ls/rg/find」那条准则只在没有
-    // grep/find/ls 时出现，所以默认预设下的提示词也会与 pi 不同。
-    if let Some(names) = payload.get("toolNames").and_then(Value::as_array) {
+    // 普通对话模式：前端带 `chatMode: true` 建会话时，第一轮就不该带系统提示词。
+    // 与 pi 的 `/api/agent/new` 一致。顺序要紧：先 `set_chat_mode` 再 `set_tools`，
+    // 否则 `set_tools` 会把工具重新激活，普通对话模式就不再是空的。
+    if payload.get("chatMode").and_then(Value::as_bool) == Some(true) {
+        let _ = agent
+            .send(&json!({ "type": "set_chat_mode", "on": true }))
+            .await;
+    } else if let Some(names) = payload.get("toolNames").and_then(Value::as_array) {
+        // 工具预设：前端新会话会带上 `toolNames`（`getToolNamesForPreset`，默认
+        // `read/bash/edit/write`）。忽略它会让会话始终 7 个工具全开，前端选的预设
+        // 也就形同虚设；而 pi 的「用 bash 做 ls/rg/find」那条准则只在没有
+        // grep/find/ls 时出现，所以默认预设下的提示词也会与 pi 不同。
         let names: Vec<&str> = names.iter().filter_map(Value::as_str).collect();
         let _ = agent
             .send(&json!({ "type": "set_tools", "toolNames": names }))

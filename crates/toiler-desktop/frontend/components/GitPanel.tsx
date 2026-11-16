@@ -32,6 +32,9 @@ type GitSummary = {
   credentialKind: "https" | "ssh" | "none";
   hasSavedCredential: boolean;
   savedCredentialUsername: string | null;
+  /// 本平台能不能加密保存凭据。非 macOS 为 false：那里没有系统密钥库，
+  /// 勾了「记住」不会真的落盘，勾选框应置灰并说明。
+  canRememberCredential: boolean;
   operation: "merge" | "rebase" | "cherry-pick" | "revert" | null;
   branches: string[];
   tags: string[];
@@ -342,7 +345,10 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
                 <div className="git-field-label">{t(needsHttpsCredential ? "git.httpsCredentials" : "git.sshCredentials")}{summary.hasSavedCredential ? ` · ${t("git.savedCredential")}` : ""}</div>
                 {needsHttpsCredential && <input className="git-input" value={username} onChange={(event) => setUsername(event.target.value)} placeholder={t("git.username")} autoComplete="username" disabled={disabled} />}
                 <input className="git-input" type="password" value={secret} onFocus={() => { if (secret === SAVED_CREDENTIAL_MASK) setSecret(""); }} onChange={(event) => setSecret(event.target.value)} placeholder={t(needsHttpsCredential ? "git.passwordOrToken" : "git.keyPassphrase")} autoComplete="current-password" disabled={disabled} />
-                <label className="git-check"><input type="checkbox" checked={rememberCredential} onChange={(event) => setRememberCredential(event.target.checked)} disabled={disabled} /> {t("git.rememberCredential")}</label>
+                <label className="git-check"><input type="checkbox" checked={rememberCredential} onChange={(event) => setRememberCredential(event.target.checked)} disabled={disabled || !summary.canRememberCredential} /> {t("git.rememberCredential")}</label>
+                {/* 非 macOS 没有系统密钥库（见 `git_credentials` 模块），勾了也不会
+                    落盘。置灰 + 说明，比让用户勾一个永远不生效的框诚实。 */}
+                {!summary.canRememberCredential && <div className="git-hint">{t("git.rememberCredentialUnavailable")}</div>}
               </div>}
               {summary.credentialKind === "none" && summary.remote?.startsWith("git://") && <div className="git-hint" style={{ marginBottom: 10 }}>{t("git.nativeProtocolAnonymous")}</div>}
               <div className="git-actions-row"><ActionButton label={t("git.fetch")} action="fetch" busy={busy} onClick={() => void run("fetch")} /><ActionButton label={t(pullRebase ? "git.pullRebase" : "git.pullMerge")} action="pull" busy={busy} onClick={() => void run("pull", { rebase: pullRebase })} /><ActionButton label={t("git.push")} action="push" busy={busy} onClick={() => void run("push")} /><label className="git-check"><input type="checkbox" checked={pullRebase} onChange={(event) => setPullRebase(event.target.checked)} disabled={disabled} /> {t("git.rebaseWhenPulling")}</label></div>

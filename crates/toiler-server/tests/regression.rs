@@ -1222,6 +1222,107 @@ async fn sessions_defer_thinking_clears_and_marks_blocks() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// `deferMedia` 只占位 **toolResult** 里的图。
+///
+/// 前端首屏一直带 `deferMedia=1`（`useAgentSession.ts` 的 `loadSession`）。
+/// 早期实现不分 role 一律换掉，于是重开有图的历史会话时，用户提问里亲手附的图
+/// 永久变成一行 `[image: …]` —— 而图片没有像 thinking 那样的回捞接口
+/// （`entries/{id}/thinking`），占位后就真的取不回来了。
+#[tokio::test]
+async fn sessions_defer_media_keeps_user_images_but_trims_tool_results() {
+    let root = fixture_root("defermedia");
+    let user_image = format!(
+        r##"{{"type":"image","source":{{"type":"base64","media_type":"image/png","data":"{}"}}}}"##,
+        "A".repeat(4096)
+    );
+    let tool_image = format!(
+        r##"{{"type":"image","data":"{}","mimeType":"image/jpeg"}}"##,
+        "B".repeat(4096)
+    );
+    let user_entry = format!(
+        r#"{{"type":"message","id":"m1","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","message":{{"role":"user","content":[{{"type":"text","text":"看这两张图"}},{user_image}],"timestamp":1794292905000}}}}"#
+    );
+    let tool_entry = format!(
+        r#"{{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-11-10T06:41:46.000Z","message":{{"role":"toolResult","toolCallId":"t1","toolName":"read","content":[{{"type":"text","text":"附件图"}},{tool_image}],"isError":false,"timestamp":1794292906000}}}}"#
+    );
+    write_session(&root, &[&user_entry, &tool_entry]);
+
+    let body = get(
+        app(&root, Path::new("/tmp/demo")),
+        "/api/sessions/sess-a?deferMedia=1",
+    )
+    .await
+    .json();
+    let messages = body["context"]["messages"].as_array().unwrap();
+
+    let user = messages.iter().find(|m| m["role"] == "user").unwrap();
+    assert_eq!(
+        user["content"][1]["type"], "image",
+        "用户提问里的图必须保留：{user}"
+    );
+    assert_eq!(user["content"][1]["source"]["media_type"], "image/png");
+
+    let tool = messages.iter().find(|m| m["role"] == "toolResult").unwrap();
+    assert_eq!(tool["content"][1]["type"], "text", "{tool}");
+    let placeholder = tool["content"][1]["text"].as_str().unwrap();
+    assert!(
+        placeholder.starts_with("[image: image/jpeg"),
+        "{placeholder}"
+    );
+    assert!(!tool.to_string().contains("BBBB"), "工具图正文不能被带出来");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 翻页（`/context?before=…`）与首屏必须用同一套投影：
+/// 前端 `loadEarlierMessages` 也带这两个参数，否则同一屏里「首屏的图是占位、
+/// 翻上去的图是完整 base64」。
+#[tokio::test]
+async fn sessions_context_honours_defer_params_when_paging() {
+    let root = fixture_root("deferpaging");
+    let tool_image = format!(
+        r##"{{"type":"image","data":"{}","mimeType":"image/png"}}"##,
+        "C".repeat(4096)
+    );
+    let entries: Vec<String> = (0..4)
+        .map(|i| {
+            if i == 0 {
+                format!(
+                    r#"{{"type":"message","id":"m0","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","message":{{"role":"toolResult","toolCallId":"t0","toolName":"read","content":[{tool_image}],"isError":false,"timestamp":1794292905000}}}}"#
+                )
+            } else {
+                format!(
+                    r#"{{"type":"message","id":"m{i}","parentId":"m{prev}","timestamp":"2026-11-10T06:41:4{i}.000Z","message":{{"role":"user","content":[{{"type":"text","text":"第 {i} 条"}}],"timestamp":1794292905000}}}}"#,
+                    prev = i - 1
+                )
+            }
+        })
+        .collect();
+    let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+    write_session(&root, &refs);
+
+    let body = get(
+        app(&root, Path::new("/tmp/demo")),
+        "/api/sessions/sess-a/context?before=m1&limit=2&deferThinking=1&deferMedia=1",
+    )
+    .await
+    .json();
+    let messages = body["context"]["messages"].as_array().unwrap();
+    let tool = messages
+        .iter()
+        .find(|m| m["role"] == "toolResult")
+        .unwrap_or_else(|| panic!("没拿到翻页里的 toolResult：{body}"));
+    assert_eq!(tool["content"][0]["type"], "text", "{tool}");
+    assert!(
+        tool["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("[image: image/png"),
+        "{tool}"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
 #[tokio::test]
 async fn sessions_rename_appends_a_session_info_entry() {
     // PATCH 改名走的是「追加 session_info」而不是改 header（pi 的做法）。
@@ -1300,6 +1401,598 @@ async fn sessions_delete_removes_the_file() {
     .await;
     assert!(reply.status.is_success(), "{}", reply.text());
     assert!(!path.exists());
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn sessions_export_page_carries_a_visible_way_back() {
+    // 前端 `AppShell.handleViewFullHistory` 依赖：
+    // - 桌面壳里 `window.open` 不建子窗口，导出页是**整页导航**进来的（`?desktop=1`），
+    //   页面上没有浏览器后退键，所以必须自带一个可见的返回按钮。
+    // - 浏览器里走 `?inline=1` 新标签页，同样需要那个按钮（否则用户只能手动关标签）。
+    // - 下载形态（attachment）不该带任何界面元素。
+    let root = fixture_root("sessexport");
+    write_session(
+        &root,
+        &[
+            r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","message":{"role":"user","content":[{"type":"text","text":"导出测试"}],"timestamp":1794292905000}}"#,
+        ],
+    );
+    let router = app(&root, Path::new("/tmp/demo"));
+    let back_id = "toiler-export-back";
+
+    // 1) 桌面壳：带白名单内 returnTo，按钮直接回跳那个地址（界面语言中文）。
+    let return_to = "http://127.0.0.1:30141/?session=sess-a";
+    let desktop = get(
+        router.clone(),
+        &format!(
+            "/api/sessions/sess-a/export?inline=1&desktop=1&lang=zh-CN&returnTo={}",
+            url_encode(return_to)
+        ),
+    )
+    .await;
+    assert_eq!(desktop.status, StatusCode::OK, "{}", desktop.text());
+    assert!(
+        desktop
+            .header("content-disposition")
+            .unwrap_or_default()
+            .starts_with("inline"),
+        "页面形态必须是 inline：{:?}",
+        desktop.header("content-disposition")
+    );
+    let html = desktop.text();
+    assert!(html.contains(back_id), "导出页没有返回按钮：{html}");
+    assert!(
+        html.contains("返回对话"),
+        "返回按钮文案应跟界面语言：{html}"
+    );
+    assert!(html.contains("<html lang=\"zh-CN\">"), "{html}");
+    assert!(
+        html.contains(&format!("location.replace({})", json!(return_to))),
+        "返回按钮应直接回跳 returnTo：{html}"
+    );
+    // 按钮必须在 `</body>` 之前、`</head>` 之后 —— 放进 head 就不会显示了。
+    let button_at = html.find(back_id).unwrap();
+    let body_at = html.find("</head>").unwrap();
+    let end_at = html.find("</body>").unwrap();
+    assert!(body_at < button_at && button_at < end_at, "{html}");
+
+    // 2) 不在白名单里的 returnTo（公网地址）不能写进脚本，退回 history.back()。
+    let offsite = get(
+        router.clone(),
+        "/api/sessions/sess-a/export?inline=1&desktop=1&lang=en&returnTo=https%3A%2F%2Fevil.example%2F",
+    )
+    .await;
+    let offsite_html = offsite.text();
+    assert!(!offsite_html.contains("evil.example"), "{offsite_html}");
+    assert!(offsite_html.contains("Back to chat"), "{offsite_html}");
+
+    // 3) 浏览器新标签页形态（没有 desktop=1）：也有返回按钮。
+    let inline = get(router.clone(), "/api/sessions/sess-a/export?inline=1").await;
+    assert!(inline.text().contains(back_id), "{}", inline.text());
+
+    // 4) 下载形态：不注入任何界面元素，html 里也不能出现按钮 id。
+    let download = get(router, "/api/sessions/sess-a/export").await;
+    assert!(
+        download
+            .header("content-disposition")
+            .unwrap_or_default()
+            .starts_with("attachment"),
+        "下载形态必须是 attachment"
+    );
+    let download_html = download.text();
+    assert!(!download_html.contains(back_id), "{download_html}");
+    assert!(
+        !download_html.contains("location.replace"),
+        "{download_html}"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn sessions_export_page_keeps_the_mainline_readable() {
+    // 导出页的存在意义是「让人看清楚」。真实会话里工具输出占 76%，全部当正文
+    // 平铺就是一锅粥；正文里的 markdown 原先也被 escape 成纯文本。这条用例锁住
+    // 三件事：轮次分组、工具/思考降为折叠条、markdown 真渲染。
+    let root = fixture_root("sessexport2");
+    write_session(
+        &root,
+        &[
+            // 第一轮：提问 + 带 markdown 的回答 + 思考 + 工具调用 + 工具输出
+            r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","message":{"role":"user","content":[{"type":"text","text":"第一个问题"}],"timestamp":1794292905000}}"#,
+            r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-11-10T06:41:46.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"先看看文件"},{"type":"text","text":"\u0023\u0023 结论\n\n这里有 **重点** 和 `code`：\n\n- 第一条\n- 第二条"},{"type":"toolCall","toolCallId":"t1","toolName":"read","input":{"filePath":"/tmp/demo/AGENTS.md"}}],"api":"x","provider":"qoder","model":"x","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1794292906000}}"#,
+            r#"{"type":"message","id":"r1","parentId":"a1","timestamp":"2026-11-10T06:41:47.000Z","message":{"role":"toolResult","toolCallId":"t1","toolName":"read","content":[{"type":"text","text":"\u0023 AGENTS.md\nTOOL OUTPUT SHOULD BE FOLDED"}],"isError":false,"timestamp":1794292907000}}"#,
+            // 第二轮
+            r#"{"type":"message","id":"u2","parentId":"r1","timestamp":"2026-11-10T06:41:48.000Z","message":{"role":"user","content":[{"type":"text","text":"第二个问题"}],"timestamp":1794292908000}}"#,
+        ],
+    );
+    let html = get(
+        app(&root, Path::new("/tmp/demo")),
+        "/api/sessions/sess-a/export?inline=1",
+    )
+    .await
+    .text();
+
+    // 轮次：按用户提问切开，编号从 turn-1 起（没有前导段就不该有 turn-0）。
+    assert!(html.contains("id=\"turn-1\""), "{html}");
+    assert!(html.contains("id=\"turn-2\""), "{html}");
+    assert!(
+        !html.contains("id=\"turn-0\""),
+        "没有前导段就不该出现 turn-0：{html}"
+    );
+    // 目录：两轮 → 出现目录列表，标题是提问首行。
+    assert!(html.contains("toc-item"), "{html}");
+    assert!(html.contains("第一个问题"), "{html}");
+
+    // markdown 真渲染（原先全部 escape 成纯文本）。
+    assert!(html.contains("<h2>结论</h2>"), "标题没渲染：{html}");
+    assert!(html.contains("<strong>重点</strong>"), "粗体没渲染：{html}");
+    assert!(
+        html.contains("<code>code</code>"),
+        "行内 code 没渲染：{html}"
+    );
+    assert!(html.contains("<li>第一条</li>"), "列表没渲染：{html}");
+
+    // 工具调用与工具输出都在折叠区（默认收起），且带真实工具名。
+    assert!(
+        html.contains("<details class=\"tool\">"),
+        "工具区不是折叠块：{html}"
+    );
+    assert!(html.contains("tool-name\">read<"), "工具名丢了：{html}");
+    assert!(
+        !html.contains("<details class=\"tool\" open>"),
+        "工具区不该默认展开：{html}"
+    );
+    assert!(
+        html.contains("<details class=\"thinking\">"),
+        "思考不是折叠块：{html}"
+    );
+    assert!(
+        !html.contains("<pre>null</pre>"),
+        "工具参数不能是 null：{html}"
+    );
+    // 思考与工具输出的**正文**不能出现在主线（`main` 里只能有回答的 markdown）。
+    let mains: Vec<&str> = html
+        .split("<div class=\"main\">")
+        .skip(1)
+        .filter_map(|chunk| chunk.split("</div>").next())
+        .collect();
+    let mainline = mains.join("\n");
+    assert!(
+        !mainline.contains("TOOL OUTPUT SHOULD BE FOLDED"),
+        "工具输出漏进了主线：{mainline}"
+    );
+    assert!(
+        !mainline.contains("先看看文件"),
+        "思考正文漏进了主线：{mainline}"
+    );
+
+    // 时间戳（原先一个都没渲染）。
+    assert!(html.contains("<time>"), "没有时间戳：{html}");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn sessions_export_page_pairs_each_tool_call_with_its_result() {
+    // 结构问题：v3 文件里「工具调用」和「工具结果」是**两条独立的消息**，
+    // 调用在 assistant 的 `content[].toolCall` 里，结果是一条单独的
+    // `role:"toolResult"`，二者只靠 `toolCall.id` ↔ `toolResult.toolCallId`
+    // 关联。原先两边各渲染一条折叠条、靠相邻摆放暗示关系，于是同一次调用
+    // 在页面上出现两次，中间一旦夹了别的消息关系就断了。
+    //
+    // 这条用例锁住「按 id 配成一个块」，以及三种边界：正常输出、失败、
+    // 没有结果。同时锁住配对键的两个名字（`id` 原文 / `toolCallId` 归一化后）。
+    let root = fixture_root("sessexportpair");
+    write_session(
+        &root,
+        &[
+            r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","message":{"role":"user","content":[{"type":"text","text":"看下代码"}],"timestamp":1794292905000}}"#,
+            // 一条 assistant 同时发三个调用：v3 原始形状 `id`/`name`/`arguments`。
+            r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-11-10T06:41:46.000Z","message":{"role":"assistant","content":[{"type":"text","text":"我先查一下。"},{"type":"toolCall","id":"call_ok","name":"read","arguments":{"filePath":"/tmp/demo/a.rs"}},{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"cargo test"}},{"type":"toolCall","id":"call_lost","name":"grep","arguments":{"pattern":"foo"}}],"timestamp":1794292906000}}"#,
+            r#"{"type":"message","id":"t1","parentId":"a1","timestamp":"2026-11-10T06:41:47.000Z","message":{"role":"toolResult","toolCallId":"call_ok","toolName":"read","isError":false,"content":[{"type":"text","text":"第一行输出\n第二行输出\n第三行输出"}],"timestamp":1794292907000}}"#,
+            r#"{"type":"message","id":"t2","parentId":"t1","timestamp":"2026-11-10T06:41:48.000Z","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"error: test failed"}],"timestamp":1794292908000}}"#,
+            // call_lost 故意没有对应的结果消息。
+            r#"{"type":"message","id":"a2","parentId":"t2","timestamp":"2026-11-10T06:41:49.000Z","message":{"role":"assistant","content":[{"type":"text","text":"查完了。"}],"timestamp":1794292909000}}"#,
+        ],
+    );
+    let html = get(
+        app(&root, Path::new("/tmp/demo")),
+        "/api/sessions/sess-a/export?inline=1&lang=zh-CN",
+    )
+    .await
+    .text();
+    // 只去掉 `<style>` 块再断言：样式表里有 `.tool-part` 这类选择器，
+    // 不剔除会让「出现几次」的计数把 CSS 也算进去。
+    let body = {
+        let mut out = String::new();
+        let mut rest: &str = &html;
+        while let Some(start) = rest.find("<style>") {
+            out.push_str(&rest[..start]);
+            match rest[start..].find("</style>") {
+                Some(end) => rest = &rest[start + end + "</style>".len()..],
+                None => break,
+            }
+        }
+        out.push_str(rest);
+        out
+    };
+
+    // 1) 三次调用 → 三个折叠块，不是一个调用 + 一个结果各占一块（那会是 5 个）。
+    let blocks: Vec<&str> = body
+        .match_indices("<details class=\"tool")
+        .map(|(i, _)| &body[i..])
+        .collect();
+    assert_eq!(blocks.len(), 3, "每个调用与它的结果应合成一个块：{body}");
+
+    // 2) 每块都带「参数」与「结果」两段（结构统一，不因有没有结果而变形）。
+    let part_count = body.matches("<div class=\"tool-part").count();
+    assert_eq!(part_count, 6, "三个块各两段：{body}");
+
+    // 3) 正常结果：输出进了块的「结果」段，并给出行数。
+    assert!(body.contains("第三行输出"), "结果正文丢了：{body}");
+    assert!(
+        body.contains("<span class=\"tool-count\">3 行</span>"),
+        "结果行数没标：{body}"
+    );
+
+    // 4) 失败结果：块带 is-error，摘要上有「失败」，且输出仍在。
+    assert!(
+        body.contains("class=\"tool is-error\""),
+        "失败态没标：{body}"
+    );
+    assert!(
+        body.contains("<span class=\"tool-error\">失败</span>"),
+        "失败标记没渲染：{body}"
+    );
+    assert!(body.contains("error: test failed"), "失败输出丢了：{body}");
+
+    // 5) 没有结果：明说一句，而不是默默只剩参数。
+    assert!(body.contains("没有记录到结果"), "缺结果时应明说：{body}");
+
+    // 6) 工具输出不能漏进主线（main 里只该有回答的 markdown）。
+    let mains: Vec<&str> = body
+        .split("<div class=\"main\">")
+        .skip(1)
+        .filter_map(|chunk| chunk.split("</div>").next())
+        .collect();
+    let mainline = mains.join("\n");
+    assert!(
+        !mainline.contains("error: test failed") && !mainline.contains("第一行输出"),
+        "工具输出漏进了主线：{mainline}"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn sessions_export_page_shows_system_prompt_and_left_outline() {
+    // 系统提示词存在 `message.sections` 里（`content` 是空串）。同一分支上
+    // 会有多条（切工具 / 换模型重发），后面的是**增量**：实测一份真实会话
+    // 后两条只带 `tools`+`rules`，`project_context` 只在第一条里。只读最后
+    // 一条会让面板只剩两个分节——这条用例锁住「合并而非只取最后一条」。
+    let root = fixture_root("sessexport3");
+    write_session(
+        &root,
+        &[
+            r##"{"type":"message","id":"s1","parentId":null,"timestamp":"2026-11-10T06:41:40.000Z","message":{"role":"system","content":"","sections":{"preamble":"你是助手","tools":"<tools>read</tools>","project_context":"AGENTS.md 全文","skills":"技能清单","cwd":"/tmp/demo"},"timestamp":1794292900000}}"##,
+            r##"{"type":"message","id":"u1","parentId":"s1","timestamp":"2026-11-10T06:41:45.000Z","message":{"role":"user","content":[{"type":"text","text":"问题一"}],"timestamp":1794292905000}}"##,
+            // 第二条 system：增量，只重写 tools/rules，不该把前面的分节冲掉。
+            r##"{"type":"message","id":"s2","parentId":"u1","timestamp":"2026-11-10T06:41:46.000Z","message":{"role":"system","content":"","sections":{"tools":"<tools>read,bash</tools>","rules":"行为准则"},"timestamp":1794292906000}}"##,
+        ],
+    );
+    let html = get(
+        app(&root, Path::new("/tmp/demo")),
+        "/api/sessions/sess-a/export?inline=1&lang=zh-CN",
+    )
+    .await
+    .text();
+
+    // 1) 系统提示词作为一个独立块 + 大纲首项。
+    assert!(
+        html.contains("id=\"system-prompt\""),
+        "没有系统提示词块：{html}"
+    );
+    assert!(html.contains("toc-system"), "大纲里没有系统项：{html}");
+
+    // 2) 合并而不是只取最后一条：第一条独有的分节必须还在。
+    assert!(
+        html.contains("角色"),
+        "preamble 分节丢了（只取了最后一条）：{html}"
+    );
+    assert!(
+        html.contains("项目上下文"),
+        "project_context 丢了（只取了最后一条）：{html}"
+    );
+    assert!(
+        html.contains("技能"),
+        "skills 丢了（只取了最后一条）：{html}"
+    );
+    assert!(html.contains("AGENTS.md 全文"), "{html}");
+
+    // 3) 同名分节以后者为准。
+    assert!(html.contains("read,bash"), "同名分节未按后者覆盖：{html}");
+    assert!(
+        !html.contains("<tools>read</tools>"),
+        "旧 tools 分节还在：{html}"
+    );
+
+    // 4) 左侧大纲是常驻布局，不是可折叠的顶栏下拉。
+    assert!(
+        html.contains("class=\"outline\""),
+        "大纲不是左侧常驻：{html}"
+    );
+    assert!(
+        !html.contains("<nav class=\"toc\">"),
+        "旧的可折叠顶栏目录还在：{html}"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn sessions_export_page_hints_escape_and_yields_to_overlay_titlebar() {
+    // 两件事：
+    // 1) Esc 也能返回，但这个手势本身没有可见线索——进页面必须给提示，
+    //    否则「支持 Esc」等于不存在。
+    // 2) 覆盖式标题栏（macOS 桌面壳）下红绿灯浮在网页内容上，左侧大纲若不
+    //    往下让位，第一项「会话目录」正好被按钮盖住（实际截图量出来的）。
+    let root = fixture_root("sessexport4");
+    write_session(
+        &root,
+        &[
+            r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","message":{"role":"user","content":[{"type":"text","text":"问题"}],"timestamp":1794292905000}}"#,
+        ],
+    );
+    let router = app(&root, Path::new("/tmp/demo"));
+
+    // 1) 中文页面展示形态：Esc 提示是独立的 toast（不在返回按钮容器里），
+    //    文案不重复那个键帽。
+    let zh = get(
+        router.clone(),
+        "/api/sessions/sess-a/export?inline=1&lang=zh-CN",
+    )
+    .await
+    .text();
+    assert!(zh.contains("toiler-esc-hint"), "没有 Esc 提示：{zh}");
+    assert!(
+        zh.contains("class=\"toiler-toast\" id=\"toiler-esc-hint\""),
+        "提示不是 toast 形态：{zh}"
+    );
+    // toast 必须和返回按钮平级（底部浮层），不能挤在右上角按钮旁边。
+    // 不锚定字符间距：注入片段用的是真实换行，元素之间会有 `\n`。
+    let toast_at = zh.find("id=\"toiler-esc-hint\"").unwrap();
+    let button_close = zh.find("</button></div>").unwrap();
+    assert!(button_close < toast_at, "toast 没有脱离返回按钮容器：{zh}");
+    assert!(zh.contains("<kbd>Esc</kbd>"), "提示里没有键帽：{zh}");
+    assert!(
+        zh.contains("<kbd>Esc</kbd><span>返回对话"),
+        "键帽后面的文案不该再写一遍 Esc：{zh}"
+    );
+    // 点掉提示的入口，以及「同一次停留不反复弹」的去重键。
+    assert!(zh.contains("toiler-toast-close"), "提示不能关闭：{zh}");
+    assert!(zh.contains("toiler-esc-hint-shown"), "提示没有去重：{zh}");
+
+    // 2) toast 背景必须走主题变量（深浅色各一套），不能写死颜色——
+    //    写死的话切主题时它还是那一坨。
+    assert!(zh.contains("background:var(--toast-bg)"), "{zh}");
+    assert!(zh.contains("color:var(--toast-ink)"), "{zh}");
+    // 浅色默认 + 系统深色 + 显式深色 + 显式浅色 = 4 份定义（后两者是给
+    // `?theme=` 用的，见 `sessions_export_page_honours_the_app_theme_over_the_system`）。
+    // 这里只要求「每份都带 toast 变量」，不锁具体份数——否则以后多一种
+    // 主题注入方式就得改这条断言。
+    let toast_vars = zh.matches("--toast-bg:").count();
+    assert!(
+        toast_vars >= 2,
+        "toast 变量至少要有浅色与深色两套，实际 {toast_vars} 份：{zh}"
+    );
+
+    // 3) 英文页面同样有提示，文案跟着语言走。
+    let en = get(
+        router.clone(),
+        "/api/sessions/sess-a/export?inline=1&lang=en",
+    )
+    .await
+    .text();
+    assert!(
+        en.contains("<kbd>Esc</kbd><span>to go back"),
+        "英文提示不对：{en}"
+    );
+
+    // 4) overlayChrome=1 才挂 overlay-chrome，并带出侧栏让位的规则。
+    let overlay = get(
+        router.clone(),
+        "/api/sessions/sess-a/export?inline=1&overlayChrome=1&lang=zh-CN",
+    )
+    .await
+    .text();
+    assert!(
+        overlay.contains("class=\"overlay-chrome\""),
+        "没有挂 overlay class：{overlay}"
+    );
+    assert!(
+        overlay.contains(".overlay-chrome .outline-inner"),
+        "没有侧栏让位规则：{overlay}"
+    );
+
+    // 5) 普通浏览器（不带 overlayChrome）不该有那条让位规则生效。
+    let plain = get(router, "/api/sessions/sess-a/export?inline=1&lang=zh-CN")
+        .await
+        .text();
+    assert!(
+        !plain.contains("class=\"overlay-chrome\""),
+        "浏览器场景误挂 overlay class：{plain}"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn sessions_export_page_honours_the_app_theme_over_the_system() {
+    // 前端 `AppShell.handleViewFullHistory` 把**已解析**的主题传成 `?theme=`。
+    //
+    // 回归的是一个真实报告：「浅色主题在完整历史页不生效」。根因是导出页只看
+    // `prefers-color-scheme`（系统深浅色），根本不知道应用里手动选了什么：
+    // 系统深色 + 应用里选浅色 → 导出页永远黑着。
+    let root = fixture_root("sessexporttheme");
+    write_session(
+        &root,
+        &[
+            r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","message":{"role":"user","content":[{"type":"text","text":"hi"}],"timestamp":1794292905000}}"#,
+        ],
+    );
+    let router = app(&root, Path::new("/tmp/demo"));
+
+    let light = get(
+        router.clone(),
+        "/api/sessions/sess-a/export?inline=1&theme=light&lang=zh-CN",
+    )
+    .await
+    .text();
+    let dark = get(
+        router.clone(),
+        "/api/sessions/sess-a/export?inline=1&theme=dark&lang=zh-CN",
+    )
+    .await
+    .text();
+    let auto = get(router, "/api/sessions/sess-a/export?inline=1&lang=zh-CN")
+        .await
+        .text();
+
+    // 1) 显式主题必须落到 `<html>` 上。
+    assert!(
+        light.contains("<html lang=\"zh-CN\" class=\"theme-light\">"),
+        "浅色主题没有挂到 html 上：{light}"
+    );
+    assert!(
+        dark.contains("<html lang=\"zh-CN\" class=\"theme-dark\">"),
+        "深色主题没有挂到 html 上：{dark}"
+    );
+    // 不传（auto）时不能挂类，否则系统偏好就被架空了。
+    assert!(
+        auto.starts_with("<!doctype html>\n<html lang=\"zh-CN\">"),
+        "auto 不该挂主题类：{auto}"
+    );
+
+    // 2) 浏览器原生部件（滚动条、表单控件）也要跟着走，
+    //    否则浅色页面里拖出一条黑滚动条。
+    assert!(
+        light.contains("<meta name=\"color-scheme\" content=\"light\">"),
+        "浅色缺少 color-scheme：{light}"
+    );
+    assert!(
+        dark.contains("<meta name=\"color-scheme\" content=\"dark\">"),
+        "深色缺少 color-scheme：{dark}"
+    );
+
+    // 3) 关键：显式类必须**能压过** `@media (prefers-color-scheme:dark)`。
+    //    否则「系统深色 + 应用选浅色」依旧无效。类选择器 `html.theme-light`
+    //    权重 (0,1,1) 高于 `:root` (0,1,0)，所以只要它存在就能胜出。
+    for (name, html, class) in [
+        ("light", &light, "html.theme-light{"),
+        ("dark", &dark, "html.theme-dark{"),
+    ] {
+        assert!(
+            html.contains(class),
+            "{name} 主题缺少对应的 CSS 规则，显式主题会失效"
+        );
+        // 浅色规则里必须真的把 --bg 改回浅色值（不能是个空壳）。
+        let at = html.find(class).unwrap();
+        let block = &html[at..(at + 400).min(html.len())];
+        assert!(block.contains("--bg:"), "{name} 的主题块没有变量：{block}");
+    }
+    // 浅色块里的底色必须是浅色（不是深色值）。
+    let light_at = light.find("html.theme-light{").unwrap();
+    assert!(
+        light[light_at..].starts_with("html.theme-light{--bg:#fbfbfa"),
+        "浅色规则里的 --bg 不是浅色值"
+    );
+
+    // 4) 两条 media/类规则共用同一份深色变量，不能各写一份跑偏。
+    let media_at = dark
+        .find("@media (prefers-color-scheme:dark){:root{")
+        .unwrap();
+    let dark_at = dark.find("html.theme-dark{").unwrap();
+    assert!(media_at < dark_at, "media 规则应在后，显式主题才能覆盖");
+    let media_vars = &dark[media_at..];
+    let media_vars = &media_vars[..media_vars.find("}}").unwrap()];
+    let class_vars = &dark[dark_at..];
+    let class_vars = &class_vars[..class_vars.find('}').unwrap()];
+    assert_eq!(
+        media_vars.replace("@media (prefers-color-scheme:dark){:root{", ""),
+        class_vars.replace("html.theme-dark{", ""),
+        "深色变量必须是同一份（单一来源）"
+    );
+
+    // 5) 不认识的 theme 值（或 auto）不能乱挂类。
+    let bogus = get(
+        app(&root, Path::new("/tmp/demo")),
+        "/api/sessions/sess-a/export?inline=1&theme=purple",
+    )
+    .await
+    .text();
+    assert!(
+        !bogus.contains("class=\"theme-"),
+        "无法识别的 theme 不该挂类：{bogus}"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn sessions_export_page_script_survives_line_joining() {
+    // 回归：导出页注入的脚本一旦被压成一行（Rust 字符串里的行尾 `\` 会吃掉
+    // 换行），里面的 `//` 单行注释就会拾掉后面的所有代码和收尾的 `})()`，
+    // 于是整段脚本语法错误、完全不执行——返回按钮和 Esc 一起失效。
+    // 断言不靠跑 JS（本机不一定有 node），而是检查两件必顶：
+    // 1) 脚本里不能有 `//` 注释夹在代码中（只有整行注释才安全，而整行注释
+    //    在压平后就不安全，所以干脆禁止）；
+    // 2) 每行长度合理，且 `})()` 收尾与 `Escape` 监听在同一个可解析结构里。
+    let root = fixture_root("sessexportscript");
+    write_session(
+        &root,
+        &[
+            r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","message":{"role":"user","content":[{"type":"text","text":"hi"}],"timestamp":1794292905000}}"#,
+        ],
+    );
+    let html = get(
+        app(&root, Path::new("/tmp/demo")),
+        "/api/sessions/sess-a/export?inline=1&desktop=1&lang=zh-CN",
+    )
+    .await
+    .text();
+
+    let start = html.find("<script>").expect("没有注入脚本");
+    let end = html[start..].find("</script>").unwrap() + start;
+    let script = &html[start + "<script>".len()..end];
+
+    // 1) 脚本里不允许出现 `//`（无论行内还是整行）：一旦被压平就会变灾难。
+    assert!(
+        !script.contains("//"),
+        "注入脚本里不能有 // 注释（行尾 `\\` 会压平换行，注释会吃掉后续代码）：{script}"
+    );
+
+    // 2) 脚本必须是多行的：压平的直接症状就是全挤一行。
+    assert!(
+        script.lines().count() > 5,
+        "脚本被压成了一行，说明用了字符串行尾续行：{script}"
+    );
+
+    // 3) 几个关键片段都在，且 `})()` 在所有监听之后（收尾没被吃掉）。
+    let escape_at = script.find("Escape").expect("没有 Esc 监听");
+    let close_at = script.rfind("})();").expect("脚本没有正确收尾");
+    assert!(
+        escape_at < close_at,
+        "Esc 监听在收尾之后，脚本不完整：{script}"
+    );
+
+    // 4) 按钮点击监听与 Esc 必须共用同一个 go()，不能重复实现两套回跳。
+    assert!(
+        script.contains("button.addEventListener(\"click\", go)"),
+        "{script}"
+    );
+    assert!(
+        script.contains("if (event.key === \"Escape\") go();"),
+        "{script}"
+    );
+
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -3932,6 +4625,165 @@ async fn system_prompt_tags_own_their_lines_for_the_panel() {
     std::fs::remove_dir_all(&project).ok();
 }
 
+/// 普通对话模式（输入框左侧 π 图标）：**不带系统提示词**，也不带任何工具。
+///
+/// 这条用例守着一次真实踩过的坑：`set_chat_mode` 曾经在 Rust 侧不存在，
+/// 前端删腾后只收到「不支持的 agent 命令」，而它只把错存进 `console.error`。
+/// 于是界面上图标变强调色、占位符变「随便聊聊…」，但实际上提示词与工具
+/// 全是工作模式的 —— 模型照样去 `read` 项目的 `AGENTS.md`。
+///
+/// 前端对应位置：`hooks/useAgentSession.ts` 的模式同步 effect 发
+/// `{"type":"set_chat_mode",“on”:…}`，`components/ChatInput.tsx` 的
+/// `.chat-composer-mark-button` 是开关本体。
+#[tokio::test]
+// 串行锁跨 await 持有是故意的（同其余改 `TOILER_AGENT_DIR` 的用例）。
+#[allow(clippy::await_holding_lock)]
+async fn chat_mode_sends_no_system_prompt_and_no_tools() {
+    let _env = env_guard();
+    let root = fixture_root("chatmode");
+    let agent_dir = fixture_root("chatmode-agent");
+    let project = fixture_root("chatmode-project");
+    std::fs::write(
+        project.join("AGENTS.md"),
+        "# 项目约定\n\n改代码前先跑 cargo test。\n",
+    )
+    .unwrap();
+
+    let previous = std::env::var("TOILER_AGENT_DIR").ok();
+    std::env::set_var("TOILER_AGENT_DIR", &agent_dir);
+
+    let cwd = project.to_string_lossy().to_string();
+    let dir = root.join(toiler_session::session_directory_name(&cwd));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(toiler_session::session_file_name(1794292904431, "sess-a")),
+        format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"sess-a\",\"timestamp\":\"2026-11-10T06:41:44.431Z\",\"cwd\":{}}}\n",
+            serde_json::to_string(&cwd).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let router = app_with_two_models(&root, &project, &agent_dir);
+
+    // 先拿一份工作模式的提示词作对照，确认 AGENTS.md 本来就在上下文里。
+    let work = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"set_ui_locale","locale":"zh-CN"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(work.status, StatusCode::OK, "{}", work.text());
+    let work_prompt = work.json()["data"]["systemPrompt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(work_prompt.contains("<project_context>"), "{work_prompt}");
+
+    // 切到普通对话模式
+    let chat = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"set_chat_mode","on":true}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(chat.status, StatusCode::OK, "{}", chat.text());
+    let chat_json = chat.json();
+    assert_eq!(chat_json["data"]["chatMode"], Value::Bool(true));
+    assert_eq!(
+        chat_json["data"]["systemPrompt"],
+        Value::String(String::new()),
+        "普通对话模式必须不带系统提示词（含语言指令）：{}",
+        chat.text()
+    );
+    assert_eq!(
+        chat_json["data"]["toolNames"],
+        Value::Array(Vec::new()),
+        "普通对话模式不能启任何工具：{}",
+        chat.text()
+    );
+
+    // `get_state` 必须是同一份：面板不能显示一份、实际又发另一份
+    let state = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"get_state"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(state.status, StatusCode::OK, "{}", state.text());
+    let state_json = state.json();
+    let reported = state_json["data"]["systemPrompt"].as_str().unwrap();
+    assert_eq!(reported, "", "get_state 也要报空提示词");
+    assert!(!reported.contains("project_instructions"), "{reported}");
+    assert!(!reported.contains("AGENTS.md"), "{reported}");
+    assert_eq!(state_json["data"]["chatMode"], Value::Bool(true));
+
+    // 工具也是空的：`system_time` 这类桌面工具平时不受预设控制，
+    // 普通对话模式属于「不使用任何工具」，所以它们也得停。
+    let tools = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"get_tools"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(tools.status, StatusCode::OK, "{}", tools.text());
+    for tool in tools.json()["data"].as_array().unwrap() {
+        assert_eq!(
+            tool["active"],
+            Value::Bool(false),
+            "普通对话模式下不能有激活的工具：{}",
+            tools.text()
+        );
+    }
+
+    // 切回工作模式：带上前端记着的预设，提示词与工具都要回来。
+    let back = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"set_chat_mode","on":false,"toolNames":["read","bash","edit","write"]}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(back.status, StatusCode::OK, "{}", back.text());
+    let back_json = back.json();
+    assert_eq!(back_json["data"]["chatMode"], Value::Bool(false));
+    let back_prompt = back_json["data"]["systemPrompt"].as_str().unwrap();
+    assert!(
+        back_prompt.starts_with("你是运行在 toiler 编程代理框架中的专业编程助手"),
+        "切回去要恢复工作模式的提示词：{back_prompt}"
+    );
+    // AGENTS.md 重新回到 `<project_context>`（有 read 时压成路径）
+    assert!(
+        back_prompt.contains(&format!("- {cwd}/AGENTS.md")),
+        "{back_prompt}"
+    );
+    let back_tools: Vec<&str> = back_json["data"]["toolNames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(back_tools.contains(&"read"), "{back_tools:?}");
+    assert!(back_tools.contains(&"bash"), "{back_tools:?}");
+
+    match previous {
+        Some(value) => std::env::set_var("TOILER_AGENT_DIR", value),
+        None => std::env::remove_var("TOILER_AGENT_DIR"),
+    }
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+    std::fs::remove_dir_all(&project).ok();
+}
+
 /// `task_progress` 的任务列表要能从 transcript 恢复，并且必须出现在
 /// `get_state` 的两个扩展字段里 —— 前端任务框读的就是它们
 /// （`useAgentSession.ts` 的 `setExtensionStatuses` / `setExtensionWidgets`）。
@@ -4199,4 +5051,35 @@ async fn edit_from_here_hides_target_and_everything_after_it() {
     }
     std::fs::remove_dir_all(&root).ok();
     std::fs::remove_dir_all(&agent_dir).ok();
+}
+
+/// 会话文件里**没有** `model_change` 条目时，`context.model` 仍要回显模型。
+///
+/// pi 早期会话（以及个别新建路径）只把模型记在每条 assistant 消息的
+/// `provider`/`model` 上，不写 `model_change`。只认 `model_change` 的话
+/// `context.model` 恒为 null，前端 `ChatInput` 的模型按钮就退化成文案
+/// 「选择模型」—— 用户报的就是「模型名偶尔丢失」。用户本机 113 个会话里
+/// 有 4 个是这种形状（实测）。
+#[tokio::test]
+async fn context_model_falls_back_to_assistant_message() {
+    let root = fixture_root("model-fallback");
+    let agent_dir = fixture_root("model-fallback-agent");
+    write_session(
+        &root,
+        &[
+            r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","message":{"role":"user","content":[{"type":"text","text":"你好"}],"timestamp":1794292905000}}"#,
+            r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-11-10T06:41:46.000Z","message":{"role":"assistant","content":[{"type":"text","text":"在"}],"api":"openai-completions","provider":"local","model":"deepseek-flash","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1794292906000}}"#,
+        ],
+    );
+    let router = app_with_two_models(&root, Path::new("/tmp/demo"), &agent_dir);
+
+    let session = get(router, "/api/sessions/sess-a").await.json();
+    assert_eq!(
+        session["context"]["model"]["provider"], "local",
+        "没有 model_change 时要用 assistant 消息兜底：{session}"
+    );
+    assert_eq!(
+        session["context"]["model"]["modelId"], "deepseek-flash",
+        "{session}"
+    );
 }

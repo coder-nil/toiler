@@ -75,6 +75,11 @@ pub struct LiveAgent {
     /// 注释里写得很清楚：面板显示得等于真正发出去的那份），所以放在这里由
     /// [`Self::set_ui_locale`] 和组装点统一维护。
     system_prompt: Mutex<String>,
+    /// 普通对话模式（输入框左侧 π 图标的开关）。
+    ///
+    /// `get_state.chatMode` 要回报它：前端重开面板时靠这个字段校正界面状态，
+    /// 否则浏览器里的 `localStorage` 与实际后端状态可能不一致。
+    chat_mode: Mutex<bool>,
     /// 工具 ↔ 前端的通道（`ask_user` 的问答往返、`task_progress` 的状态推送）。
     ui: Arc<UiBridge>,
     /// 任务列表：既喂工具，也喂 `get_state.extensionStatuses/extensionWidgets`。
@@ -185,6 +190,7 @@ impl LiveAgent {
             prompt_inputs: Mutex::new(prompt_inputs),
             locale: Mutex::new(locale),
             system_prompt: Mutex::new(system_prompt),
+            chat_mode: Mutex::new(false),
             ui,
             tasks,
         }))
@@ -306,6 +312,11 @@ impl LiveAgent {
             // 少了前者，`getPresetFromTools` 拿不到东西，工具列表就是空的。
             "get_tools" => self.tool_infos().await,
             "set_tools" => self.set_tools(command).await,
+            // 输入框左侧 π 图标的工作 / 普通对话开关。以前这个命令在 Rust
+            // 侧根本不存在，前端每次切换都收到「不支持的 agent 命令」，而它只
+            // 把这个错误打进了控制台 —— 界面上看着切了，实际提示词与工具全是
+            // 工作模式（典型症状：普通对话里模型照样 read AGENTS.md）。
+            "set_chat_mode" => self.set_chat_mode(command).await,
             // `ask_user` 的问答往返：前端弹窗回答后发回来。请求已作废（超时/中止）
             // 时不算错误 —— 前端只是晚了一步。
             "extension_ui_response" => {
@@ -518,6 +529,9 @@ impl LiveAgent {
             "thinkingLevel": "off",
             // pi 的面板读的就是这一项；缺了它会显示「系统提示词尚未加载」。
             "systemPrompt": self.current_system_prompt(),
+            // 输入框 π 图标的实际状态：前端重开面板时靠它校正，不能只信
+            // 浏览器里的 `localStorage`（普通对话模式的偏好就是存在那里的）。
+            "chatMode": *self.chat_mode.lock().expect("chat mode"),
             // 任务进度与未回答的 UI 请求：前端靠这三项恢复界面状态。
             "extensionStatuses": self.tasks.status_text().map_or_else(
                 || json!([]),
@@ -592,6 +606,57 @@ impl LiveAgent {
         ))
     }
 
+    /// `{"type":"set_chat_mode","on":bool,"toolNames":[…]}` → `{chatMode, systemPrompt, toolNames}`。
+    ///
+    /// 普通对话模式的全部含义就两条：**不带系统提示词**、**停用所有工具**。
+    /// 提示词走 [`PromptInputs::set_chat_mode`] —— `compose` 直接返回空串，
+    /// `rpi_agent` 的 `agent_loop` 再把空串转成 `None`，于是请求里连 system
+    /// 消息都不会有。工具走 `set_tools` 的空集合。
+    ///
+    /// 请求体里的 `toolNames` 是切**回**工作模式时用的：前端会带上进普通对话
+    /// 模式前的预设，因为记忆只存在浏览器里，重开的面板拿不到这份快照。
+    async fn set_chat_mode(&self, command: &Value) -> Result<Value> {
+        let on = command.get("on").and_then(Value::as_bool).unwrap_or(false);
+        let tools = self.harness.get_tools().await?;
+
+        let active = if on {
+            // 普通对话模式不使用任何工具。与 `set_tools` 一样只换 active 集合，
+            // 注册表不动，切回去时能按预设恢复。
+            Vec::new()
+        } else {
+            let requested: Vec<String> = command
+                .get("toolNames")
+                .and_then(Value::as_array)
+                .map(|names| {
+                    names
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            ordered_active_tools(&tools, &requested)
+        };
+
+        self.harness.set_tools(tools, Some(active.clone())).await?;
+        {
+            let mut inputs = self.prompt_inputs.lock().expect("prompt inputs");
+            inputs.set_chat_mode(on);
+            inputs.set_tool_names(active.clone());
+        }
+        *self.chat_mode.lock().expect("chat mode") = on;
+
+        // 顺序要紧：先改上游状态再 recompose，否则拿到的是旧模式的提示词。
+        let prompt = self.recompose();
+        self.harness.set_system_prompt(Some(prompt)).await?;
+
+        Ok(json!({
+            "chatMode": on,
+            "systemPrompt": self.current_system_prompt(),
+            "toolNames": active,
+        }))
+    }
+
     /// `{"type":"set_tools","toolNames":[…]}` → `null`（与 pi 同形）。
     ///
     /// 空数组就是「全关」（pi 的工具预设 `none` / 普通对话模式）：此时提示词只剩
@@ -611,16 +676,7 @@ impl LiveAgent {
             .unwrap_or_default();
 
         let tools = self.harness.get_tools().await?;
-        // 顺序沿用注册表（即 pi 的默认工具顺序），前端传的顺序不影响提示词。
-        // 桌面工具（`system_time` / `task_progress` / `ask_user`）不受预设控制：
-        // pi 的 `set_tools` 用 `withExtensionTools` 把它们加回激活集合。
-        let ordered: Vec<String> = tools
-            .iter()
-            .map(|tool| tool.tool.schema().name.clone())
-            .filter(|name| {
-                requested.contains(name) || crate::tools::ALWAYS_ON_TOOLS.contains(&name.as_str())
-            })
-            .collect();
+        let ordered = ordered_active_tools(&tools, &requested);
         self.harness.set_tools(tools, Some(ordered.clone())).await?;
 
         self.prompt_inputs
@@ -649,6 +705,24 @@ impl LiveAgent {
         self.running.store(false, Ordering::Relaxed);
         let _ = self.lane.abort().await;
     }
+}
+
+/// 按注册表顺序算出该激活哪些工具。
+///
+/// 顺序沿用注册表（即 pi 的默认工具顺序），前端传的顺序不影响提示词。
+/// 桌面工具（`system_time` / `task_progress` / `ask_user`）不受预设控制：
+/// pi 的 `set_tools` 用 `withExtensionTools` 把它们加回激活集合。
+fn ordered_active_tools(
+    tools: &[rpi_harness::types::HarnessTool],
+    requested: &[String],
+) -> Vec<String> {
+    tools
+        .iter()
+        .map(|tool| tool.tool.schema().name.clone())
+        .filter(|name| {
+            requested.contains(name) || crate::tools::ALWAYS_ON_TOOLS.contains(&name.as_str())
+        })
+        .collect()
 }
 
 /// 从 v3 文件里恢复任务列表：沿分支回溯，取最后一条 `task_progress` 的
@@ -739,17 +813,25 @@ fn streaming_delivery(command: &Value) -> MessageDelivery {
 }
 
 /// `{message:"文本"}` / `{message:{…}}` / `{message:[blocks]}` → `AgentMessage`。
+///
+/// 附件图片在**平级的 `images` 字段**里（`{type:"image",data,mimeType}` 数组，
+/// 形状见 `frontend/lib/image-attachments.ts` 的 `validateAgentImages`），不在
+/// `message` 里。这里必须把它们拼成内容块，否则图片既不会落进 v3 文件、也
+/// 不会进模型上下文 —— 前端发完就 `loadSession` 重拉，用户看到的缩略图直接
+/// 消失（图片因此「被吞」）。`steer` / `follow_up` 走同一个函数，一并修好。
 fn prompt_message(command: &Value) -> Result<AgentMessage> {
     let now = now_ms();
+    let images = prompt_images(command)?;
     match command.get("message") {
         Some(Value::String(text)) => Ok(AgentMessage::User(rpi_ai::types::UserMessage::new(
-            text.clone(),
+            with_images(text, images),
             now,
         ))),
         Some(Value::Array(blocks)) => {
-            let content: Vec<rpi_ai::types::Content> =
+            let mut content: Vec<rpi_ai::types::Content> =
                 serde_json::from_value(Value::Array(blocks.clone()))
                     .context("message 不是合法的内容块数组")?;
+            content.extend(images);
             Ok(AgentMessage::User(rpi_ai::types::UserMessage::new(
                 rpi_ai::types::UserContent::Blocks(content),
                 now,
@@ -759,6 +841,50 @@ fn prompt_message(command: &Value) -> Result<AgentMessage> {
             .context("message 不是合法的 AgentMessage")?),
         _ => Err(anyhow::anyhow!("prompt 缺少 message")),
     }
+}
+
+/// `command["images"]` → 图片内容块。
+///
+/// 前端发的是扁平的 `{type:"image",data,mimeType}`，与 `rpi_ai` 的
+/// `ImageContent` 序列化形状一致，直接反序列化即可。缺字段 / 类型不对时报错
+/// 而不是静默丢弃：图片是用户明确附上的内容，吞掉它比报错更糟。
+fn prompt_images(command: &Value) -> Result<Vec<rpi_ai::types::Content>> {
+    let Some(raw) = command.get("images") else {
+        return Ok(Vec::new());
+    };
+    if raw.is_null() {
+        return Ok(Vec::new());
+    }
+    let items = raw
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("images 必须是数组"))?;
+    items
+        .iter()
+        .map(|item| {
+            let block: rpi_ai::types::Content = serde_json::from_value(item.clone())
+                .context("images 里存在不合法的附件（需要 {type:\"image\",data,mimeType}）")?;
+            match block {
+                rpi_ai::types::Content::Image(_) => Ok(block),
+                _ => Err(anyhow::anyhow!("images 里只能是 image 块")),
+            }
+        })
+        .collect()
+}
+
+/// 文本 + 图片 → `UserContent`。
+///
+/// 没有图片时保持裸字符串（v3 编码会补成块数组）；只有图片没有文本时不要塞
+/// 一个空 text 块，否则模型会收到一段空的用户正文。
+fn with_images(text: &str, images: Vec<rpi_ai::types::Content>) -> rpi_ai::types::UserContent {
+    if images.is_empty() {
+        return rpi_ai::types::UserContent::Text(text.to_string());
+    }
+    let mut content: Vec<rpi_ai::types::Content> = Vec::with_capacity(images.len() + 1);
+    if !text.trim().is_empty() {
+        content.push(rpi_ai::types::Content::text(text.to_string()));
+    }
+    content.extend(images);
+    rpi_ai::types::UserContent::Blocks(content)
 }
 
 fn now_ms() -> i64 {
@@ -1320,5 +1446,114 @@ mod retry_notice_tests {
     fn retry_scheduled_is_no_longer_projected_as_its_own_frame() {
         // 事件名对齐 pi：旧形状会让前端收到一个它不认识的事件。
         assert!(project_event(&scheduled(1, "boom")).is_none());
+    }
+}
+
+/// prompt 的入参拼装：图片附件在平级的 `images` 字段里，不能丢。
+#[cfg(test)]
+mod prompt_message_tests {
+    use super::*;
+
+    fn image(data: &str) -> Value {
+        json!({ "type": "image", "data": data, "mimeType": "image/png" })
+    }
+
+    fn blocks(message: &AgentMessage) -> Vec<Value> {
+        let AgentMessage::User(user) = message else {
+            panic!("不是 user 消息：{message:?}");
+        };
+        match &user.content {
+            rpi_ai::types::UserContent::Text(text) => vec![json!({ "type": "text", "text": text })],
+            rpi_ai::types::UserContent::Blocks(content) => content
+                .iter()
+                .map(|block| serde_json::to_value(block).unwrap())
+                .collect(),
+        }
+    }
+
+    /// 前端发的是 `{type:"prompt", message:"看这张图", images:[…]}`，图片不在
+    /// `message` 里。以前只读 `message`，图片整块被丢掉（发送后一重拉就消失）。
+    #[test]
+    fn images_ride_along_with_a_kind_of_string_message() {
+        let command = json!({
+            "type": "prompt",
+            "message": "看这张图",
+            "images": [image("QUJD"), image("REVG")]
+        });
+        let message = prompt_message(&command).expect("应当接受带图片的 prompt");
+        let blocks = blocks(&message);
+        assert_eq!(blocks.len(), 3, "{blocks:?}");
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "看这张图");
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["data"], "QUJD");
+        assert_eq!(blocks[1]["mimeType"], "image/png");
+        assert_eq!(blocks[2]["data"], "REVG");
+    }
+
+    #[test]
+    fn images_append_to_an_existing_block_array() {
+        let command = json!({
+            "type": "prompt",
+            "message": [{ "type": "text", "text": "看图" }],
+            "images": [image("QUJD")]
+        });
+        let blocks = blocks(&prompt_message(&command).unwrap());
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert_eq!(blocks[1]["type"], "image");
+    }
+
+    /// 只有图片没有文字时不能塞空 text 块（模型会收到一段空正文）。
+    #[test]
+    fn image_only_prompt_has_no_empty_text_block() {
+        let command = json!({ "type": "prompt", "message": "  ", "images": [image("QUJD")] });
+        let blocks = blocks(&prompt_message(&command).unwrap());
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert_eq!(blocks[0]["type"], "image");
+    }
+
+    /// 不带图片时保持裸字符串：v3 文件里的老形状不能因为这次修改而变。
+    #[test]
+    fn plain_text_prompt_stays_a_string() {
+        let message = prompt_message(&json!({ "type": "prompt", "message": "hi" })).unwrap();
+        let AgentMessage::User(user) = message else {
+            panic!("不是 user 消息");
+        };
+        assert_eq!(user.content.as_text(), Some("hi"));
+    }
+
+    /// 附件不合法时宁可报错也不静默丢掉：图片是用户明确附上的内容。
+    #[test]
+    fn malformed_images_are_rejected_instead_of_dropped() {
+        assert!(prompt_message(&json!({
+            "type": "prompt",
+            "message": "hi",
+            "images": [{ "data": "QUJD", "mimeType": "image/png" }]
+        }))
+        .is_err());
+        assert!(prompt_message(&json!({
+            "type": "prompt",
+            "message": "hi",
+            "images": [{ "type": "text", "text": "hi" }]
+        }))
+        .is_err());
+        assert!(
+            prompt_message(&json!({ "type": "prompt", "message": "hi", "images": "x" })).is_err()
+        );
+    }
+
+    /// `steer` / `follow_up` 走同一个 `prompt_message`，图片同样不能丢。
+    #[test]
+    fn steer_and_follow_up_keep_their_images() {
+        for ty in ["steer", "follow_up"] {
+            let command = json!({
+                "type": ty,
+                "message": "换个方向",
+                "images": [image("QUJD")]
+            });
+            let blocks = blocks(&prompt_message(&command).unwrap());
+            assert_eq!(blocks.len(), 2, "{ty}: {blocks:?}");
+            assert_eq!(blocks[1]["type"], "image", "{ty}");
+        }
     }
 }

@@ -127,11 +127,21 @@ cargo build -p toiler-desktop   # build.rs 自动捡 dist/
     │                      trust.json / desktop-access*.json
     ├── sessions/          v3 会话
     ├── plugins/           预留
+    ├── workspace/         兜底项目目录（见下）
     └── work.sqlite        项目列表 + 选中项
 ```
 
 - 首次启动从 `~/.pi/agent` **复制**一份配置与会话，**旧文件保留不删**；
   播过就不再动（`paths::seed_from_pi_if_needed`）。
+- **双击启动的默认项目绝不能用 `$HOME`。** 从 Finder / 启动台 / Dock 拉起
+  （LaunchServices 给的 cwd 是 `/`）时，`server::default_workspace_dir()` 的顺序
+  是「上次选中的项目 → `<toilerHome>/workspace`」。改用主目录不只是「文件面板
+  显示得难看」：默认 cwd 会进允许根（`state::sync_allowed_roots`），于是文件
+  面板列出主目录、agent 的 cwd 也是主目录，`find` / `grep` 的缺省路径 `.` 一
+  递归就撞进 `Documents` / `Desktop` / `Pictures` / `Music`，macOS 的 TCC 会
+  逐个弹隐私授权。读上次选中项必须走 `ProjectStore::selected_read_only()`
+  （不建库）：抢先建出空 `work.sqlite` 会让 `migrate_from_pi_if_needed` 的
+  「当前库还不存在」前提永久失效。
 - 环境变量覆盖：`AGENTS_HOME` / `TOILER_HOME` / `TOILER_AGENT_DIR` /
   `TOILER_SESSIONS_ROOT` / `TOILER_MODELS` / `TOILER_FRONTEND_DIR`。
 - `PI_WEB_*`（`PI_WEB_HOSTNAME`、`PI_WEB_ALLOWED_HOSTS`、
@@ -226,6 +236,12 @@ scope 用 crate 短名：`server` / `session` / `desktop` / `poc` / `docs` / `to
   写的断言（「没有 404.html 所以我走内联分支」）会在换前端时静默失效。
 - **Tailwind v4 会扫整个前端目录**用来自动收集 class，所以 `frontend/` 下
   不要放无关的大目录；也只搬被引用到的文件会让 CSS 缺类（实测缺 74 个）。
+- **发布版的 WebView 原生右键菜单是主动关掉的**（`toiler-desktop/src/lib.rs` 的
+  `SUPPRESS_CONTEXT_MENU_SCRIPT`，只在 `not(debug_assertions)` 注入）。三条约束：
+  监听必须挂在**捕获阶段**（前端 React 处理器注册得更晚）；只 `preventDefault`，
+  **不能 `stopPropagation`**（会话列表行的自定义右键菜单靠冒泡派发）；脚本里
+  **不能出现 `//`**（与导出页同一条铁律，压平后会吃掉后续代码）。输入框 /
+  contenteditable 与 `.xterm` 必须放行，否则终端只剩快捷键盘能粘贴。
 
 ## 明确不做的事
 

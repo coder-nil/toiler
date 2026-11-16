@@ -132,7 +132,7 @@ export function AppShell() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [initialNavigation] = useState(() => getInitialNavigation(searchParams));
-  const { preference, toggleTheme } = useTheme();
+  const { theme, preference, toggleTheme } = useTheme();
   const themeLabelKey =
     preference === "light" ? "theme.light" : preference === "dark" ? "theme.dark" : "theme.auto";
   const { locale, setLocale, t: translate, supportedLocales } = useI18n();
@@ -1090,16 +1090,27 @@ export function AppShell() {
   const handleViewFullHistory = useCallback(() => {
     if (!selectedSession) return;
     const exportPath = `/api/sessions/${encodeURIComponent(selectedSession.id)}/export?inline=1`;
+    // 导出页会注入一个「返回对话」按钮，文案跟着界面语言走；`returnTo` 让按钮
+    // 直接回跳当前地址（白名单见服务端 `allowed_return_to`）。
+    const langQuery = `&lang=${encodeURIComponent(locale)}`;
+    // 导出页是另一份 HTML，拿不到这里的 React 状态；只靠 `prefers-color-scheme`
+    // 的话「系统深色 + 应用里选浅色」会让导出页永远是黑的。所以把**已解析**
+    // 的主题（`light`/`dark`）明确传过去。
+    const themeQuery = `&theme=${theme}`;
+    // 覆盖式标题栏（macOS）下红绿灯浮在网页内容上，导出页的左侧大纲得往下让位，
+    // 否则第一项正好压在三个按钮底下。这个标志只在桌面壳里为 true。
+    const overlayQuery = window.__TOILER_OVERLAY_TITLEBAR__ ? "&overlayChrome=1" : "";
     // Tauri's macOS WebView does not create a child window for window.open().
     // The desktop shell injects its loopback API origin, so navigate this
-    // WebView directly; browser back returns to the selected conversation.
+    // WebView directly; the button (and Escape) on the export page returns to
+    // the selected conversation.
     if (window.__PI_WEB_API_ORIGIN__) {
       // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- loopback export page outside the Tauri app origin
-      window.location.href = `${window.__PI_WEB_API_ORIGIN__.replace(/\/$/, "")}${exportPath}&desktop=1&returnTo=${encodeURIComponent(window.location.href)}`;
+      window.location.href = `${window.__PI_WEB_API_ORIGIN__.replace(/\/$/, "")}${exportPath}&desktop=1${langQuery}${themeQuery}${overlayQuery}&returnTo=${encodeURIComponent(window.location.href)}`;
       return;
     }
-    window.open(exportPath, "_blank", "noopener,noreferrer");
-  }, [selectedSession]);
+    window.open(`${exportPath}${langQuery}${themeQuery}`, "_blank", "noopener,noreferrer");
+  }, [locale, selectedSession, theme]);
 
   // Show chat area if a session is selected, or if we have a cwd to start a new session in
   const effectiveNewSessionCwd = newSessionCwd ?? (selectedSession === null && activeCwd ? activeCwd : null);

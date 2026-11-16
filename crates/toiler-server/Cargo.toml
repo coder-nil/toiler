@@ -1,6 +1,6 @@
 [package]
 name = "toiler-server"
-version = "1.0.0"
+version = "1.0.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -33,6 +33,10 @@ base64 = "0.22"
 md-5 = "0.10"
 sha2 = "0.10"
 aes = "0.8"
+# Git 凭据加密（`git_credentials.rs`）：AES-256-GCM，与 pi 的
+# `git-credentials.json` 逐字段兼容。`aes` 已在上面（COSY 的 AES-128-CBC），
+# 但那是块加密，没有认证标签，不能拿来存凭据。
+aes-gcm = "0.10"
 cbc = "0.1"
 rsa = { version = "0.9", features = ["pem"] }
 rand = "0.8"
@@ -52,6 +56,7 @@ flate2 = "1"
 idna = "1"
 # 枚举本机网卡，挑一个手机最可能连上的内网 IPv4（pi 用 os.networkInterfaces）
 libc = "0.2"
+pulldown-cmark = { version = "0.13.6", default-features = false, features = ["html"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }

@@ -175,6 +175,7 @@ export const zhCNLocale: LocalePlugin = {
     "git.passwordOrToken": "密码或访问令牌",
     "git.keyPassphrase": "私钥口令",
     "git.rememberCredential": "在此设备上加密记住凭据",
+    "git.rememberCredentialUnavailable": "当前平台没有可用的系统密钥库，无法加密保存凭据；HTTPS 远程仍可由 git 自带的 credential helper 记住。",
     "git.savedCredential": "留空时将使用已加密保存的凭据",
     "git.nativeProtocolAnonymous": "git:// 协议不支持认证。",
     "git.fetch": "获取",
