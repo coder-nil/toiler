@@ -18,6 +18,7 @@ Next 应用来的），保留在原位置作为来源记录。`1.0.0` 是 Toiler
 
 ### Changed
 
+- 应用、npm、Tauri 和 Cargo 版本号统一为 `1.0.3`。
 - Windows 发布流程增加 Defender 扫描门禁：更新病毒库后扫描应用本体、NSIS 与 MSI 安装包；扫描失败、Defender 不可用或产物缺失时阻止上传和后续发布，不关闭实时防护。
 - README 与 Release 安装说明补充 Windows 隔离/删除后的排查指引。当前产物仍未签名，CI 扫描通过不保证所有终端都不拦截，不再把 Defender 检测一概当作可直接放行的 SmartScreen 提示。
 
