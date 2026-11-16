@@ -139,17 +139,18 @@ export function tasksFromMessages(messages: readonly AgentMessage[]): TaskProgre
   return [];
 }
 
-/** 活会话优先（更新更及时），否则回落到会话记录。 */
+/** 活会话优先；只有查看当前叶子时才从消息恢复，历史节点的中间快照不是当前进度。 */
 export function resolveTaskProgress(
   widgets: readonly ExtensionWidgetItem[],
   messages: readonly AgentMessage[],
+  viewingHistory = false,
 ): TaskProgressEntry[] {
   const widget = widgets.find((item) => item.key === TASK_PROGRESS_WIDGET_KEY);
   if (widget) {
     const parsed = parseTaskWidgetLines(widget.lines);
     if (parsed) return advanceActiveTask(parsed);
   }
-  return advanceActiveTask(tasksFromMessages(messages));
+  return viewingHistory ? [] : advanceActiveTask(tasksFromMessages(messages));
 }
 
 /**

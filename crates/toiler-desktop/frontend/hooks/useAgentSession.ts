@@ -15,6 +15,7 @@ import type {
 import { isBlockingExtensionUiRequest } from "@/lib/browser-notifications";
 import { normalizeToolCalls } from "@/lib/normalize";
 import { isPromptRejectedError, sendAgentCommand } from "@/lib/agent-client";
+import { PauseHandoff } from "@/lib/pause-handoff";
 import { clearDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-store";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
 import { getPreferredChatMode, setPreferredChatMode, type ChatMode } from "@/lib/chat-mode-preference";
@@ -348,6 +349,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const messagesSessionIdRef = useRef<string | null>(null);
   const [streamState, dispatch] = useReducer(streamReducer, INITIAL_STREAMING_STATE);
   const [agentRunning, setAgentRunning] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [waitingForStop, setWaitingForStop] = useState(false);
+  const pauseHandoffRef = useRef(new PauseHandoff());
   const [bashRunning, setBashRunning] = useState(false);
   const [pendingBash, setPendingBash] = useState<{ command: string; excludeFromContext: boolean } | null>(null);
   const [modelNames, setModelNames] = useState<Record<string, string>>({});
@@ -396,6 +400,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const agentRunningRef = useRef(false);
   const sdkAgentActiveRef = useRef(false);
   const rpcPromptPendingRef = useRef(false);
+  const promptDispatchRef = useRef<Promise<void> | null>(null);
   const notifiedPromptRunIdRef = useRef(-1);
   const bashRunningRef = useRef(false);
   const bashRecoveryIdRef = useRef(0);
@@ -546,6 +551,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [messages, totalMessageCount, sessionStatsOverride, contextUsage, data?.filePath, data?.totalActiveMs, session?.id, session?.name]);
 
   const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false) => {
+    const runId = promptRunIdRef.current;
     let messagesLoaded = false;
     try {
       if (showLoading) setLoading(true);
@@ -570,7 +576,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json() as SessionData;
-      if (sessionIdRef.current !== sid) return null;
+      if (sessionIdRef.current !== sid || promptRunIdRef.current !== runId) return null;
       const persistedMessages = d.context.messages;
       setData(d);
       setActiveLeafId(d.leafId);
@@ -1478,6 +1484,27 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   ) => {
     const trimmedMessage = message.trim();
     if (!trimmedMessage && !images?.length) return;
+    const handoff = pauseHandoffRef.current;
+    if (handoff.stopping) {
+      if (handoff.queued) {
+        restoreSubmission(message, images, composerDraftKey);
+        return;
+      }
+      const sid = sessionIdRef.current;
+      setWaitingForStop(true);
+      let ready = false;
+      try {
+        ready = await handoff.waitToSend();
+      } catch {
+        // 暂停失败由 handleAbort 提示；不能把下一条继续发给尚未停止的任务。
+      } finally {
+        setWaitingForStop(false);
+      }
+      if (!ready || !sessionHookMountedRef.current || sessionIdRef.current !== sid) {
+        restoreSubmission(message, images, composerDraftKey);
+        return;
+      }
+    }
     if (agentRunningRef.current || bashRunningRef.current) {
       restoreSubmission(message, images, composerDraftKey);
       return;
@@ -1528,6 +1555,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     let sentSessionId: string | null = null;
     let promptRequestStarted = false;
     checkpointIdRef.current = null;
+    let finishDispatch!: () => void;
+    const dispatchFinished = new Promise<void>((resolve) => { finishDispatch = resolve; });
+    promptDispatchRef.current = dispatchFinished;
 
     try {
       if (isNew && newSessionCwd) {
@@ -1626,6 +1656,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentRunning(false);
       setAgentPhase(null);
       dispatch({ type: "end" });
+    } finally {
+      finishDispatch();
+      if (promptDispatchRef.current === dispatchFinished) promptDispatchRef.current = null;
     }
   }, [isNew, locale, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, onSessionListRefresh, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, reconcileAgentState, restoreSubmission]);
 
@@ -1666,11 +1699,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   executeBashRef.current = executeBash;
 
   const handleAbort = useCallback(async () => {
-    // 新建会话的第一条消息：会话 id 还没回来时 `sessionIdRef` 是空的，
-    // 直接 return 会让「刚发出就后悔」的那一下停止完全失效（按钮看着能点，但什么都不发）。
-    const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
-    if (!sid) return;
+    const handoff = pauseHandoffRef.current;
+    if (handoff.stopping) {
+      handoff.cancelQueued();
+      setWaitingForStop(false);
+      return;
+    }
+    // 新会话的 id 还没回来也要先建立屏障，避免紧接着提交的消息漏过等待。
     if (bashRunningRef.current) {
+      const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
+      if (!sid) return;
       try {
         await sendAgentCommand(sid, { type: "abort_bash" });
       } catch (e) {
@@ -1679,13 +1717,28 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       return;
     }
+    setStopping(true);
+    const targetSession = sessionIdRef.current ?? ensuringNewSessionRef.current;
+    const runId = promptRunIdRef.current;
     try {
-      await sendAgentCommand(sid, { type: "abort" });
+      await handoff.stop(async () => {
+        // 先让上一条完成投递，避免暂停先到、上一条 prompt 却在暂停之后才启动。
+        await promptDispatchRef.current;
+        const sid = await targetSession;
+        if (!sid) return;
+        await sendAgentCommand(sid, { type: "abort" });
+        if (!sessionHookMountedRef.current || sessionIdRef.current !== sid) return;
+        // 断开旧事件流再交接；缓冲中的旧结束事件不能落到下一轮上。
+        closeEvents();
+        await finishPromptWithoutStream(sid, runId);
+      });
     } catch (e) {
       console.error("Failed to abort:", e);
       addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setStopping(false);
     }
-  }, [addNotice]);
+  }, [addNotice, closeEvents, finishPromptWithoutStream]);
 
   const handleFork = useCallback(async (entryId: string) => {
     if (bashRunningRef.current) return;
@@ -1951,6 +2004,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     behavior: "steer" | "followUp",
     images?: AttachedImage[],
   ) => {
+    if (pauseHandoffRef.current.stopping) {
+      await handleSend(message, images);
+      return;
+    }
     const sid = sessionIdRef.current;
     const restore = () => restoreSubmission(message, images, composerDraftKey);
     if (!sid) {
@@ -1990,7 +2047,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         message: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [addNotice, composerDraftKey, locale, restoreSubmission, t]);
+  }, [addNotice, composerDraftKey, handleSend, locale, restoreSubmission, t]);
 
   const handleSteer = useCallback(async (message: string, images?: AttachedImage[]) => {
     await sendStreamingPrompt(message, "steer", images);
@@ -2353,7 +2410,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // State
     data, loading, error, activeLeafId, messages, entryIds, streamState,
     hasEarlierMessages, totalMessageCount, loadEarlierMessages,
-    agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, chatMode, thinkingLevel,
+    agentRunning: waitingForStop || (agentRunning && !stopping), modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, chatMode, thinkingLevel,
     retryInfo, promptFailure, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, modelSwitching, sessionStats,
     slashCommands, slashCommandsLoading, queuedMessages,

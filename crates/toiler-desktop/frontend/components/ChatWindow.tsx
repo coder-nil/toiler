@@ -198,7 +198,7 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
   }, [chatInputRef]);
 
   const {
-    loading, error, messages, entryIds, streamState,
+    data, loading, error, activeLeafId, messages, entryIds, streamState,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, chatMode, thinkingLevel,
     retryInfo, promptFailure, contextUsage, forkingEntryId,
     compactError, compactResult, displayModel: displayModelValue, modelSwitching, sessionStats,
@@ -343,12 +343,14 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
     [messages, sessionBusy, streamState.isStreaming],
   );
 
-  // 任务清单：活会话读 widget，历史会话从 `task_progress` 的工具结果里恢复。
-  // 两条路都给不出任务时是空数组，面板自己不会渲染。
+  // 历史节点只有当时的中间快照，不能因「从这里编辑」把已收起的任务重新恢复。
+  // 实时 widget 不受影响，编辑后重发产生的新任务仍能正常显示。
+  const viewingHistory = data != null && activeLeafId !== data.leafId;
   const taskProgress = useMemo(
-    () => resolveTaskProgress(extensionWidgets, messages),
-    [extensionWidgets, messages],
-  );  const { startIndex: unitStartIndex, hasMore: hasMoreUnits } = getVisibleRenderWindow(renderUnits.length, visibleCount);
+    () => resolveTaskProgress(extensionWidgets, messages, viewingHistory),
+    [extensionWidgets, messages, viewingHistory],
+  );
+  const { startIndex: unitStartIndex, hasMore: hasMoreUnits } = getVisibleRenderWindow(renderUnits.length, visibleCount);
   // The pager needs both flags without re-subscribing its observer each render.
   const pagingStateRef = useRef({ hasMoreUnits, hasEarlierMessages });
   pagingStateRef.current = { hasMoreUnits, hasEarlierMessages };
