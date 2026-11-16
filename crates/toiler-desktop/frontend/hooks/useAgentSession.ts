@@ -18,6 +18,7 @@ import { isPromptRejectedError, sendAgentCommand } from "@/lib/agent-client";
 import { PauseHandoff } from "@/lib/pause-handoff";
 import { clearDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-store";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
+import { getPreferredModel, resolvePreferredModel, setPreferredModel } from "@/lib/model-preference";
 import { getPreferredChatMode, setPreferredChatMode, type ChatMode } from "@/lib/chat-mode-preference";
 import { getPresetFromActiveNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
 import type { SessionStatsInfo } from "@/lib/session-stats";
@@ -1808,6 +1809,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (isNew) {
       const selectedModel = { provider, modelId };
       newSessionModelOverrideRef.current = selectedModel;
+      setPreferredModel(selectedModel);
       setNewSessionModel(selectedModel);
       setPendingModel(selectedModel);
       const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
@@ -1828,6 +1830,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     setModelSwitching(true);
     try {
       await sendAgentCommand(sid, { type: "set_model", provider, modelId });
+      setPreferredModel(target);
       // Pi persists model_change synchronously. Reload the canonical session so
       // the model, thinking level, and active leaf all advance together.
       modelSwitchPendingRef.current = false;
@@ -1881,10 +1884,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     const nextModelList = d.modelList ?? [];
     setModelList(nextModelList);
     if (isNew && !sessionIdRef.current) {
-      const match = d.defaultModel
-        ? nextModelList.find((m) => m.id === d.defaultModel?.modelId && m.provider === d.defaultModel?.provider)
-        : undefined;
-      const displayModel = match ?? nextModelList[0];
+      const preferredModel = getPreferredModel();
+      const displayModel = resolvePreferredModel(nextModelList, d.defaultModel, preferredModel);
+      if (!newSessionModelOverrideRef.current && displayModel
+        && displayModel.provider === preferredModel?.provider && displayModel.id === preferredModel.modelId) {
+        // 草稿偏好也必须传给建会话请求，不能只改变选择器文案。
+        newSessionModelOverrideRef.current = preferredModel;
+        setNewSessionModel(preferredModel);
+      }
       setNewSessionDefaultModel(displayModel ? { provider: displayModel.provider, modelId: displayModel.id } : null);
       // An `enabledModels` pattern may pin a thinking level (`anthropic/*:high`).
       // Like pi, apply it to the model a new session starts with.

@@ -408,6 +408,9 @@ impl LiveAgent {
 
         self.lane.set_model(model.clone()).await?;
         *self.model.lock().expect("model") = model.clone();
+        self.settings
+            .set_default_model(provider, model_id)
+            .context("保存最近选择的模型失败")?;
 
         Ok(json!({ "id": model.id, "provider": model.provider.as_str() }))
     }

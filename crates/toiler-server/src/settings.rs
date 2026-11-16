@@ -171,6 +171,17 @@ impl SettingsFile {
         Ok(self.queue_modes())
     }
 
+    /// 用户显式选择的模型同时作为后续新会话的默认值；保留其它配置。
+    pub fn set_default_model(&self, provider: &str, model_id: &str) -> std::io::Result<()> {
+        let mut root = self.read();
+        if !root.is_object() {
+            root = serde_json::json!({});
+        }
+        root["defaultProvider"] = Value::from(provider);
+        root["defaultModel"] = Value::from(model_id);
+        self.write(&root)
+    }
+
     /// `(defaultProvider, defaultModel)`。
     pub fn default_model(&self) -> (Option<String>, Option<String>) {
         let raw = self.read();

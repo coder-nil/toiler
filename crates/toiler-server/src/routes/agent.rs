@@ -302,6 +302,17 @@ pub async fn new_session(
         }
     };
 
+    // 只记住显式选择；打开历史会话或默认建会话不应覆盖用户偏好。
+    if let Some((provider, model_id)) = &requested_model {
+        if let Err(error) = state.settings().set_default_model(provider, model_id) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("保存最近选择的模型失败：{error}") })),
+            )
+                .into_response();
+        }
+    }
+
     // 普通对话模式：前端带 `chatMode: true` 建会话时，第一轮就不该带系统提示词。
     // 与 pi 的 `/api/agent/new` 一致。顺序要紧：先 `set_chat_mode` 再 `set_tools`，
     // 否则 `set_tools` 会把工具重新激活，普通对话模式就不再是空的。

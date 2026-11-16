@@ -5347,6 +5347,82 @@ async fn new_session_honours_the_requested_model() {
     std::fs::remove_dir_all(&project).ok();
 }
 
+/// `ModelPicker` 最近选择应影响 `/api/models` 和后续 `/api/agent/new`，
+/// 即使服务重启也保留；打开旧会话和选择无效模型不应覆盖偏好。
+#[tokio::test]
+async fn new_sessions_remember_the_last_selected_model() {
+    let root = fixture_root("recentmodel");
+    let agent_dir = fixture_root("recentmodel-agent");
+    let project = fixture_root("recentmodel-project");
+    write_session(&root, &[]);
+    let settings_path = agent_dir.join("settings.json");
+    std::fs::write(
+        &settings_path,
+        r#"{"defaultProvider":"first","defaultModel":"model-a","customSetting":true}"#,
+    )
+    .unwrap();
+    let router = app_with_two_models(&root, &project, &agent_dir);
+    let switched = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"set_model","provider":"second","modelId":"model-b"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(switched.status, StatusCode::OK, "{}", switched.text());
+    let models = get(router, "/api/models").await.json();
+    assert_eq!(
+        models["defaultModel"],
+        json!({"provider":"second","modelId":"model-b"})
+    );
+
+    // 重新构建状态模拟重启，证明不是仅保存在活会话中。
+    let router = app_with_two_models(&root, &project, &agent_dir);
+    let invalid = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"set_model","provider":"ghost","modelId":"missing"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(invalid.status, StatusCode::INTERNAL_SERVER_ERROR);
+    let create = |model: Option<(&str, &str)>| {
+        let mut body = json!({"cwd": project.to_string_lossy(), "type":"ensure_session"});
+        if let Some((provider, model_id)) = model {
+            body["provider"] = json!(provider);
+            body["modelId"] = json!(model_id);
+        }
+        body.to_string()
+    };
+    let body = create(None);
+    let created = call(router.clone(), "POST", "/api/agent/new", Some(&body), &[]).await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    assert_eq!(
+        created.json()["model"],
+        json!({"provider":"second","modelId":"model-b"})
+    );
+
+    // 草稿显式选另一个模型后，后续新会话也跟随它。
+    let body = create(Some(("first", "model-a")));
+    let created = call(router, "POST", "/api/agent/new", Some(&body), &[]).await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let router = app_with_two_models(&root, &project, &agent_dir);
+    let models = get(router, "/api/models").await.json();
+    assert_eq!(
+        models["defaultModel"],
+        json!({"provider":"first","modelId":"model-a"})
+    );
+    let settings: Value =
+        serde_json::from_str(&std::fs::read_to_string(settings_path).unwrap()).unwrap();
+    assert_eq!(settings["customSetting"], true);
+
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+    std::fs::remove_dir_all(&project).ok();
+}
+
 /// `provider` / `modelId` 必须成对出现，只给一个要 400。
 ///
 /// 与 pi 一致（`tools/pi-contract/raw/agent_new.js`）：

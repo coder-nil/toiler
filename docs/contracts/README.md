@@ -115,6 +115,11 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 到 v3 会话文件（前端切完的 `loadSession` 靠它回显模型），返回 `{id, provider}`；
 查不到时 `500 {"error":"Model not found: <provider>/<modelId>"}`。
 
+用户成功执行 `set_model`，或通过 `/api/agent/new` 显式指定模型后，会把
+`settings.json` 的 `defaultProvider` / `defaultModel` 更新为最近选择，供后续新会话
+使用并在重启后保留；打开历史会话不更新偏好。尚未创建会话的草稿选择由浏览器记住，
+只在模型仍处于可见列表时恢复，并作为显式模型传给建会话请求。
+
 `set_ui_locale`（`{"type":"set_ui_locale","locale":"zh-CN"|"en"}`）返回
 `{systemPrompt}`。前端打开会话、切换界面语言都会发它，返回值直接刷新「系统提示词」
 面板；它同时把提示词换成对应语言（preamble / 工具说明 / 行为准则 / 语言指令）。
