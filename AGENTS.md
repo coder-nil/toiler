@@ -69,6 +69,55 @@ tools/
 
 ## 常用命令
 
+### 验证前的环境与并发约束（必读）
+
+- **本机前端构建和测试统一通过 nvm 使用 Node 22.23.5。** 每次新的 Bash
+  工具调用都应重新加载 nvm、切换版本，并用 `node --version` 确认；不要假设
+  上一次调用的环境会保留，也不要在切换后把 `/usr/local/bin` 放到 PATH 最前面。
+  本机 `/usr/local/bin/node` 的 22.13.0 曾导致 Next 构建子进程报
+  `Cannot find module 'next/package.json'`，即使依赖文件真实存在。
+  不要因此直接重装依赖、修改锁文件，或用 `npm exec --package=node` 临时下载
+  另一份 Node。nvm 或指定版本不可用时应报告阻塞，不要静默回退到系统 Node。
+- **同一工作区不能并发运行前端构建。** `scripts/build.mjs` 会先清空 `dist/`，
+  因此启动前先检查是否已有构建进程；遇到构建锁冲突，应等待或协调其他任务，
+  不得擅自删锁、清产物或终止别人的进程。命令超时后也要检查是否仍有子进程存活，
+  不要直接再开一轮构建。
+- **验证必须针对稳定的最终源码。** 检查验证前后的工作区状态，包含已跟踪文件
+  和未跟踪源码；`git diff` 的摘要不能覆盖未跟踪文件。若其他任务在验证期间
+  修改源码或重建产物，等待其完成后重跑受影响的检查，不得把旧结果算作当前通过。
+- **区分自动化验证与界面实测。** 只有实际执行并成功的检查才能标为通过；
+  忽略项、失败项和未做的手动点击验证应明确列出。仅要求验证时不要运行
+  `tools/run-desktop.sh`，因为它会重启应用；除非用户明确要求，不启动或重启应用。
+
+包含前端改动的完整验证，在工作区根目录按以下顺序执行（同一次 Bash 调用中，
+任一步失败即停止）：
+
+```bash
+source "${NVM_DIR:-$HOME/.nvm}/nvm.sh" &&
+nvm use 22.23.5 &&
+node --version &&
+export PATH="$HOME/.cargo/bin:$PATH" &&
+(
+  cd crates/toiler-desktop/frontend &&
+  npm run typecheck &&
+  npm test &&
+  npm run build &&
+  test -s dist/index.html
+) &&
+cargo build --workspace &&
+cargo test --workspace &&
+cargo clippy --all-targets &&
+cargo fmt --all -- --check &&
+git diff --check &&
+test -s crates/toiler-desktop/frontend/dist/index.html
+```
+
+前端构建必须先于 Rust 编译与静态站回归，避免验证到占位页或旧产物。
+纯后端改动可省略前端重建，但仍需确保依赖 Node 的测试使用上述 nvm 环境。
+测试数量随代码变化，以本次命令输出为准，不要把历史数量当验收条件。
+
+### 命令速查
+
 ```bash
 # 编译与测试（工作区根目录执行）
 cargo build                                   # 全工作区；debug 版内嵌的是占位前端页
