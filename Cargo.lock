@@ -5560,7 +5560,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "toiler-desktop"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "anyhow",
  "libc",
@@ -5579,7 +5579,7 @@ dependencies = [
 
 [[package]]
 name = "toiler-poc"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "anyhow",
  "reqwest 0.12.28",
@@ -5593,7 +5593,7 @@ dependencies = [
 
 [[package]]
 name = "toiler-server"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -5637,7 +5637,7 @@ dependencies = [
 
 [[package]]
 name = "toiler-session"
-version = "1.0.4"
+version = "1.0.5"
 dependencies = [
  "anyhow",
  "async-trait",
