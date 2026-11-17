@@ -1530,15 +1530,18 @@ pre, code {
 .markdown-table-wrap {
   width: 100%;
   margin: 8px 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  /* 与代码块同一套“分组卡片”：容器是灰底壳，表头当标题栏，内容区当 body。
-     圆角写在单元格上而不是靠容器裁剪——WKWebView 碰到横向滚动容器时，
-     overflow:hidden 裁出来的圆角会失效。
+  /* 外框只负责裁剪，滚动交给内层；WKWebView 的滚动合成层可能绕过圆角，
+     因此用独立的 clip-path 保证表格底色和滚动条都不盖住外框四角。
      仍然不加斑马纹：只靠表头底色 + 行底线区分，不把表格画成控件。 */
+  overflow: hidden;
+  clip-path: inset(0 round var(--radius-lg));
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--bg-panel);
+}
+.markdown-table-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 .markdown-body table {
   border-collapse: separate;

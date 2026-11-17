@@ -109,7 +109,9 @@ export const MobileMarkdown = memo(function MobileMarkdown({ text, cwd, streamin
     table({ children }) {
       return (
         <div className="markdown-table-wrap">
-          <table>{children}</table>
+          <div className="markdown-table-scroll">
+            <table>{children}</table>
+          </div>
         </div>
       );
     },
