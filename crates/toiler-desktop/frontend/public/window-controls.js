@@ -4,7 +4,10 @@
   function mount() {
     document.documentElement.classList.add("toiler-custom-titlebar");
     var style = document.createElement("style");
-    style.textContent = ".toiler-custom-titlebar :is(.app-topbar,.settings-titlebar){padding-right:138px}.toiler-window-controls{position:fixed;top:0;right:0;display:flex;height:42px;z-index:2147483647;background:var(--bg-chrome,var(--bg,#202020));color:var(--text,#eee);user-select:none}.toiler-window-controls button{display:flex;align-items:center;justify-content:center;width:46px;border:0;background:transparent;color:inherit;cursor:default}.toiler-window-controls button:hover{background:var(--bg-hover,#444)}.toiler-window-controls .close:hover{background:#c42b1c;color:white}.toiler-window-controls button:focus-visible{outline:2px solid var(--accent,#58a6ff);outline-offset:-2px}";
+    /* 贴右侧的顶栏与 Git 浮层避让窗口控制区；居中的设置弹窗保留自身边距。 */
+    var inset = ".toiler-custom-titlebar:not(:has(.right-panel-open)) .app-topbar,.toiler-custom-titlebar .right-panel-open .app-file-panel-titlebar,.toiler-custom-titlebar .git-panel-header{box-sizing:border-box;padding-right:138px}";
+    /* 窗口按钮高于普通界面浮层（500），但必须被模态蒙版（1000 起）遮挡并拦截点击。 */
+    style.textContent = inset + ".toiler-window-controls{position:fixed;top:0;right:0;display:flex;height:42px;z-index:900;background:var(--bg-chrome,var(--bg,#202020));color:var(--text,#eee);user-select:none}.toiler-window-controls button{display:flex;align-items:center;justify-content:center;width:46px;border:0;background:transparent;color:inherit;cursor:default}.toiler-window-controls button:hover{background:var(--bg-hover,#444)}.toiler-window-controls .close:hover{background:#c42b1c;color:white}.toiler-window-controls button:focus-visible{outline:2px solid var(--accent,#58a6ff);outline-offset:-2px}";
     document.head.appendChild(style);
     var controls = document.createElement("div");
     controls.className = "toiler-window-controls";
