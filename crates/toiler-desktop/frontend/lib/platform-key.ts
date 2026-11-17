@@ -13,7 +13,3 @@ export function isMacPlatform(): boolean {
   const userAgent = navigator.userAgent || "";
   return /mac|iphone|ipad|ipod/i.test(platform) || /mac os x|iphone|ipad/i.test(userAgent);
 }
-
-export function modifierKeyLabel(): ModifierKeyLabel {
-  return isMacPlatform() ? "Cmd" : "Ctrl";
-}

@@ -21,7 +21,3 @@ export type McpCatalogEntry = {
 };
 
 export const MCP_CATALOG = catalog as McpCatalogEntry[];
-
-export function getMcpCatalogEntry(id: string): McpCatalogEntry | undefined {
-  return MCP_CATALOG.find((entry) => entry.id === id);
-}

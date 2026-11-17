@@ -16,13 +16,6 @@ export function sanitizeExtensionStatusText(text: string): string {
     .trim();
 }
 
-export function formatExtensionStatusLine(statuses: ExtensionStatusItem[]): string {
-  return [...statuses]
-    .sort((a, b) => a.key.localeCompare(b.key))
-    .map(({ text }) => sanitizeExtensionStatusText(text))
-    .join(" ");
-}
-
 const MCP_STATUS_PREFIX = /^🔌\s*/u;
 
 type ExtensionStatusPart = {

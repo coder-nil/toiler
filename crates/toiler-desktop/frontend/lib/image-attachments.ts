@@ -36,21 +36,3 @@ export function isBase64ImageWithinLimits(value: unknown): value is Base64ImageA
   const bytes = getBase64DecodedByteLength(image.data);
   return bytes !== null && bytes <= MAX_ATTACHED_IMAGE_BYTES;
 }
-
-/** Return an API-safe error for prompt, steering, and follow-up image arrays. */
-export function validateAgentImages(value: unknown): string | null {
-  if (value === undefined) return null;
-  if (!Array.isArray(value)) return "images must be an array";
-  if (value.length > MAX_ATTACHED_IMAGES) {
-    return `A message can include at most ${MAX_ATTACHED_IMAGES} images`;
-  }
-  for (const image of value) {
-    if (!image || typeof image !== "object" || (image as { type?: unknown }).type !== "image") {
-      return "Each attachment must be an image";
-    }
-    if (!isBase64ImageWithinLimits(image)) {
-      return `Each image must be valid base64 image data of ${MAX_ATTACHED_IMAGE_BYTES / (1024 * 1024)}MB or smaller`;
-    }
-  }
-  return null;
-}
