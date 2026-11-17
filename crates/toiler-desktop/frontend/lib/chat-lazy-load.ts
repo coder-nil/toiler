@@ -19,6 +19,17 @@ export const CHAT_SCROLL_JUMP_TOLERANCE = 96;
  */
 export const CHAT_SCROLL_JUMP_HIDE_TOLERANCE = 24;
 
+/** 不使用 scrollIntoView，避免把标题栏所在的外层容器也一起滚动。 */
+export function scrollChatToBottom(
+  container: Pick<HTMLDivElement, "scrollHeight" | "clientHeight" | "scrollTo">,
+  behavior: ScrollBehavior = "auto",
+): void {
+  container.scrollTo({
+    top: Math.max(0, container.scrollHeight - container.clientHeight),
+    behavior,
+  });
+}
+
 export function getVisibleRenderWindow(totalCount: number, visibleCount: number): {
   startIndex: number;
   hasMore: boolean;

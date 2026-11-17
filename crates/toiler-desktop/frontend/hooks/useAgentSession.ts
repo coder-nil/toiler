@@ -31,6 +31,7 @@ import {
   CHAT_SCROLL_REATTACH_TOLERANCE,
   CHAT_SCROLL_TAIL_TOLERANCE,
   getLiveFollowAttached,
+  scrollChatToBottom,
 } from "@/lib/chat-lazy-load";
 import {
   INITIAL_STREAMING_STATE,
@@ -468,7 +469,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // Hidden/minimized WebViews can report an empty layout. Keep the scroll
     // intent until the foreground/layout recovery below can measure it again.
     if (!container || !end || document.visibilityState === "hidden" || container.clientHeight === 0) return;
-    end.scrollIntoView({ behavior });
+    // 只滚动消息区；scrollIntoView 会连带滚动 overflow:hidden 的外层，
+    // 把消息区推到标题栏下面，后续置顶即使留了间距仍会被遮挡。
+    scrollChatToBottom(container, behavior);
     previousScrollTopRef.current = container.scrollTop;
   }, []);
 
