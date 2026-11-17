@@ -1207,7 +1207,8 @@ fn tool_result_json(result: &AgentToolResult) -> Value {
 ///
 /// 不附空串：多个 provider 在 `toolcall_start` 那一刻名字还没到
 /// （`openai-completions` 先压入 `Content::tool_call("", "", {})`，名字在后面
-/// 的 delta 里才拼进来），`openai-responses` 则要等 `output_item.done`。
+/// 的 delta 里才拼进来）。Responses 通常在 `output_item.added` 已给出名字，
+/// 不必等到 `output_item.done`。
 /// 前端 `streamReducer` 把它们当可选字段，`undefined` 会用旧值兜底；
 /// 空串反而会把已经学到的名字覆盖掉。
 fn attach_tool_identity(

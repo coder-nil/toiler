@@ -231,6 +231,12 @@ pub fn router(state: AppState) -> Router {
             "/qoder-cn/{token}/v1/chat/completions",
             post(crate::qoder_cn::proxy::chat_completions),
         )
+        // 与 qoder-cn 同样的进程内适配接缝：只补 Responses 的推理摘要参数，
+        // 目标由进程内注册；外部 URL 不可指定，非 loopback 与过期令牌均拒绝。
+        .route(
+            "/reasoning-summary/{token}/v1/responses",
+            post(crate::reasoning_summary::responses),
+        )
         .with_state(state)
         // 其余路径一律交给内嵌的前端产物：`/api/*` 会先命中上面的具体路由，
         // 所以这里只需处理静态文件、客户端路由与 404。

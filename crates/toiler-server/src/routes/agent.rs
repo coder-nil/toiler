@@ -446,7 +446,7 @@ async fn ensure_agent_with_model(
         }
     }
 
-    let catalog = state.catalog();
+    let catalog = state.dialogue_catalog();
     // 用户在新会话里选过的模型 > `settings.json` 的默认模型 > catalog 默认项。
     //
     // 中间这一层不能省：`preferred` 是自己指定模型时**必须**尽先，否则选择器里

@@ -47,6 +47,8 @@ pub struct Inner {
     pub binding: Arc<Mutex<Binding>>,
     /// `qoder-cn` 本机转发端点的路径令牌（进程内随机串，见 `qoder_cn::proxy`）。
     pub qoder_cn_token: String,
+    /// 活会话 Responses 请求的摘要转发注册表；请求结束即撤销令牌。
+    pub summary_relay: Arc<crate::reasoning_summary::SummaryRelay>,
     /// `apisets` 目录正在联网刷新（防并发重复拉取，见 [`AppState::spawn_apisets_refresh`]）。
     pub apisets_refreshing: std::sync::atomic::AtomicBool,
 }
@@ -97,6 +99,7 @@ impl AppState {
                 default_cwd,
                 binding: Arc::new(Mutex::new(Binding::default())),
                 qoder_cn_token: uuid::Uuid::new_v4().simple().to_string(),
+                summary_relay: Arc::new(crate::reasoning_summary::SummaryRelay::default()),
                 apisets_refreshing: std::sync::atomic::AtomicBool::new(false),
             }),
         }
@@ -183,6 +186,16 @@ impl AppState {
             Ok(guard) => Arc::clone(&guard),
             Err(poisoned) => Arc::clone(&poisoned.into_inner()),
         }
+    }
+
+    /// 只为活会话包摘要适配，不改共享目录、模型地址或 oneshot 调用。
+    pub fn dialogue_catalog(&self) -> ModelCatalog {
+        let mut catalog = (*self.catalog()).clone();
+        catalog.providers = self
+            .inner
+            .summary_relay
+            .wrap_all(&catalog.providers, self.server_port());
+        catalog
     }
 
     /// 换一份模型目录（[`Self::attach_qoder_cn`] 与登录/退出后用）。
