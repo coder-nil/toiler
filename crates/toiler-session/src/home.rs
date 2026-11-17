@@ -52,22 +52,12 @@ impl ToilerHome {
         self.agent_dir().join("sessions")
     }
 
-    /// `~/.toiler/agent/models.json`（阶段 3 用，这里只给路径）
-    pub fn models_path(&self) -> PathBuf {
-        self.agent_dir().join("models.json")
-    }
-
     /// 首次启动初始化目录；已存在则不动。只创建目录，不碰任何会话文件。
     pub fn ensure(&self) -> Result<()> {
         let sessions = self.sessions_root();
         std::fs::create_dir_all(&sessions)
             .with_context(|| format!("创建 {} 失败", sessions.display()))?;
         Ok(())
-    }
-
-    /// 某个 cwd 的会话目录。
-    pub fn session_dir_for(&self, cwd: &str) -> PathBuf {
-        self.sessions_root().join(session_directory_name(cwd))
     }
 }
 

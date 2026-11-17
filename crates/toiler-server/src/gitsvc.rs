@@ -23,7 +23,6 @@
 //! 于是每次远程动作完都把口令框清空，用户得反复重输同一个口令。现在加密文件
 //! 是主路径，credential helper 退化成「顺手也给命令行 git 一份」的补充。
 
-use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -35,8 +34,6 @@ use crate::git_credentials::{CredentialStore, GitCredential};
 
 /// 单文件参与 diff / 行数统计的上限（pi 的 `1060._4`，256 KiB）。
 pub const MAX_DIFF_FILE_BYTES: u64 = 262_144;
-/// 单个文件参与 diff 的硬上限（pi 的 `1060.kv`，10 MiB）。
-const LARGE_FILE_BYTES: usize = 10 * 1024 * 1024;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const ACTION_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -1693,11 +1690,6 @@ fn remember_credential(url: Option<&str>, username: Option<&str>, secret: &str) 
     let _ = child.wait();
 }
 
-/// 一组允许访问的根之外就拒绝（路由用）。
-pub fn ensure_within(cwd: &str, allowed: &crate::paths::AllowedRoots) -> bool {
-    allowed.allows(cwd) && allowed.allows_real(cwd)
-}
-
 /// 解析 `cwd` 查询参数（`git.js` 的 `k()`）：必须绝对路径、目录、且在白名单里。
 pub fn resolve_cwd(
     raw: Option<&str>,
@@ -1730,20 +1722,6 @@ pub fn project_hint(cwd: &str) -> (String, Option<String>) {
     };
     let branch = if info.is_worktree { info.branch } else { None };
     (root, branch)
-}
-
-/// 把一串仓库状态里的文件路径去重（测试与路由都会用）。
-pub fn distinct_paths(values: &[Value]) -> BTreeSet<String> {
-    values
-        .iter()
-        .filter_map(|v| v.get("filePath").and_then(Value::as_str))
-        .map(str::to_string)
-        .collect()
-}
-
-/// 大文件阈值（`diff_for_file` 之外的地方也用）。
-pub fn is_large(bytes: usize) -> bool {
-    bytes > LARGE_FILE_BYTES
 }
 
 #[cfg(test)]

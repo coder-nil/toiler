@@ -5,6 +5,7 @@
 pub mod agent;
 pub mod agent_extra;
 pub mod auth;
+pub mod file_index;
 pub mod files;
 pub mod git;
 pub mod mcp;
@@ -17,6 +18,7 @@ pub mod search;
 pub mod sessions;
 pub mod sessions_extra;
 pub mod skills;
+pub mod unsupported;
 
 use axum::routing::{get, post};
 use axum::Router;
@@ -72,6 +74,8 @@ pub fn router(state: AppState) -> Router {
             get(crate::routes::agent_extra::running_events),
         )
         // ---- files ----
+        .route("/api/file-index", get(file_index::get))
+        .route("/api/files/reveal", post(unsupported::reveal))
         // 路径为空时落到默认 cwd（前端文件面板首屏会请求根路径）
         .route(
             "/api/files",
@@ -102,6 +106,9 @@ pub fn router(state: AppState) -> Router {
             "/api/skills/install",
             post(crate::routes::skills::market_not_implemented),
         )
+        .route("/api/skills/check", post(unsupported::skill_packages))
+        .route("/api/skills/update", post(unsupported::skill_packages))
+        .route("/api/skills/remove", post(unsupported::skill_packages))
         // ---- plugins ----
         // 只读列出 `settings.json` 里配置的包与安装状态（见 routes/plugins.rs）。
         // 少了这条路由，插件页会把静态兜底的 404 `{"error":"Not found"}` 当成一条插件画出来。
@@ -204,6 +211,10 @@ pub fn router(state: AppState) -> Router {
             post(crate::routes::projects::validate).get(crate::routes::projects::validate),
         )
         // ---- misc ----
+        .route(
+            "/api/checkpoints",
+            get(unsupported::checkpoints).post(unsupported::checkpoints),
+        )
         .route("/api/mobile/state", get(crate::routes::misc::mobile_state))
         .route(
             "/api/mobile/access",

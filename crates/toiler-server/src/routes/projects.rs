@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 use crate::paths;
 use crate::security::Trusted;
 use crate::state::AppState;
-use crate::trust::{self, TrustStore};
+use crate::trust;
 
 fn error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
@@ -363,12 +363,6 @@ pub fn ensure_default_dir(state: &AppState, dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 给测试用：把信任库换成临时目录里的。
-#[allow(dead_code)]
-pub fn trust_store_for(state: &AppState) -> &TrustStore {
-    state.project_trust()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +370,7 @@ mod tests {
     use crate::models_json::ModelsFile;
     use crate::projects::ProjectStore;
     use crate::settings::SettingsFile;
+    use crate::trust::TrustStore;
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;

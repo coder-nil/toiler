@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use rpi_agent::message::{AgentMessage, CustomMessage};
-use rpi_harness::session::types::{EntryQuery, SessionStorage};
+use rpi_harness::session::types::SessionStorage;
 use rpi_harness::session::Session;
 use toiler_session::{ToilerHome, V3SessionRepo, V3SessionStorage};
 
@@ -222,10 +222,4 @@ mod tokio_lite {
             }
         }
     }
-}
-
-/// 让 `EntryQuery::default()` 在 CLI 里少写几个字。
-#[allow(dead_code)]
-fn all_entries() -> EntryQuery {
-    EntryQuery::default()
 }

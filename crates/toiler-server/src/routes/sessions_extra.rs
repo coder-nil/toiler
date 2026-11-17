@@ -1896,17 +1896,6 @@ fn strip_code_fence(text: &str) -> Option<String> {
     Some(body.trim().to_string())
 }
 
-/// 供测试：把「分支叶子」当参数传进来（真实路径不暴露给 HTTP）。
-#[allow(dead_code)]
-pub fn branch_ids(entries: &[Value]) -> Vec<String> {
-    let view = session_view::context_view(entries, None);
-    let mut seen: HashMap<String, ()> = HashMap::new();
-    view.entry_ids
-        .into_iter()
-        .filter(|id| seen.insert(id.clone(), ()).is_none())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

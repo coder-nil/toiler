@@ -20,7 +20,6 @@ use serde_json::Value;
 
 use crate::paths;
 
-pub const SETTINGS_SCHEMA: &str = "https://pi.dev/schemas/settings.schema.json";
 const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// 一条 `enabledModels` 模式的解析结果。

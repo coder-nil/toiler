@@ -18,7 +18,7 @@ use anyhow::{anyhow, Result};
 use rpi_ai::types::{
     AssistantMessageEvent, Content, Context, Message, StopReason, ThinkingLevel, UserMessage,
 };
-use rpi_ai::{Api, Model, Provider, SimpleStreamOptions};
+use rpi_ai::{Model, Provider, SimpleStreamOptions};
 
 /// 一次补全的结果。
 #[derive(Debug, Clone)]
@@ -98,16 +98,6 @@ pub async fn complete(
         usage,
         stop_reason,
     })
-}
-
-/// provider 的 api 是否被 rpi 支持（`catalog` 的映射表）。
-pub fn supported_api(api: &str) -> Option<Api> {
-    match api {
-        "openai-responses" => Some(Api::OpenaiResponses),
-        "openai-completions" => Some(Api::OpenaiCompletions),
-        "anthropic-messages" => Some(Api::AnthropicMessages),
-        _ => None,
-    }
 }
 
 fn now_ms() -> i64 {

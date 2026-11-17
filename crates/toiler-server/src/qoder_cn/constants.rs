@@ -7,9 +7,6 @@
 /// provider id：`models.json`、`auth.json`、`enabledModels` 里都用它做键。
 pub const PROVIDER_ID: &str = "qoder-cn";
 
-/// 「订阅」列表里的展示名。
-pub const DISPLAY_NAME: &str = "Qoder CN";
-
 /// 登录方式在订阅区的名字（pi 的 `oauth.name`）。
 pub const LOGIN_LABEL: &str = "Qoder CN (subscription)";
 
@@ -40,9 +37,6 @@ pub const DEFAULT_USER_TYPE: &str = "personal_professional_trial";
 /// 对话入口：SSE 信封，响应体内层是标准 OpenAI chunk。
 pub const CHAT_PATH: &str = "/algo/api/v2/service/pro/sse/agent_chat_generation\
 ?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1";
-/// 模型清单：同样是 COSY 签名，body 必须是 `encodeQoderBase64("{}")`。
-pub const MODELS_PATH: &str = "/algo/api/v2/model/list?Encode=1";
-
 pub const DEVICE_POLL_PATH: &str = "/api/v1/deviceToken/poll";
 pub const DEVICE_REFRESH_PATH: &str = "/api/v1/deviceToken/refresh";
 pub const USERINFO_PATH: &str = "/api/v1/userinfo";

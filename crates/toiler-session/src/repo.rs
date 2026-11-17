@@ -20,8 +20,8 @@ use rpi_harness::session::types::{
 };
 use rpi_harness::session::{DefaultIdGenerator, SystemClock};
 
-use crate::home::{session_directory_name, session_id_from_file_name};
-use crate::storage::{metadata_for, SessionFileInfo, V3SessionStorage};
+use crate::home::session_directory_name;
+use crate::storage::{SessionFileInfo, V3SessionStorage};
 use crate::v3::V3Header;
 
 /// 会话仓库：一个 sessions 根目录 + 一个 id→路径 索引。
@@ -341,19 +341,4 @@ pub fn current_dir_string() -> String {
     std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default()
-}
-
-/// 从文件名推出会话 id（方便 CLI 传文件名）。
-pub fn id_from_path(path: &Path) -> Option<String> {
-    session_id_from_file_name(&path.file_name()?.to_string_lossy()).map(str::to_string)
-}
-
-/// 便利：`SessionMetadata` + 路径 → 摘要。
-pub fn info_of(path: &Path) -> anyhow::Result<SessionFileInfo> {
-    V3SessionStorage::inspect(path)
-}
-
-/// 便利：给 header 造 metadata（repo 内部与测试用）。
-pub fn metadata_of(header: &V3Header) -> SessionMetadata {
-    metadata_for(header)
 }

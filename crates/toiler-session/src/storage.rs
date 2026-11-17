@@ -38,15 +38,13 @@ use rpi_harness::session::types::{
     AssistantFrameRecord, BranchBounds, BranchEntryPage, BranchEntryPageQuery, BranchOverview,
     Entry, EntryAncestry, EntryQuery, LanePointer, LaneRecord, LogItem, LogOptions,
     MessageSummaryPage, MessageSummaryQuery, MessageWindowPage, MessageWindowQuery,
-    ProvisionedEntry, RecordPage, RecordPageQuery, RecordQuery, SessionCreateOptions,
-    SessionLaneBranch, SessionMetadata, SessionMutation, SessionStats, SessionStorage,
-    TranscriptPage, TranscriptPageQuery,
+    ProvisionedEntry, RecordPage, RecordPageQuery, RecordQuery, SessionLaneBranch, SessionMetadata,
+    SessionMutation, SessionStats, SessionStorage, TranscriptPage, TranscriptPageQuery,
 };
 use rpi_harness::session::InMemorySessionStorage;
 use rpi_harness::session::{DefaultIdGenerator, SystemClock};
 use serde_json::Value;
 
-use crate::home::session_file_name;
 use crate::v3::{encode_entry, parse_entry_line, V3Error, V3Header};
 
 /// rpi 的默认 lane 名（`Session` 门面也用这个）。
@@ -59,8 +57,6 @@ pub struct LoadReport {
     pub loaded_entries: usize,
     /// 被跳过的行（坏 JSON / 无法映射 / 回放违反 rpi 不变量）。
     pub skipped: Vec<String>,
-    /// 文件里有几条 v3 里我们写不回去的条目（例如 rpi 的 active_tools_change）。
-    pub unrepresentable_writes: usize,
 }
 
 /// 追加写入器：只往后写，绝不重写已有字节。
@@ -69,7 +65,6 @@ pub struct V3Appender {
     path: PathBuf,
     file: Mutex<Option<File>>,
     warnings: Mutex<Vec<String>>,
-    unrepresentable: Mutex<usize>,
 }
 
 impl V3Appender {
@@ -78,7 +73,6 @@ impl V3Appender {
             path,
             file: Mutex::new(None),
             warnings: Mutex::new(Vec::new()),
-            unrepresentable: Mutex::new(0),
         }
     }
 
@@ -126,7 +120,6 @@ impl V3Appender {
                 self.append_line(&line);
             }
             Err(V3Error::Unrepresentable { entry_type }) => {
-                *self.unrepresentable.lock().expect("count") += 1;
                 self.warnings
                     .lock()
                     .expect("warnings")
@@ -144,10 +137,6 @@ impl V3Appender {
     /// 取走累积的告警（诊断/测试用）。
     pub fn take_warnings(&self) -> Vec<String> {
         std::mem::take(&mut self.warnings.lock().expect("warnings"))
-    }
-
-    pub fn unrepresentable_count(&self) -> usize {
-        *self.unrepresentable.lock().expect("count")
     }
 }
 
@@ -198,8 +187,7 @@ impl V3SessionStorage {
                 path.display()
             ))
         })?;
-        let (header, state, mut report) = replay_text(&text)?;
-        report.unrepresentable_writes = 0;
+        let (header, state, report) = replay_text(&text)?;
 
         let metadata = SessionMetadata {
             id: header.id.clone(),
@@ -424,26 +412,8 @@ fn storage_err(e: V3Error) -> rpi_harness::error::SessionError {
     rpi_harness::error::SessionError::storage(e.to_string())
 }
 
-/// 建一个 `SessionMetadata`（供 repo 使用）。
-pub fn metadata_for(header: &V3Header) -> SessionMetadata {
-    SessionMetadata {
-        id: header.id.clone(),
-        created_at: header.created_at,
-        parent_session_id: None,
-    }
-}
-
-/// 该 id 的会话文件名（供 repo 使用）。
-pub fn file_name_for(header: &V3Header) -> String {
-    session_file_name(header.created_at, &header.id)
-}
-
-/// 方便 repo 构造一个待写的 provisioned entry（自定义条目）。
-pub fn custom_entry(
-    id: impl Into<String>,
-    custom_type: &str,
-    data: Option<Value>,
-) -> ProvisionedEntry {
+/// 构造写入会话名称的自定义条目。
+fn custom_entry(id: impl Into<String>, custom_type: &str, data: Option<Value>) -> ProvisionedEntry {
     ProvisionedEntry {
         id: id.into(),
         kind: rpi_harness::session::types::ProvisionedKind::Custom {
@@ -715,15 +685,4 @@ fn uuidish(salt: i64) -> String {
         "{:08x}",
         (now ^ (salt as u64)).wrapping_mul(0x9E37_79B9_7F4A_7C15) as u32
     )
-}
-
-/// 供 repo 复用：`SessionCreateOptions` → (id, cwd)
-pub fn split_create_options(options: &SessionCreateOptions) -> (Option<String>, Option<String>) {
-    let cwd = options
-        .metadata
-        .as_ref()
-        .and_then(|m| m.get("cwd"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    (options.id.clone(), cwd)
 }
