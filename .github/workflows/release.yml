@@ -128,6 +128,26 @@ jobs:
         # 所以下面的 upload-artifact glob 都带这一层。
         run: npx --yes @tauri-apps/cli@^2 build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
+      - name: 移除 MSI 文件名的默认语言后缀
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: target/${{ matrix.target }}/release/bundle/msi
+        run: |
+          set -euo pipefail
+          # 应用支持中英双语，发布文件名不应带 WiX 默认的 en-US 标签。
+          for msi in *_en-US.msi; do
+            if [ ! -f "$msi" ]; then
+              echo "::error::未找到待重命名的 MSI 安装包"
+              exit 1
+            fi
+            renamed="${msi%_en-US.msi}.msi"
+            if [ -e "$renamed" ]; then
+              echo "::error::目标安装包已存在：$renamed"
+              exit 1
+            fi
+            mv -- "$msi" "$renamed"
+          done
+
       - name: Windows 发布前 Defender 扫描
         if: runner.os == 'Windows'
         shell: pwsh

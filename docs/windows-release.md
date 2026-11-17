@@ -11,7 +11,12 @@
 
 `.github/workflows/release.yml` 同时构建 NSIS `.exe` 和 WiX `.msi`。MSI 是标准安装格式，便于独立排查安装器相关误报；**换格式不保证消除拦截**，也不能修复应用本体的检测问题。
 
-Windows 构建后执行 `tools/release/scan-windows.ps1`：
+Windows 构建后先移除 MSI 文件名末尾的默认 `_en-US` 标签，统一以
+`Toiler_<版本>_x64.msi` 发布，避免让支持中英双语的应用看起来像英文专用版。
+此步骤只重命名文件，不修改安装包内容或安装器语言配置；扫描、上传和 SHA-256
+清单都使用重命名后的文件。
+
+随后执行 `tools/release/scan-windows.ps1`：
 
 1. 确认 Defender 服务与反病毒能力可用，更新病毒库并输出版本。
 2. 扫描真实 `toiler-desktop.exe` 和两种安装包，不自动修复扫描目标，不修改实时防护设置。

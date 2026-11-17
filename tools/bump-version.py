@@ -28,6 +28,11 @@
     tools/bump-version.py --check        # 只校验各文件版本是否一致（退出码 1 = 不一致）
     tools/bump-version.py --no-lock      # 跳过 cargo update（改完自己跑）
     tools/bump-version.py --no-changelog # 不写变更记录（自己补内容）
+    tools/bump-version.py --since v1.0.5 # 显式指定变更记录的起始发布标签
+
+变更记录默认覆盖当前历史中最近的 `v<semver>` 发布标签之后到 HEAD 的全部提交，
+包括合并分支的提交、提交正文与哈希；没有发布标签时覆盖完整历史。未提交改动
+不会被当作提交收录，浅克隆则拒绝生成，避免静默遗漏。`--dry-run` 同时预览内容。
 
 脚本**不**提交、**不**打 tag、**不**重建前端产物。收尾动作会打印出来。
 
@@ -194,11 +199,93 @@ def next_version(current: str, level: str) -> tuple[str, str]:
 
 
 # --------------------------------------------------------------------------
+# 发布提交范围
+# --------------------------------------------------------------------------
+
+
+def git_output(*args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8"
+        )
+    except OSError as exc:
+        raise Fail(f"无法读取 Git 历史：{exc}") from exc
+    if result.returncode != 0:
+        raise Fail(f"读取 Git 历史失败：{result.stderr.strip() or result.stdout.strip()}")
+    return result.stdout.strip()
+
+
+def release_commits(since: str | None = None) -> list[tuple[str, str]]:
+    """锁定 HEAD 后读取整个提交图；不按路径或 first-parent 过滤，避免漏掉合并内容。"""
+    if git_output("rev-parse", "--is-shallow-repository") == "true":
+        raise Fail("浅克隆无法保证发布历史完整，请先获取完整历史和标签后重试")
+    head = git_output("rev-parse", "HEAD")
+    tags = [
+        tag for tag in git_output("tag", "--merged", head).splitlines()
+        if tag.startswith("v") and SEMVER.fullmatch(tag)
+    ]
+    if since is not None:
+        if since not in tags:
+            raise Fail(f"`{since}` 不是当前 HEAD 可达的 v<semver> 发布标签")
+        base = since
+    elif tags:
+        # describe 按提交图距离找最近标签，而不是误用其它分支或版本号最大的标签。
+        base = git_output(
+            "describe", "--tags", "--abbrev=0", *(f"--match={tag}" for tag in tags), head
+        )
+    else:
+        base = None
+
+    if base:
+        base_commit = git_output("rev-parse", f"refs/tags/{base}^{{commit}}")
+        revision = f"{base_commit}..{head}"
+        print(f"变更记录提交范围：{base}..{head[:12]}（不含起始标签）")
+    else:
+        revision = head
+        print(f"变更记录提交范围：完整历史..{head[:12]}（未找到发布标签）")
+    output = git_output("log", "--reverse", "--format=%H%x00%B%x00", revision, "--")
+    fields = output.split("\0")
+    commits = [
+        (fields[i].strip(), fields[i + 1].strip())
+        for i in range(0, len(fields) - 1, 2)
+    ]
+    print(f"共收录 {len(commits)} 个提交（含合并提交及其分支提交）。")
+    if not commits:
+        print("⚠️  范围内没有新提交，仅生成版本号统一条目。")
+    if git_output("status", "--porcelain"):
+        print("⚠️  工作区有未提交改动，不会收录到提交记录；请先提交发布内容再生成最终记录。")
+    return commits
+
+
+def changelog_sections(new: str, since: str | None = None) -> list[dict]:
+    groups: dict[str, list[str]] = {"Added": [], "Changed": [], "Fixed": []}
+    for commit, message in release_commits(since):
+        lines = message.splitlines()
+        subject = lines[0] if lines else "（无提交说明）"
+        match = re.match(r"([a-z]+)(?:\([^)]*\))?!?:\s*", subject)
+        kind = match.group(1) if match else ""
+        title = {"feat": "Added", "fix": "Fixed"}.get(kind, "Changed")
+        # 保留正文细节和哈希，便于人工润色时逐条核对，不能只取最近一次修改。
+        details = "；".join(line.strip() for line in lines[1:] if line.strip())
+        item = f"{subject}（`{commit[:12]}`）"
+        if details:
+            item += f"：{details}"
+        groups[title].append(item)
+    groups["Changed"].append(f"应用、npm、Tauri 和 Cargo 版本号统一为 `{new}`。")
+    return [
+        {"title": title, "kind": title.lower(), "items": items}
+        for title, items in groups.items() if items
+    ]
+
+
+# --------------------------------------------------------------------------
 # 改写
 # --------------------------------------------------------------------------
 
 
-def plan_edits(new: str, *, with_changelog: bool) -> list[tuple[Path, str]]:
+def plan_edits(
+    new: str, *, with_changelog: bool, since: str | None = None
+) -> list[tuple[Path, str]]:
     """生成 (路径, 新内容) 列表。纯计算，不落盘。"""
     edits: list[tuple[Path, str]] = []
 
@@ -228,7 +315,7 @@ def plan_edits(new: str, *, with_changelog: bool) -> list[tuple[Path, str]]:
     edits.append((PACKAGE_LOCK, dump_json(lock)))
 
     if with_changelog:
-        edits.extend(plan_changelog_edits(new))
+        edits.extend(plan_changelog_edits(new, since=since))
 
     return edits
 
@@ -237,9 +324,8 @@ def dump_json(data: object) -> str:
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 
-def plan_changelog_edits(new: str) -> list[tuple[Path, str]]:
+def plan_changelog_edits(new: str, *, since: str | None = None) -> list[tuple[Path, str]]:
     today = datetime.date.today().isoformat()
-    item = f"应用、npm、Tauri 和 Cargo 版本号统一为 `{new}`。"
 
     md = CHANGELOG_MD.read_text(encoding="utf-8")
     if re.search(r"(?m)^## \[" + re.escape(new) + r"\]", md):
@@ -247,21 +333,21 @@ def plan_changelog_edits(new: str) -> list[tuple[Path, str]]:
     anchor = re.search(r"(?m)^## \[", md)
     if not anchor:
         raise Fail("CHANGELOG.md 里找不到任何 `## [版本]` 段，无法确定插入位置")
-    block = f"## [{new}] - {today}\n\n### Changed\n\n- {item}\n\n"
-    md = md[: anchor.start()] + block + md[anchor.start() :]
-
     releases = json.loads(CHANGELOG_JSON.read_text(encoding="utf-8"))
     if any(r.get("version") == new for r in releases):
         raise Fail(f"data/changelog.json 里已存在 {new} 条目")
+
+    sections = changelog_sections(new, since)
+    block = f"## [{new}] - {today}\n\n"
+    for section in sections:
+        block += f"### {section['title']}\n\n"
+        block += "".join(f"- {item}\n" for item in section["items"]) + "\n"
+    print("变更记录预览：")
+    print(block)
+    md = md[: anchor.start()] + block + md[anchor.start() :]
     releases.insert(
         0,
-        {
-            "version": new,
-            "date": today,
-            "sections": [
-                {"title": "Changed", "kind": "changed", "items": [item]},
-            ],
-        },
+        {"version": new, "date": today, "sections": sections},
     )
 
     return [(CHANGELOG_MD, md), (CHANGELOG_JSON, dump_json(releases))]
@@ -334,7 +420,7 @@ def print_next_steps(new: str, *, dry_run: bool, wrote_changelog: bool) -> None:
     print()
     print(f"下一步{prefix}：")
     if wrote_changelog:
-        print("  1. 补写本次变更内容（脚本只写了「版本号统一」这一条）：")
+        print("  1. 审核按完整发布提交范围生成的变更记录，可润色文案但应逐条核对避免遗漏：")
         print(f"       {rel(CHANGELOG_MD)} 与 {rel(CHANGELOG_JSON)} 的 {new} 段要一起改")
     else:
         print("  1. 变更记录未动（--no-changelog），自己加段（两份要一致）：")
@@ -377,9 +463,12 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--check", action="store_true", help="只校验各文件版本是否一致")
     parser.add_argument("--no-lock", action="store_true", help="跳过 Cargo.lock 更新")
     parser.add_argument("--no-changelog", action="store_true", help="不写变更记录")
+    parser.add_argument("--since", metavar="TAG", help="变更记录起始发布标签（默认最近的可达发布标签）")
     # 必须在 parse_args 之前设默认值，否则互斥组会把 dest 默认成 None。
     parser.set_defaults(level="patch")
     args = parser.parse_args(argv)
+    if args.since and (args.no_changelog or args.check):
+        raise Fail("--since 不能与 --no-changelog 或 --check 一起使用")
 
     if not (ROOT / "Cargo.toml").exists():
         raise Fail(f"{ROOT} 不像仓库根目录（缺 Cargo.toml）")
@@ -414,7 +503,7 @@ def main(argv: list[str]) -> int:
             print(f"     {where}: {version}")
         print()
 
-    edits = plan_edits(new, with_changelog=not args.no_changelog)
+    edits = plan_edits(new, with_changelog=not args.no_changelog, since=args.since)
 
     print("将改动：")
     for path, content in edits:

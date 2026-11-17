@@ -136,8 +136,10 @@ tools/run-desktop.sh
 # 版本号：升级 / 校验（版本号散落 8 个文件，别手工改）
 tools/bump-version.py --check                 # 只校验各处是否一致（CI 也可用）
 tools/bump-version.py --dry-run               # 看下一个 patch 会改什么
-tools/bump-version.py                         # 1.0.4 → 1.0.5，含 CHANGELOG 骨架
-tools/bump-version.py --minor                 # 1.0.4 → 1.1.0
+tools/bump-version.py                        # 1.0.4 → 1.0.5，含完整发布提交范围的变更记录
+tools/bump-version.py --minor                # 1.0.4 → 1.1.0
+tools/bump-version.py --since v1.0.5 --dry-run # 指定起始发布标签，预览完整变更记录
+python3 -B -m unittest discover -s tools -p 'test_bump_version.py' # 版本脚本回归测试
 
 # 跑起来
 ./target/release/toiler-desktop                        # 桌面形态（127.0.0.1:随机端口）
