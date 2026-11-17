@@ -224,7 +224,8 @@ v3 文件里没有 leaf 记录（pi 也没有）：只挪内存指针，重开�
      `toolcall_start` / `toolcall_delta`，附上 `{id, toolName}`（来自
      `partial.content[contentIndex]`）。**只在非空时附**：`openai-completions`
      在 `toolcall_start` 那一刻名字还是空串（`Content::tool_call("", "", {})`，
-     名字要等后续 delta 才拼进来），`openai-responses` 要等 `output_item.done`。
+     名字要等后续 delta 才拼进来）。Responses 通常在 `output_item.added` 已给出
+     名字，不必等到 `output_item.done`。
      发包空串会踩住前端 `event.toolName ?? current.toolName` 的兜底
      （只在 `undefined` 时保留旧值），把已经学到的名字覆盖成空。
    - `tool_execution_update`：只留 `{type, toolCallId, toolName, partialResult}`
@@ -249,6 +250,23 @@ v3 文件里没有 leaf 记录（pi 也没有）：只挪内存指针，重开�
 4. 启动失败：`{"type":"startup_error","errorMessage":"Failed to start agent: …"}` 后关闭
 
 会话不存在：`404 Session not found`；请求已中断：`204`。
+
+### Responses 推理摘要（运行时适配）
+
+活会话中，推理模型的实际档位为 `minimal/low/medium/high/xhigh/max` 时，统一请求
+`reasoning.summary = "auto"`；`off` 不请求，不改变既有 effort。覆盖自定义
+`openai-responses` provider 与内置 Coding（`apisets`）的 Responses 模型。
+其他协议不加 Responses 专用字段，自动起标题等 oneshot 仍按原来的 off 请求。
+
+依据：rpi-ai 0.25.0 的请求构造只有 `reasoning.effort`，而 pi 的 Responses 实现
+默认请求摘要。返回的摘要沿用现有 `thinking_start/delta/end` 帧，`/api` 形状不变；
+这是模型公开返回的推理摘要，不保证每次工具调用前都有内容，也不能缩短模型实际推理。
+
+rpi 没有请求体扩展钩子且不能修改依赖源码，因此 `reasoning_summary.rs` 沿用
+qoder-cn 的同进程回环转发方式：`POST /reasoning-summary/{token}/v1/responses`。
+它不是公开 `/api`；只接受 loopback 对端和存活请求的随机令牌，目标仅由进程内注册，
+不接受客户端指定 URL。逐块传递上游响应，保留状态码与 Retry-After，取消或结束时
+撤销令牌并终止转发；不改配置中的模型地址、持久化消息或历史会话。
 
 ## GET /api/skills
 
@@ -422,10 +440,39 @@ const displayModel = match ?? nextModelList[0];
 选会话规则：显式 `session` > `cwd` 过滤后「正在运行」的会话 > 该 cwd 下
 `modified` 最新的会话；都没有则返回空态（`sessionId: null`）。
 
+## 补齐的前端调用链
+
+依据 `tools/pi-contract/raw/` 中的 `app-update.js`、`file-index.js`、
+`checkpoints.js`、`skills_check.js`、`skills_update.js`、`skills_remove.js`、
+`files_reveal.js`，补记原路由表遗漏的接口：
+
+- `GET /api/app-update?refresh=1`：`{currentVersion,latestVersion,updateAvailable,releaseUrl}`。
+  发布源改为 `coder-nil/toiler`，5 秒超时、成功结果缓存 12 小时；普通查询在上游失败时
+  可回旧缓存，强制刷新失败回 `502 {error}`，不会跳转到 pi-desktop 的发布页。
+- `GET /api/file-index?cwd=…&q=…`：无 q 返回 `{files:string[],truncated:boolean}`，
+  首批最多 5000 个文件；带 q 返回 `{matches:[{path,isDir}]}`，最多 20 项。
+  cwd 必须是允许根中的绝对目录，并通过 realpath 判定；Git 仓库按 `.gitignore` 枚举，
+  否则有限深度扫描（不跟随目录符号链接）。与 pi 的差异：当前不缓存索引，
+  权限每次重新检查；扫描有时间、条目数量和深度上限。
+- `GET/POST /api/checkpoints`：`501 {error:"…中文说明…"}`，尚无工作区文件快照或回滚。
+  **不伪造 checkpoint id**；前端发送消息仍保留尽力而为的调用，不影响正常对话。
+- `POST /api/skills/check|update|remove`：`501 {error:"…中文说明…"}`。
+  Toiler 没有技能包安装元数据，不执行上游 `npx skills`，仍只加载本地技能。
+- `POST /api/files/reveal`：`501 {error:"…中文说明…"}`，不再误入通配上传路由。
+  `/api` 同时暴露给手机与隧道，暂不提供远端触发本机文件管理器的能力。
+
+以上接口均做 Host/Origin 校验。501 代表明确未实现，不代表功能已经补齐。
+手机页 `/m` 则是实际静态页面：支持会话快照、流式对话、运行中引导、停止、新建任务、
+历史窗口和扩展问答；不提供任意系统操作。`agent_end` 触发最终快照刷新。
+
 ## 实现进度（`crates/toiler-server`）
 
 | route | 状态 | 备注 |
 |---|---|---|
+| `GET /api/app-update` | ✅ | 本项目 GitHub Releases 检查，12 小时缓存；上游失败 502 |
+| `GET /api/file-index` | ✅ | `@文件` 补全：files/truncated 或 matches；允许根 + realpath 校验 |
+| `GET/POST /api/checkpoints` | ❌ | 501 + 中文原因，不执行文件快照或回滚 |
+| `POST /api/files/reveal` | ❌ | 501 + 中文原因，不触发服务端文件管理器 |
 | `GET /api/sessions` | ✅ | 字段全对齐（含 `sessionsUpdatedAt`、30s 缓存、`?force=1`） |
 | `GET /api/sessions/{id}` | ✅ | `info`/`tree`/`context`/`paging`/`totalActiveMs` 全对齐 |
 | `PATCH /api/sessions/{id}` | ✅ | 追加 `session_info` 条目（pi 的做法） |
@@ -445,6 +492,7 @@ const displayModel = match ?? nextModelList[0];
 | `GET /api/skills` | ⚠️ | 项目技能：`$project/.agents/skills`（项目根 = 最近 git 根，需已信任）；用户技能：`~/.agents/skills` + `~/.pi/agent/skills` + `~/.agents/toiler/skills`，三者按名字去重；两组合并返回（同名不互相顶掉）。pi 的 `skillPaths`/package 技能没有（无 package 系统），`usageCount` 与缓存也不提供（`cacheHit` 恒 false） |
 | `POST /api/skills/search` | ❌ | 501：技能市场（PLAN 已砍） |
 | `POST /api/skills/install` | ❌ | 501：技能市场（PLAN 已砍） |
+| `POST /api/skills/check\|update\|remove` | ❌ | 501：技能包管理未实现，只加载本地技能 |
 | `PATCH /api/skills` | ❌ | 501：会改写用户目录的 `SKILL.md`，写侧暂不开放 |
 | `GET /api/mobile/state` | ✅ | 手机投影（`mobile_view`）：图片转 `[N images]` 占位、思考/工具入参截断、默认 30 条窗口 + 40 条内保留细节；实测 474KB → 54KB |
 | `GET /api/mobile/access` | ✅ | 读 `desktop-access.json` + 代理运行态 + 隧道运行态；`publicHostnameDisplay` 转 Unicode |
