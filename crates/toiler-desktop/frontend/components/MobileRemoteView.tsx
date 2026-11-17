@@ -5,6 +5,7 @@ import { ArrowDown, ArrowUp, Plus } from "lucide-react";
 import { useI18n } from "@/hooks/useI18n";
 import { useViewportHeight } from "@/hooks/useViewportHeight";
 import { INITIAL_STREAMING_STATE, streamReducer } from "@/lib/streaming-message";
+import { blockingUiRequestFromEvent, classifyAgentEvent, type MobileStreamPayload } from "@/lib/mobile-events";
 import { projectAssistantBlocks, type MobileMessage } from "@/lib/mobile-state";
 import { MOBILE_DEFAULT_LIMIT, MOBILE_LIMIT_STEP, MOBILE_MAX_LIMIT } from "@/lib/mobile-state";
 import { buildMobileTimeline, MOBILE_RADIUS, reconcilePendingUserMessages } from "@/lib/mobile-timeline";
@@ -80,81 +81,6 @@ function readParams(): { session: string | null; cwd: string | null } {
   return { session: params.get("session"), cwd: params.get("cwd") };
 }
 
-export type MobileEventAction = "start" | "snapshot" | "prompt" | "delta" | "settle" | "sync" | "ignore";
-
-/** SSE 上我们关心的字段。 */
-interface MobileStreamPayload {
-  type?: string;
-  assistantMessageEvent?: unknown;
-  /** `message_start` 携带的消息（用户提问或助手的流式消息）。 */
-  message?: unknown;
-  /** `connected` 携带的当前状态。 */
-  isStreaming?: unknown;
-  /** `extension_ui_resolved` 携带的请求 id。 */
-  id?: unknown;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** 阻塞式扩展 UI 方法（与 `app/api/mobile/state/route.ts` 的 BLOCKING_UI_METHODS 一致）。 */
-const BLOCKING_UI_METHODS = new Set(["select", "confirm", "input", "editor", "custom"]);
-
-/**
- * 从 `extension_ui_request` 事件里取出要弹的请求。
- *
- * 事件本身就是完整请求体，所以手机端可以直接拿它渲染，不必等下一次快照（省一个往返，
- * 而且快照取失败时卡片仍然在）。`notify` / `setStatus` / `setWidget` / `setTitle` 这些
- * 不是问题，不进卡片。
- */
-export function blockingUiRequestFromEvent(payload: MobileStreamPayload): MobileUiRequest | null {
-  const request = payload as unknown as MobileUiRequest;
-  if (typeof request.id !== "string" || !request.id) return null;
-  if (typeof request.method !== "string" || !BLOCKING_UI_METHODS.has(request.method)) return null;
-  if (typeof request.title !== "string") return null;
-  return request;
-}
-
-/**
- * SSE 事件 → 手机端要做的动作。
- *
- * 手机端只有这一条连接、快照不会自己更新，所以「哪些事件必须换一次快照」就是同步规则的
- * 全部：`agent_start`（这一轮是桌面端 / CLI / 扩展开始的）与 `queue_update`（对面又发了
- * 一条）。抽成纯函数是为了让这条规则能被单测钉住，而不是埋在 effect 里。
- * `start` 在调用处同时意味着「开计时 + 补快照」。
- *
- * `message_start` 不是可选项：流式气泡靠它建立（`streamReducer` 在没有 `streamingMessage`
- * 时会丢弃每一条 delta），少这一步手机上就完全看不到流式输出。
- */
-export function classifyAgentEvent(payload: MobileStreamPayload): MobileEventAction {
-  switch (payload.type) {
-    case "agent_start":
-      return "start";
-    case "connected":
-      // 接上时服务端会告知这一轮是否还在跑；随后的 message_start 会给流式快照。
-      return payload.isStreaming === true ? "start" : "ignore";
-    case "message_start":
-      // 用户提问那条不需要（本地气泡/快照自己管），只有助手消息才是流式气泡的起点。
-      return isRecord(payload.message) && payload.message.role === "assistant" ? "snapshot" : "ignore";
-    case "queue_update":
-      return "sync";
-    case "extension_ui_request":
-      // 扩展（含 `ask_user`）在等回答：事件里就带着请求体，直接弹卡片。
-      return blockingUiRequestFromEvent(payload) ? "prompt" : "ignore";
-    case "extension_ui_resolved":
-      // 另一边已经答了（或超时/中止），本端把卡片收掉。
-      return "sync";
-    case "message_update":
-      return payload.assistantMessageEvent ? "delta" : "ignore";
-    case "prompt_done":
-    case "agent_settled":
-      return "settle";
-    default:
-      return "ignore";
-  }
-}
-
 /** 首屏骨架：形状和真实消息一致（右侧一条用户气泡 + 左侧几行正文）。 */
 function TranscriptSkeleton({ label }: { label: string }) {
   const bar = { background: "var(--bg-panel)" } as const;
@@ -188,7 +114,7 @@ function TypingPulse() {
 }
 
 export function MobileRemoteView() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   useViewportHeight();
 
   // URL 是唯一真相：读出参数之前不发任何请求，否则会用「服务端挑中的会话」覆盖扫码指定的会话。
@@ -535,7 +461,7 @@ export function MobileRemoteView() {
           // 运行中不带 streamingBehavior 会被 SDK 直接拒绝（“Agent is already
           // processing…”），手机上就变成发不出去。带 steer 后会话有空时
           // SDK 仍会开新一轮，所以这一条路径不需要分支。
-          body: JSON.stringify({ type: "prompt", message: text, ...(running ? { streamingBehavior: "steer" } : {}) }),
+          body: JSON.stringify({ type: "prompt", message: text, uiLocale: locale, ...(running ? { streamingBehavior: "steer" } : {}) }),
         });
         const data = await response.json() as { error?: string };
         if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
@@ -545,7 +471,7 @@ export function MobileRemoteView() {
         const response = await fetch("/api/agent/new", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cwd: targetCwd, type: "prompt", message: text }),
+          body: JSON.stringify({ cwd: targetCwd, type: "prompt", message: text, uiLocale: locale }),
         });
         const data = await response.json() as { sessionId?: string; error?: string };
         if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
@@ -570,16 +496,18 @@ export function MobileRemoteView() {
     } finally {
       setBusy(false);
     }
-  }, [busy, input, running, scrollToBottom, sessionId, snapshot?.cwd, t, target?.cwd]);
+  }, [busy, input, locale, running, scrollToBottom, sessionId, snapshot?.cwd, t, target?.cwd]);
 
   const stop = useCallback(async () => {
     if (!sessionId) return;
     try {
-      await fetch(`/api/agent/${encodeURIComponent(sessionId)}`, {
+      const response = await fetch(`/api/agent/${encodeURIComponent(sessionId)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "abort" }),
       });
+      const data = await response.json() as { error?: string };
+      if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
       dispatch({ type: "end" });
       await refresh();
     } catch (cause) {
@@ -593,6 +521,7 @@ export function MobileRemoteView() {
     freshTaskRef.current = true;
     setTarget({ session: null, cwd: targetCwd });
     setSnapshot(null);
+    setEventPrompt(null);
     setInput("");
     setPending([]);
     setLimit(MOBILE_DEFAULT_LIMIT);
@@ -606,7 +535,8 @@ export function MobileRemoteView() {
   const canSend = Boolean(input.trim()) && !busy;
   const earlierCount = snapshot?.earlierCount ?? 0;
   const cappedByLimit = limit >= MOBILE_MAX_LIMIT;
-  const pendingUiRequest = eventPrompt ?? snapshot?.pendingUiRequest ?? null;
+  // 快照和事件统一写 eventPrompt，不能回退到已过期的 snapshot 卡片。
+  const pendingUiRequest = eventPrompt;
 
   const paramsReady = target !== null;
   const composing = paramsReady && !sessionId;
@@ -617,6 +547,7 @@ export function MobileRemoteView() {
 
   return (
     <div
+      data-mobile-remote-view
       style={{
         height: "var(--app-viewport-height, 100dvh)",
         display: "flex",

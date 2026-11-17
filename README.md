@@ -445,7 +445,7 @@ cargo build -p toiler-desktop                       # 自动嵌入 dist/
 | `output` | 按目标在 `standalone` / `export` 间切 | 恒为 `export` |
 | `distDir` | `.next` / `.next-desktop-dev` / `.next-desktop-frontend` | 恒为 `dist` |
 | `app/api/` | pi 的 Node 后端共 40+ route | **不搬**，`/api` 由 axum 提供 |
-| `app/m/` | 手机页面（`force-dynamic`） | **不搬**，`output:export` 会因预渲染失败 |
+| `app/m/` | 手机页面（`force-dynamic`） | 静态导出入口，查询参数在客户端读取，通过 Rust `/api/mobile/state` 与 SSE 同步 |
 | `proxy.ts` / `serverExternalPackages` / `headers()` | pi 的 server 侧特性 | 删掉；安全头改由 `assets.rs` 发 |
 
 > 旧 Node 服务模块和 `@earendil-works/pi-*` 依赖已移除。`lib/` 只保留界面所需的

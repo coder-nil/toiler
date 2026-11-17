@@ -62,8 +62,9 @@ await run(process.execPath, ["node_modules/next/dist/bin/next", "build", "--webp
 
 try {
   await access(join(distDirectory, "index.html"));
+  await access(join(distDirectory, "m.html"));
 } catch {
-  console.error(`构建没有产出 index.html，检查 ${distDirectory}`);
+  console.error(`构建必须同时产出 index.html 和 m.html，检查 ${distDirectory}`);
   process.exit(1);
 }
 

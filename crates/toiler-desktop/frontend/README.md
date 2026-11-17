@@ -14,7 +14,11 @@ Rust 服务提供，agent 执行使用 crates.io 的 `rpi`。
 - `lib/desktop-access.ts`、`mobile-pair.ts`、`model-catalog.ts`、
   `model-discovery.ts`、`plugin-catalog.ts`、`session-search.ts` 仅保留界面消费的类型，
   不执行配置读写、网卡探测、会话搜索或供应商请求。
-- 手机组件及其辅助模块仍保留；未接入当前页面不意味着可以删除正在开发的代码。
+- 手机组件及其辅助模块仍保留；`app/m/page.tsx` 已挂载 `MobileRemoteView`，
+  `/m?session=…&cwd=…` 以静态页运行，不需要 Next 服务端。
+  `lib/mobile-events.ts` 对齐 Rust 的 `agent_end`，与快照、流式消息和 ask_user 共同使用。
+  `MobileLanHandoff` 等尚未接入的手机开发代码继续保留，不按零引用直接删除。
+- 内置终端使用 `TerminalPanel` 和桌面 PTY；旧 `SimulatedConsole` 及其命令解释器已删除。
 
 Node 仍是前端构建和测试工具，不是应用运行时服务。
 
@@ -30,7 +34,9 @@ npm run build
 ```
 
 `frontend-boundary.test.mjs` 防止浏览器源码重新引入旧 SDK 或 Node 模块；
-`service-client.test.mjs` 覆盖路径比较、系统消息过滤和 Rust SSE 增量的消费。
+`service-client.test.mjs` 覆盖路径比较、系统消息过滤和 Rust SSE 增量的消费；
+`mobile-page.test.mjs` 覆盖手机入口、事件终态、扩展问答与本地气泡对账。
+构建必须同时产出 `index.html` 和 `m.html`；Rust 静态托管在 SPA 兜底前匹配 `m.html`。
 
 Tailwind 会扫描前端源码。清理文件时不能为了缩减目录而删掉仍被引用的组件和样式，
 也不要在本目录放备份源码或无关大目录。

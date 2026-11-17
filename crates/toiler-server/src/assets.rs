@@ -237,6 +237,14 @@ pub async fn serve_static(uri: Uri, headers: HeaderMap) -> Response {
         }
     }
 
+    // Next 的非根静态页默认是 `m.html` 而不是 `m/index.html`。
+    // 必须在 SPA 兜底前命中，否则扫码 /m 会显示桌面首页。
+    if Path::new(&path).extension().is_none() && !wants_rsc(&headers, &uri) {
+        if let Some(response) = html_of(&format!("{path}.html")) {
+            return response;
+        }
+    }
+
     // 4) 客户端路由接管：无扩展名的 GET 一律给 index.html
     if Path::new(&path).extension().is_none() && is_html_request(&headers) {
         if let Some(response) = html_of("index.html") {
@@ -295,6 +303,35 @@ mod tests {
     #[test]
     fn embedded_frontend_has_entry() {
         assert!(has_entry(), "嵌入目录 {} 缺少 index.html", FRONTEND_DIR);
+    }
+
+    #[tokio::test]
+    async fn extensionless_export_routes_serve_their_own_html() {
+        use http_body_util::BodyExt;
+        // 不假设必须有手机产物；对嵌入目录现有的每个导出页检查路由，换产物仍适用。
+        for file in FRONTEND.files() {
+            let Some(name) = file.path().to_str() else {
+                continue;
+            };
+            let Some(route) = name.strip_suffix(".html") else {
+                continue;
+            };
+            if matches!(route, "404" | "index") {
+                continue;
+            }
+            let mut headers = HeaderMap::new();
+            headers.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
+            for path in [format!("/{route}"), format!("/{route}/")] {
+                let response = serve_static(path.parse().unwrap(), headers.clone()).await;
+                assert_eq!(response.status(), StatusCode::OK, "{path}");
+                let bytes = response.into_body().collect().await.unwrap().to_bytes();
+                assert_eq!(
+                    bytes.as_ref(),
+                    file.contents(),
+                    "{path} 不能落到桌面首页兜底"
+                );
+            }
+        }
     }
 
     #[test]
