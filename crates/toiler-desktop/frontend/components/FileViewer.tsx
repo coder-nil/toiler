@@ -2059,6 +2059,16 @@ function TextFileViewer({
                   // For non-mermaid blocks, pass through to default pre rendering.
                   return <>{children}</>;
                 },
+                table({ children }) {
+                  // 文件预览也要分离圆角裁剪与横向滚动，避免表头底色盖住外框四角。
+                  return (
+                    <div className="markdown-table-wrap">
+                      <div className="markdown-table-scroll">
+                        <table>{children}</table>
+                      </div>
+                    </div>
+                  );
+                },
                 a({ href, children, ...props }) {
                   delete props.node;
                   const externalHref = typeof href === "string" && isOpenableExternalUrl(href) ? href : null;

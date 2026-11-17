@@ -19,10 +19,10 @@ use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 mod lan_proxy;
 mod mobile;
+mod seasonal_icon;
 pub mod server;
 mod terminal;
 mod tunnel;
-mod version_upgrade;
 
 use mobile::MobileAccess;
 use server::DesktopServer;
@@ -287,6 +287,7 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
 }
 
 fn shutdown(app: &tauri::AppHandle) {
+    seasonal_icon::stop(app);
     // 终端先收：每个 PTY 后面是一个真实 shell（可能还挂着 `npm run dev`），
     // 服务关掉之后它们就不该继续跑。
     terminal::stop_terminals(app);
@@ -335,6 +336,7 @@ pub fn run() {
         .manage(ServerState(Mutex::new(None)))
         .manage(MobileAccess::default())
         .manage(terminal::TerminalState::default())
+        .manage(seasonal_icon::SeasonalIconState::default())
         .invoke_handler(tauri::generate_handler![
             hide_startup_overlay,
             open_release_url,
@@ -343,7 +345,6 @@ pub fn run() {
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
-            version_upgrade::upgrade_project_version,
         ])
         .setup(|app| {
             // 把自己标记成「桌面壳」，并把 pid 交给服务层。两个变量都在 pi 里由
@@ -394,6 +395,9 @@ pub fn run() {
         .expect("构建 Tauri 应用失败");
 
     app.run(|handle, event| match event {
+        // Tauri 在 setup 之后、派发 Ready 之前可能重设 macOS 的默认 Dock 图标。
+        // 季节图标必须最后设置，否则日志虽报成功，实际仍显示旧图标。
+        RunEvent::Ready => seasonal_icon::start(handle),
         RunEvent::ExitRequested { .. } | RunEvent::Exit => shutdown(handle),
         _ => {}
     });
@@ -481,7 +485,11 @@ fn force_kill(child: &mut Child) {
     let _ = child.kill();
 }
 
-/// Windows 隐藏命令行窗口，其它平台使用普通进程；版本升级桥也复用此入口。
+/// Windows 隐藏命令行窗口，其它平台使用普通进程。
+///
+/// 只在 Windows 分支被调用（`taskkill`），非 Windows 构建里自然未使用。
+/// 原来版本升级桥（已改为纯 Rust）也复用它，所以现在只有 Windows 用得上。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     #[cfg(windows)]
     {

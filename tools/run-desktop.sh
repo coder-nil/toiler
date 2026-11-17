@@ -101,7 +101,15 @@ fi
 if (( build )); then
   # 编译失败以非零码退出（set -e 会传到我们这里），
   # 所以走到后面的二进制一定是刚刚编出来的。
-  cargo build --release -p toiler-desktop --manifest-path "$root/Cargo.toml"
+  # 启动脚本不能悄悄编出占位界面；--skip-frontend 只跳过重建，仍须有产物。
+  # 显式指定目录也让 Cargo 的环境变量指纹参与失效，避免复用旧的占位页缓存。
+  embed_dir="${TOILER_FRONTEND_DIR:-$dist_dir}"
+  if [[ ! -s "$embed_dir/index.html" ]]; then
+    echo "缺少前端产物：$embed_dir/index.html" >&2
+    echo "请去掉 --skip-frontend 重建，或把 TOILER_FRONTEND_DIR 指向完整产物目录。" >&2
+    exit 1
+  fi
+  TOILER_FRONTEND_DIR="$embed_dir" cargo build --release -p toiler-desktop --manifest-path "$root/Cargo.toml"
 else
   if [[ ! -x "$bin" ]]; then
     echo "还没有编译过：$bin" >&2

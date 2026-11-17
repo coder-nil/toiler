@@ -3834,36 +3834,48 @@ async fn post_plugins(root: &Path, configs: &Path, body: Value) -> Reply {
 /// 假的 npm：只做 toiler 真正会调用的两件事（install / uninstall），不碰网络。
 /// 真 npm 在离线机器 / CI 上不可用，但这里要验证的是「命令怎么拼、settings 怎么落盘」。
 #[cfg(unix)]
-const FAKE_NPM: &str = r#"#!/usr/bin/env python3
-import json, pathlib, re, shutil, sys
+const FAKE_NPM: &str = r#"#!/bin/sh
+# 假的 npm：只做 toiler 真正会调用的两件事（install / uninstall），不碰网络。
+#
+# 用 POSIX sh 而不是 python3：测试不该假设机器装了 Python ——「客户端机器没有
+# Python」正是版本升级改成纯 Rust 的原因，测试自身更不该反向依赖它。
+cmd=""
+prefix=""
+specs=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prefix)
+      prefix="$2"
+      shift 2
+      ;;
+    -*)
+      shift
+      ;;
+    *)
+      if [ -z "$cmd" ]; then cmd="$1"; else specs="$specs $1"; fi
+      shift
+      ;;
+  esac
+done
 
-args = sys.argv[1:]
-cmd = args[0] if args else ""
-prefix = ""
-specs = []
-i = 1
-while i < len(args):
-    arg = args[i]
-    if arg == "--prefix":
-        prefix = args[i + 1]
-        i += 2
-        continue
-    if arg.startswith("-"):
-        i += 1
-        continue
-    specs.append(arg)
-    i += 1
-
-for spec in specs:
-    name = re.match(r"^(@[^/]+/[^@]+|[^@]+)", spec).group(1)
-    target = pathlib.Path(prefix) / "node_modules" / name
-    if cmd == "install":
-        (target / "extensions").mkdir(parents=True, exist_ok=True)
-        (target / "package.json").write_text(json.dumps({"name": name, "version": "9.9.9"}))
-        (target / "extensions" / "entry.js").write_text("export default {};")
-    elif cmd == "uninstall":
-        shutil.rmtree(target, ignore_errors=True)
-print("fake npm ok")
+for spec in $specs; do
+  # 去掉末尾的 @version（`pkg@1.2.3` → `pkg`，`@scope/pkg@1.2.3` → `@scope/pkg`）。
+  # 只在 `@` 之后不含 `/` 时才剪，避免把 `@scope/pkg` 的前导 @ 剪掉。
+  name=$(printf '%s' "$spec" | sed -e 's/@[^/@]*$//')
+  [ -z "$name" ] && continue
+  target="$prefix/node_modules/$name"
+  case "$cmd" in
+    install)
+      mkdir -p "$target/extensions"
+      printf '{"name":"%s","version":"9.9.9"}' "$name" > "$target/package.json"
+      printf 'export default {};' > "$target/extensions/entry.js"
+      ;;
+    uninstall)
+      rm -rf "$target"
+      ;;
+  esac
+done
+echo "fake npm ok"
 "#;
 
 #[tokio::test]

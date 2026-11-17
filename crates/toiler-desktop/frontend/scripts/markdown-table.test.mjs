@@ -14,8 +14,8 @@ function declarations(selector) {
   return values;
 }
 
-test("桌面和手机表格将圆角外框与滚动区域分层", async () => {
-  for (const component of ["MarkdownBody", "MobileMarkdown"]) {
+test("桌面、手机和文件预览表格将圆角外框与滚动区域分层", async () => {
+  for (const component of ["MarkdownBody", "MobileMarkdown", "FileViewer"]) {
     const source = await readFile(new URL(`../components/${component}.tsx`, import.meta.url), "utf8");
     assert.match(source, /<div className="markdown-table-wrap">\s*<div className="markdown-table-scroll">\s*<table>\{children\}<\/table>\s*<\/div>\s*<\/div>/, `${component} 不能让外框同时承担滚动`);
   }

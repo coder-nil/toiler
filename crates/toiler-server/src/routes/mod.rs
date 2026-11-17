@@ -19,6 +19,7 @@ pub mod sessions;
 pub mod sessions_extra;
 pub mod skills;
 pub mod unsupported;
+pub mod version_upgrade;
 
 use axum::routing::{get, post};
 use axum::Router;
@@ -209,6 +210,12 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/cwd/validate",
             post(crate::routes::projects::validate).get(crate::routes::projects::validate),
+        )
+        // ---- 版本号升级（桌面壳专属，见 routes/version_upgrade.rs）----
+        // 会创建提交与标签，除了 Trusted 还校验 Origin 等于桌面壳的 origin。
+        .route(
+            "/api/version-upgrade",
+            post(crate::routes::version_upgrade::upgrade),
         )
         // ---- misc ----
         .route("/api/app-update", get(misc::app_update))

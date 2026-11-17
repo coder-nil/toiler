@@ -84,6 +84,10 @@ npm exec --yes --package=node@22.23.5 -- node scripts/build.mjs
 从 Finder 双击也行（`bundle` 见 `crates/toiler-desktop/tauri.conf.json`）。
 启动后只监听 `127.0.0.1:<随机端口>`，手机访问要另外在设置页开关。
 
+运行中的应用图标按电脑本地月份轮换：3–5 月春、6–8 月夏、9–11 月秋、12–2 月冬。
+启动即生效，跨季或休眠唤醒后最多一分钟更新。macOS 更新 Dock，Windows/Linux
+更新窗口图标；Finder、启动器和固定快捷方式仍用原版静态图标，不改已签名应用包。
+
 ### Git 面板版本升级
 
 “创建标签”后提供补丁、次要、主要版本升级：先预览完整提交范围的变更记录，
@@ -430,7 +434,10 @@ cargo build -p toiler-desktop --release
 | `crates/toiler-desktop/shell/` | Tauri 的 `frontendDist`（窗口占位页 + 启动失败页） | 是 |
 
 `build.rs` 选目录的顺序：`TOILER_FRONTEND_DIR` → `frontend/dist/`（存在
-`index.html` 时）→ `crates/toiler-server/frontend/` 占位页。所以日常开发只用：
+`index.html` 时）→ `crates/toiler-server/frontend/` 占位页。即使本轮选择占位页，
+也会监听 `dist/` 及其 `index.html`：之后首次生成前端会使 Cargo 缓存失效，
+不需要 `cargo clean`。`tools/run-desktop.sh` 则要求存在前端产物，缺失时直接
+停止，不会悄悄启动占位界面（`--skip-frontend` 仅跳过重建）。所以日常开发只用：
 
 ```bash
 cd crates/toiler-desktop/frontend && npm install   # 首次

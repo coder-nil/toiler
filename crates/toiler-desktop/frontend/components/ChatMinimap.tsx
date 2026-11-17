@@ -8,6 +8,7 @@ import {
   normalizeDisplayMath,
 } from "@/lib/markdown";
 import { splitFinalAssistantBlocks } from "@/lib/message-display";
+import { measureMinimapTurnPositions, resolveMinimapViewport, type MinimapTurnPosition } from "@/lib/chat-minimap-viewport";
 import type { AgentMessage, AssistantMessage, TextContent, UserMessage } from "@/lib/types";
 import styles from "./ChatMinimap.module.css";
 
@@ -41,10 +42,9 @@ interface AssistantPreview {
   element: HTMLDivElement | null;
 }
 
-interface TurnInfo {
+interface TurnInfo extends MinimapTurnPosition {
   userMessage: UserMessage;
   assistantPreviews: AssistantPreview[];
-  scrollTop: number | null;
 }
 
 interface NodeInfo {
@@ -326,19 +326,10 @@ export function ChatMinimap({
     }
     activeNodeLockRef.current = null;
 
-    const measuredNodes = nextNodes.filter((node) => node.targetTurn.scrollTop !== null);
-    if (measuredNodes.length === 0) {
-      setActiveIndex(null);
-      return;
-    }
-    const focusTop = scrollEl.scrollTop + scrollEl.clientHeight * 0.3;
-    const nextActiveNode = measuredNodes.reduce((bestNode, node) => (
-      Math.abs((node.targetTurn.scrollTop ?? 0) - focusTop)
-        < Math.abs((bestNode.targetTurn.scrollTop ?? 0) - focusTop)
-        ? node
-        : bestNode
-    ), measuredNodes[0]);
-    setActiveIndex(nextActiveNode.index);
+    const viewport = resolveMinimapViewport(
+      nextNodes.map((node) => node.targetTurn), scrollEl.scrollTop, scrollEl.clientHeight,
+    );
+    setActiveIndex(viewport ? nextNodes[viewport.active].index : null);
   }, []);
 
   /**
@@ -359,17 +350,14 @@ export function ChatMinimap({
       return;
     }
 
-    const scrollTop = scrollEl.scrollTop;
-    const scrollBottom = scrollTop + scrollEl.clientHeight;
-    let first = 0;
-    let last = 0;
-    for (let index = 0; index < nodes.length; index += 1) {
-      const top = nodes[index].targetTurn.scrollTop;
-      if (top === null) continue;
-      if (top <= scrollTop + 4) first = index;
-      if (top < scrollBottom) last = index;
+    const viewport = resolveMinimapViewport(
+      nextNodes.map((node) => node.targetTurn), scrollEl.scrollTop, scrollEl.clientHeight,
+    );
+    if (!viewport || nodes.length !== nextNodes.length) {
+      band.style.opacity = "0";
+      return;
     }
-    last = Math.max(first, last);
+    const { first, last } = viewport;
 
     const topPx = nodes[first].topRatio * height - gap * 0.5;
     const bottomPx = nodes[last].topRatio * height + gap * 0.5;
@@ -402,6 +390,11 @@ export function ChatMinimap({
 
       const refs = messageRefs.current;
       const containerRect = scrollEl.getBoundingClientRect();
+      const positions = measureMinimapTurnPositions(allMessagesRef.current, (refs ?? []).map((element) => (
+        element?.isConnected
+          ? element.getBoundingClientRect().top - containerRect.top + scrollEl.scrollTop
+          : null
+      )));
       const turns: TurnInfo[] = [];
       let refIndex = 0;
       let currentTurn: TurnInfo | null = null;
@@ -413,13 +406,10 @@ export function ChatMinimap({
 
         if (message.role === "user") {
           currentTurn = null;
-          const elementRect = element?.getBoundingClientRect();
           currentTurn = {
+            ...positions[turns.length],
             userMessage: message as UserMessage,
             assistantPreviews: [],
-            scrollTop: elementRect
-              ? elementRect.top - containerRect.top + scrollEl.scrollTop
-              : null,
           };
           turns.push(currentTurn);
           continue;
@@ -512,12 +502,10 @@ export function ChatMinimap({
   }, [measureNodes, scrollContainer, updateScroll, visible]);
 
   useEffect(() => {
-    const timeout = setTimeout(() => {
-      measureNodes();
-      updateScroll();
-    }, 50);
-    return () => clearTimeout(timeout);
-  }, [messages.length, measureNodes, updateScroll]);
+    // 同一条流式消息及工具状态也会改变布局；只看消息条数会漏掉这些更新。
+    // 直接交给 measureNodes 限频，避免持续出字把外层防抖计时器一直推迟。
+    measureNodes();
+  }, [allMessages, measureNodes]);
 
   // 节点重排（新轮次、窗口缩放）后需要重算视口带：measureNodes 是延迟执行的，
   // 它自己那次调用拿到的还是旧布局，所以等布局落地后再补一次。

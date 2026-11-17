@@ -29,6 +29,7 @@ pub mod state;
 pub mod system_prompt;
 pub mod tools;
 pub mod trust;
+pub mod version_bump;
 
 /// 当前时间的 ISO-8601（毫秒精度，`Z` 结尾）——与 pi 写进文件的时间戳同格式。
 pub fn toiler_now_iso() -> String {

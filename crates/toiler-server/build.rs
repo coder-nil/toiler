@@ -25,6 +25,18 @@ fn main() {
         .parent()
         .map(|crates| crates.join("toiler-desktop").join("frontend").join("dist"));
 
+    // 即使本轮选中占位页，也必须监听 dist 候选路径。否则第一次编译时
+    // dist 尚不存在，之后 npm 生成了产物也不会触发本脚本，release 会一直
+    // 复用嵌着占位页的缓存。Cargo 对尚不存在的监听路径也会重新检查；
+    // 不监听整个 frontend，避免把 node_modules 的大量文件纳入指纹扫描。
+    if let Some(dist) = &sibling_dist {
+        println!("cargo:rerun-if-changed={}", dist.display());
+        println!(
+            "cargo:rerun-if-changed={}",
+            dist.join("index.html").display()
+        );
+    }
+
     let (dir, source) = match std::env::var("TOILER_FRONTEND_DIR") {
         Ok(raw) if !raw.trim().is_empty() => {
             let raw = raw.trim();
@@ -52,6 +64,9 @@ fn main() {
         dir.display()
     );
 
+    if source == "builtin" {
+        println!("cargo:warning=未找到真实前端产物，当前嵌入占位页；请先在 crates/toiler-desktop/frontend 运行 npm run build，再重新编译 Rust");
+    }
     println!("cargo:rerun-if-changed={}", dir.display());
     // 目录本身只登记一条时，Cargo 只盯目录 mtime：产物里换了文件名、而目录
     // mtime 没变的情况下，`cargo build` 会把**旧前端**继续嵌进二进制（实测过：
