@@ -62,6 +62,21 @@ function compareParsed(a: ParsedTag, b: ParsedTag): number {
   return a.prerelease.localeCompare(b.prerelease, "en", { numeric: true });
 }
 
+/** 只排序展示副本，不改 API 原数组；版本标签优先，非版本标签按名称自然倒序。 */
+export function sortTagsDescending(tags: readonly string[]): string[] {
+  return [...tags].sort((a, b) => {
+    const left = parseTag(a);
+    const right = parseTag(b);
+    if (left && right) {
+      const compared = compareParsed(right, left);
+      if (compared !== 0) return compared;
+    } else if (left || right) {
+      return left ? -1 : 1;
+    }
+    return b.localeCompare(a, "en", { numeric: true });
+  });
+}
+
 function bumpParsed(tag: ParsedTag): string {
   const { prefix, major, minor, patch, prerelease } = tag;
   if (!prerelease) return `${prefix}${major}.${minor}.${patch + 1}`;

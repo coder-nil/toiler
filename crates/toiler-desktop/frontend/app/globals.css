@@ -2908,6 +2908,30 @@ span.token.table {
   background: var(--bg);
 }
 
+/* 标签多时在列表内滚动；仅此处固定显示滚动条，避免影响桌面其它原生滚动区。 */
+.git-tag-list {
+  max-height: min(30vh, 240px);
+  overflow-x: hidden;
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--text-muted) var(--bg);
+}
+
+.git-tag-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.git-tag-list::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+.git-tag-list::-webkit-scrollbar-thumb {
+  border: 2px solid var(--bg);
+  border-radius: 4px;
+  background: var(--text-muted);
+}
+
 .git-file-row {
   display: flex;
   align-items: center;

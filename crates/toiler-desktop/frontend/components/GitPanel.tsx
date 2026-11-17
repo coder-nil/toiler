@@ -5,7 +5,7 @@ import { ArrowDown, ArrowUp, GitBranch, Loader2, Minus, Plus, RefreshCw, Trash2,
 import { useI18n } from "@/hooks/useI18n";
 import { readApiJson } from "@/lib/api-json";
 import { APPLICATION_VERSION } from "@/lib/changelog";
-import { nextTagName } from "@/lib/git-tags";
+import { nextTagName, sortTagsDescending } from "@/lib/git-tags";
 import { CHAT_TOP_BAR_HEIGHT } from "@/lib/panel-layout";
 import { revealNext } from "@/lib/typewriter";
 import { upgradeProjectVersion, VERSION_UPGRADE_LEVELS, type VersionUpgradeLevel, type VersionUpgradePreview } from "@/lib/version-upgrade";
@@ -278,6 +278,7 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
   const staged = summary?.changes.files.filter((file) => file.indexStatus !== " " && file.indexStatus !== "?") ?? [];
   const unstaged = summary?.changes.files.filter((file) => file.worktreeStatus !== " " || file.indexStatus === "?") ?? [];
   const untrackedPaths = summary?.untrackedPaths ?? [];
+  const sortedTags = sortTagsDescending(summary?.tags ?? []);
   // 标签名输入框的示例值跟着仓库已有的标签走（建好一个后下次自动往前一步）。
   const tagPlaceholder = t("git.tagName", { name: nextTagName(summary?.tags ?? [], APPLICATION_VERSION) });
   // "Discard all" only restores tracked files from the index, so an untracked-only
@@ -406,7 +407,7 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
               {versionResult && <div role="status" className="git-note">{versionResult}</div>}
               {summary.tags.length === 0
                 ? <div className="git-hint">{t("git.noTags")}</div>
-                : <div className="git-file-list">{summary.tags.map((tag) => (
+                : <div className="git-file-list git-tag-list" role="region" aria-label={t("git.tags")} tabIndex={0}>{sortedTags.map((tag) => (
                   <div key={tag} className="git-file-row">
                     <span className="git-tag-name" title={tag}>{tag}</span>
                     <FileAction label={t("git.pushTag")} icon={Upload} action="push_tag" busy={busy} disabled={!summary.remote} onClick={() => void run("push_tag", { tag })} />
