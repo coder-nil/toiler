@@ -222,7 +222,11 @@ v3 文件里没有 leaf 记录（pi 也没有）：只挪内存指针，重开�
    - 丢弃 `message_start` / `message_end` 中 `message.role === "system"` 的
    - `message_update`：去掉 `partial` 字段；若 `assistantMessageEvent.type` 是
      `toolcall_start` / `toolcall_delta`，附上 `{id, toolName}`（来自
-     `partial.content[contentIndex]`）
+     `partial.content[contentIndex]`）。**只在非空时附**：`openai-completions`
+     在 `toolcall_start` 那一刻名字还是空串（`Content::tool_call("", "", {})`，
+     名字要等后续 delta 才拼进来），`openai-responses` 要等 `output_item.done`。
+     发包空串会踩住前端 `event.toolName ?? current.toolName` 的兜底
+     （只在 `undefined` 时保留旧值），把已经学到的名字覆盖成空。
    - `tool_execution_update`：只留 `{type, toolCallId, toolName, partialResult}`
    - `agent_end`：只留 `{type}`
 3. 扩展 UI 请求：`{"type":"extension_ui_request","id":…,"method":"select"|"confirm"|"input"|"editor",…}`，

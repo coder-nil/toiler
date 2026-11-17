@@ -1198,6 +1198,37 @@ fn tool_result_json(result: &AgentToolResult) -> Value {
     serde_json::to_value(result).unwrap_or(Value::Null)
 }
 
+/// 给 `toolcall_start` / `toolcall_delta` 补上 `{id, toolName}`。
+///
+/// 契约（`docs/contracts/README.md` 的事件裁剪一节）要求这两帧带上
+/// `{id, toolName}`，取自 `partial.content[contentIndex]`。上游把 `partial`
+/// 挂在每个增量事件里，而 pi 的 SSE 帧会把 `partial` 整块剔掉（体积太大），
+/// 所以这两个字段得在剔之前抽出来单独带走。
+///
+/// 不附空串：多个 provider 在 `toolcall_start` 那一刻名字还没到
+/// （`openai-completions` 先压入 `Content::tool_call("", "", {})`，名字在后面
+/// 的 delta 里才拼进来），`openai-responses` 则要等 `output_item.done`。
+/// 前端 `streamReducer` 把它们当可选字段，`undefined` 会用旧值兜底；
+/// 空串反而会把已经学到的名字覆盖掉。
+fn attach_tool_identity(
+    out: &mut Value,
+    partial: &rpi_ai::types::AssistantMessage,
+    content_index: usize,
+) {
+    let Some(rpi_ai::types::Content::ToolCall(call)) = partial.content.get(content_index) else {
+        return;
+    };
+    let Some(map) = out.as_object_mut() else {
+        return;
+    };
+    if !call.id.is_empty() {
+        map.insert("id".into(), Value::String(call.id.clone()));
+    }
+    if !call.name.is_empty() {
+        map.insert("toolName".into(), Value::String(call.name.clone()));
+    }
+}
+
 /// `AssistantMessageEvent` → pi 的 JSON（内层同样去掉 `partial`）。
 fn assistant_event_json(event: &AssistantMessageEvent) -> Value {
     match event {
@@ -1246,19 +1277,30 @@ fn assistant_event_json(event: &AssistantMessageEvent) -> Value {
             "contentIndex": content_index,
             "content": content,
         }),
-        AssistantMessageEvent::ToolCallStart { content_index, .. } => json!({
-            "type": "toolcall_start",
-            "contentIndex": content_index,
-        }),
+        AssistantMessageEvent::ToolCallStart {
+            content_index,
+            partial,
+        } => {
+            let mut out = json!({
+                "type": "toolcall_start",
+                "contentIndex": content_index,
+            });
+            attach_tool_identity(&mut out, partial, *content_index);
+            out
+        }
         AssistantMessageEvent::ToolCallDelta {
             content_index,
             delta,
-            ..
-        } => json!({
-            "type": "toolcall_delta",
-            "contentIndex": content_index,
-            "delta": delta,
-        }),
+            partial,
+        } => {
+            let mut out = json!({
+                "type": "toolcall_delta",
+                "contentIndex": content_index,
+                "delta": delta,
+            });
+            attach_tool_identity(&mut out, partial, *content_index);
+            out
+        }
         AssistantMessageEvent::ToolCallEnd {
             content_index,
             tool_call,
@@ -1631,5 +1673,105 @@ mod prompt_message_tests {
             assert_eq!(blocks.len(), 2, "{ty}: {blocks:?}");
             assert_eq!(blocks[1]["type"], "image", "{ty}");
         }
+    }
+}
+
+/// `message_update` 里 `toolcall_start` / `toolcall_delta` 必须带 `{id, toolName}`。
+///
+/// 契约见 `docs/contracts/README.md` 的「事件序列」一节：pi 在这两帧上附上
+/// `{id, toolName}`（取自 `partial.content[contentIndex]`），前端
+/// `streaming-message.ts` 的 `toolcall_start` 分支靠 `toolName` 才能建出工具块 ——
+/// 拿不到就 `return null`，于是整段参数生成期都是空白的，工具条要等
+/// `toolcall_end` 才一次性跳出来（`chat.generatingToolInput` 那条分支不可达）。
+#[cfg(test)]
+mod toolcall_event_tests {
+    use super::*;
+    use rpi_ai::types::{Content, ToolCall};
+
+    fn partial_with(name: &str, id: &str) -> Arc<rpi_ai::types::AssistantMessage> {
+        let mut message = rpi_ai::types::AssistantMessage::terminal(
+            rpi_ai::Api::AnthropicMessages,
+            "apisets",
+            "glm-5.3",
+            rpi_ai::types::StopReason::ToolUse,
+            "",
+            0,
+        );
+        message.content.push(Content::ToolCall(ToolCall {
+            kind: rpi_ai::types::ToolCallType,
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: json!({}),
+            thought_signature: None,
+            namespace: None,
+            recorded: None,
+        }));
+        Arc::new(message)
+    }
+
+    /// Anthropic 在 `content_block_start` 就同时给出 id 与 name，两帧都得带上。
+    #[test]
+    fn toolcall_start_and_delta_carry_id_and_tool_name() {
+        let partial = partial_with("read", "call_1");
+        let start = assistant_event_json(&AssistantMessageEvent::ToolCallStart {
+            content_index: 0,
+            partial: partial.clone(),
+        });
+        assert_eq!(start["type"], "toolcall_start");
+        assert_eq!(start["id"], "call_1");
+        assert_eq!(start["toolName"], "read");
+
+        let delta = assistant_event_json(&AssistantMessageEvent::ToolCallDelta {
+            content_index: 0,
+            delta: "{\"path\"".to_string(),
+            partial,
+        });
+        assert_eq!(delta["type"], "toolcall_delta");
+        assert_eq!(delta["delta"], "{\"path\"");
+        assert_eq!(delta["id"], "call_1");
+        assert_eq!(delta["toolName"], "read");
+    }
+
+    /// `openai-completions` 在 `toolcall_start` 时压入的是空名字，名字要到
+    /// `toolcall_delta` 才拼进来。空串不能当成 "toolName: \"\"" 发下去：
+    /// 前端的 `event.toolName ?? current.toolName` 只在 undefined 时才兜底，
+    /// 空串会把已经学到的名字覆盖掉。
+    #[test]
+    fn empty_identity_is_omitted_not_sent_as_empty_string() {
+        let partial = partial_with("", "");
+        let start = assistant_event_json(&AssistantMessageEvent::ToolCallStart {
+            content_index: 0,
+            partial,
+        });
+        assert_eq!(start["type"], "toolcall_start");
+        assert!(start.get("id").is_none(), "{start}");
+        assert!(start.get("toolName").is_none(), "{start}");
+    }
+
+    /// `content_index` 越界（或该位置不是 toolCall）时不能编译出空字段，
+    /// 也不能 panic：部分 provider 会先发 start 再填块。
+    #[test]
+    fn missing_block_or_wrong_kind_adds_nothing() {
+        let partial = partial_with("read", "call_1");
+        for index in [1, 99] {
+            let frame = assistant_event_json(&AssistantMessageEvent::ToolCallStart {
+                content_index: index,
+                partial: partial.clone(),
+            });
+            assert!(frame.get("id").is_none(), "{frame}");
+            assert!(frame.get("toolName").is_none(), "{frame}");
+        }
+    }
+
+    /// `partial` 本体不能进帧：契约要求 `message_update` 去掉它（体积太大，
+    /// 一份部分快照里是整个已生成正文）。
+    #[test]
+    fn partial_is_not_projected_into_the_frame() {
+        let partial = partial_with("read", "call_1");
+        let frame = assistant_event_json(&AssistantMessageEvent::ToolCallStart {
+            content_index: 0,
+            partial,
+        });
+        assert!(frame.get("partial").is_none(), "{frame}");
     }
 }
