@@ -967,8 +967,8 @@ pub fn is_supported_action(action: &str) -> bool {
     ACTIONS.contains(&action)
 }
 
-/// 每个仓库一把锁：同一仓库的写操作串行（pi 的 `76402.t`）。
-fn repo_lock(root: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+/// 每个仓库一把锁：同一仓库的写操作串行；桌面版本升级也必须共用这把锁。
+pub fn repo_lock(root: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex, OnceLock};
     static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();

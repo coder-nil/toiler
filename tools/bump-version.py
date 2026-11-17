@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import re
 import shutil
@@ -206,8 +207,10 @@ def next_version(current: str, level: str) -> tuple[str, str]:
 def git_output(*args: str) -> str:
     try:
         result = subprocess.run(
-            ["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8"
+            ["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=60
         )
+    except subprocess.TimeoutExpired as exc:
+        raise Fail("Git 操作超时，已停止升级，请检查仓库状态") from exc
     except OSError as exc:
         raise Fail(f"无法读取 Git 历史：{exc}") from exc
     if result.returncode != 0:
@@ -360,7 +363,10 @@ def update_cargo_lock(new: str) -> None:
         args = [cargo, "update", "--offline"]
         for name in LOCAL_CRATES:
             args.extend(["-p", name])
-        result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
+        try:
+            result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired as exc:
+            raise Fail("Cargo.lock 更新超时，请检查是否有其它 Cargo 操作占用锁") from exc
         if result.returncode == 0:
             print(f"  Cargo.lock：cargo update 已把 {len(LOCAL_CRATES)} 个本地包锁定到 {new}")
             return
@@ -379,6 +385,89 @@ def update_cargo_lock(new: str) -> None:
             raise Fail(f"Cargo.lock 里 {name} 版本行替换了 {count} 处，应为 1 处")
     CARGO_LOCK.write_text(text, encoding="utf-8")
     print(f"  Cargo.lock：已文本改写 {len(LOCAL_CRATES)} 个本地包到 {new}")
+
+
+# --------------------------------------------------------------------------
+# 桌面发布桥（CLI 本身仍不提交、不打标签）
+# --------------------------------------------------------------------------
+
+
+def desktop_release(
+    level: str, *, dry_run: bool, expected_head: str | None = None,
+    expected_version: str | None = None, expected_plan: str | None = None,
+) -> dict:
+    """仅由桌面壳调用；复用同一份规划和锁文件逻辑，确认后提交并创建普通标签。"""
+    if level not in ("patch", "minor", "major"):
+        raise Fail("未知的升级级别")
+    if Path(git_output("rev-parse", "--show-toplevel")).resolve() != ROOT.resolve():
+        raise Fail("版本升级必须在项目仓库根目录执行")
+    if not git_output("symbolic-ref", "--quiet", "HEAD"):
+        raise Fail("请先切换到本地分支再升级版本")
+    git_dir = Path(git_output("rev-parse", "--absolute-git-dir"))
+    if any((git_dir / name).exists() for name in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer")):
+        raise Fail("请先完成或中止正在进行的合并、变基或拣选操作")
+    if git_output("status", "--porcelain", "--untracked-files=all"):
+        raise Fail("请先提交或贮藏所有未提交改动，再升级版本；不会混入其它修改")
+
+    paths = [*CARGO_TOMLS, BASE_FILE, PACKAGE_JSON, PACKAGE_LOCK, CHANGELOG_MD, CHANGELOG_JSON, CARGO_LOCK]
+    # 防止项目中的符号链接把版本写入引到仓库外；桌面桥只支持脚本约定的项目结构。
+    for path in [ROOT / "Cargo.toml", *paths]:
+        try:
+            path.resolve().relative_to(ROOT.resolve())
+        except ValueError as exc:
+            raise Fail(f"版本文件指向仓库外：{rel(path)}") from exc
+        if not path.is_file():
+            raise Fail(f"项目缺少版本文件：{rel(path)}，只支持与 bump-version.py 兼容的项目")
+    files = [path.relative_to(ROOT).as_posix() for path in paths]
+    git_output("ls-files", "--error-unmatch", "--", *files)
+    head = git_output("rev-parse", "HEAD")
+    current = read_tauri_version()
+    new, _ = next_version(current, level)
+    tag = f"v{new}"
+    if git_output("tag", "--list", tag):
+        raise Fail(f"标签 {tag} 已存在，不能重复发布")
+    git_output("var", "GIT_AUTHOR_IDENT")
+    git_output("var", "GIT_COMMITTER_IDENT")
+    edits = plan_edits(new, with_changelog=True)
+    plan_id = hashlib.sha256(
+        json.dumps([(rel(path), content) for path, content in edits], ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    result = {"current": current, "version": new, "tag": tag, "head": head, "planId": plan_id, "files": files}
+    if dry_run:
+        return result
+    if (expected_head, expected_version, expected_plan) != (head, new, plan_id):
+        raise Fail("仓库或升级预览已经变化，请重新预览并确认")
+
+    try:
+        for path, content in edits:
+            path.write_text(content, encoding="utf-8")
+        update_cargo_lock(new)
+        if any(version != new for version in collect_versions().values()):
+            raise Fail("升级后版本号未全部对齐，已停止提交")
+        contents = {path: path.read_bytes() for path in paths}
+        changed = set(git_output("diff", "--name-only", "-z", "HEAD", "--").split("\0")) - {""}
+        if not changed or not changed.issubset(set(files)):
+            raise Fail("升级期间出现预期之外的文件改动，已停止提交")
+        if git_output("rev-parse", "HEAD") != head:
+            raise Fail("提交历史在升级期间发生变化，已停止提交")
+        # --only 只提交版本文件；即使外部工具并发暂存其它文件，也不把它们混入版本提交。
+        git_output(
+            "-c", "commit.gpgsign=false", "commit", "--only", "-m",
+            f"chore(release): 版本号升级至 {new}", "--", *files,
+        )
+        commit = git_output("rev-parse", "HEAD")
+        if git_output("rev-parse", "HEAD^") != head:
+            raise Fail("提交历史在升级期间发生变化，已停止创建标签")
+        committed = set(git_output("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD").split("\0")) - {""}
+        if committed != changed or any(path.read_bytes() != content for path, content in contents.items()) or git_output("status", "--porcelain", "--untracked-files=all"):
+            raise Fail("提交钩子或外部工具修改了仓库，请检查版本提交；尚未创建标签")
+        # 显式禁用 tag.gpgsign，普通标签不能因用户的全局配置变成签名操作。
+        git_output("-c", "tag.gpgsign=false", "tag", "--no-sign", tag, commit)
+        result["commit"] = commit
+        print(f"已创建版本提交 {commit[:12]} 与普通标签 {tag}；未推送到远端。")
+        return result
+    except Exception as exc:
+        raise Fail(f"{exc}\n升级产生的文件或提交已保留，未自动回滚或推送，请检查仓库后再继续。") from exc
 
 
 # --------------------------------------------------------------------------

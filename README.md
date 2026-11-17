@@ -84,6 +84,13 @@ npm exec --yes --package=node@22.23.5 -- node scripts/build.mjs
 从 Finder 双击也行（`bundle` 见 `crates/toiler-desktop/tauri.conf.json`）。
 启动后只监听 `127.0.0.1:<随机端口>`，手机访问要另外在设置页开关。
 
+### Git 面板版本升级
+
+“创建标签”后提供补丁、次要、主要版本升级：先预览完整提交范围的变更记录，
+确认后同步项目版本文件、创建版本提交和普通本地标签，不自动推送。
+仅桌面可用，需要 Python 3.9+ 及与 `tools/bump-version.py` 兼容的项目结构。
+详见 [版本升级说明](./docs/version-upgrade.md)。
+
 ### Windows 安装与拦截排查
 
 Release 提供 NSIS（`.exe`）和 MSI（`.msi`）安装包，发布前在 Windows CI 上扫描

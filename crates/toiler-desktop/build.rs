@@ -8,6 +8,7 @@ fn main() {
             "terminal_write",
             "terminal_resize",
             "terminal_close",
+            "upgrade_project_version",
         ]),
     ))
     .expect("生成桌面命令权限失败");

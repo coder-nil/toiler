@@ -22,6 +22,7 @@ mod mobile;
 pub mod server;
 mod terminal;
 mod tunnel;
+mod version_upgrade;
 
 use mobile::MobileAccess;
 use server::DesktopServer;
@@ -342,6 +343,7 @@ pub fn run() {
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
+            version_upgrade::upgrade_project_version,
         ])
         .setup(|app| {
             // 把自己标记成「桌面壳」，并把 pid 交给服务层。两个变量都在 pi 里由
@@ -479,12 +481,17 @@ fn force_kill(child: &mut Child) {
     let _ = child.kill();
 }
 
-#[cfg(windows)]
-pub(crate) fn hidden_command(program: &str) -> Command {
-    use std::os::windows::process::CommandExt;
-    let mut command = Command::new(program);
-    command.creation_flags(CREATE_NO_WINDOW);
-    command
+/// Windows 隐藏命令行窗口，其它平台使用普通进程；版本升级桥也复用此入口。
+pub(crate) fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut command = Command::new(program);
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+    }
+    #[cfg(not(windows))]
+    Command::new(program)
 }
 
 #[cfg(test)]

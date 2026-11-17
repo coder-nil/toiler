@@ -8,6 +8,7 @@ import { APPLICATION_VERSION } from "@/lib/changelog";
 import { nextTagName } from "@/lib/git-tags";
 import { CHAT_TOP_BAR_HEIGHT } from "@/lib/panel-layout";
 import { revealNext } from "@/lib/typewriter";
+import { upgradeProjectVersion, VERSION_UPGRADE_LEVELS, type VersionUpgradeLevel, type VersionUpgradePreview } from "@/lib/version-upgrade";
 import { BranchPicker } from "./BranchPicker";
 
 // MergeBranchPicker delegates to the shared picker, which renders the accessible
@@ -42,7 +43,7 @@ type GitSummary = {
   untrackedPaths: string[];
 };
 
-type Action = "stage" | "unstage" | "discard" | "discard_all" | "commit" | "fetch" | "pull" | "push" | "merge" | "continue" | "abort" | "set_remote_url" | "create_tag" | "delete_tag" | "push_tag" | "push_tags" | "summarize";
+type Action = "stage" | "unstage" | "discard" | "discard_all" | "commit" | "fetch" | "pull" | "push" | "merge" | "continue" | "abort" | "set_remote_url" | "create_tag" | "delete_tag" | "push_tag" | "push_tags" | "summarize" | `bump_${VersionUpgradeLevel}`;
 
 const SAVED_CREDENTIAL_MASK = "••••••••";
 
@@ -69,6 +70,12 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
   const [confirmingDeleteTag, setConfirmingDeleteTag] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [checkedUpdate, setCheckedUpdate] = useState(false);
+  const [desktop, setDesktop] = useState(false);
+  const [versionPreview, setVersionPreview] = useState<{ level: VersionUpgradeLevel; data: VersionUpgradePreview } | null>(null);
+  const [versionResult, setVersionResult] = useState<string | null>(null);
+  const versionDialogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { setDesktop(window.__PI_WEB_DESKTOP__ === true); }, []);
+  useEffect(() => { if (versionPreview) versionDialogRef.current?.focus(); }, [versionPreview]);
 
   // Prefill the credential form from the encrypted store so users can tell at a
   // glance whether they already saved a credential for this remote. The secret
@@ -112,6 +119,8 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
   useEffect(() => {
     setSummary(null);
     setError(null);
+    setVersionPreview(null);
+    setVersionResult(null);
   }, [cwd]);
 
   useEffect(() => { void refresh().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))); }, [refresh]);
@@ -163,6 +172,29 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
       setBusy(null);
     }
   }, [cwd, onChanged, refresh, rememberCredential, secret, summary?.credentialKind, t, username]);
+
+  const versionUpgrade = useCallback(async (level: VersionUpgradeLevel, preview?: VersionUpgradePreview) => {
+    setBusy(`bump_${level}`);
+    setError(null);
+    setVersionResult(null);
+    try {
+      const data = await upgradeProjectVersion(cwd, level, preview);
+      if (!preview) {
+        setVersionPreview({ level, data });
+      } else {
+        setVersionPreview(null);
+        setVersionResult(t("git.versionUpgradeDone", { tag: data.tag }));
+        onChanged();
+        await refresh();
+      }
+    } catch (reason) {
+      setVersionPreview(null);
+      setError(reason instanceof Error ? reason.message : String(reason));
+      void refresh().catch(() => undefined);
+    } finally {
+      setBusy(null);
+    }
+  }, [cwd, onChanged, refresh, t]);
 
   const summarizeCommitMessage = useCallback(async () => {
     setBusy("summarize");
@@ -268,7 +300,9 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
       if (event.key === "Escape" && !disabled) {
         event.preventDefault();
         event.stopPropagation();
-        if (confirmingDiscardAll) {
+        if (versionPreview) {
+          setVersionPreview(null);
+        } else if (confirmingDiscardAll) {
           setConfirmingDiscardAll(false);
         } else if (confirmingDiscardFile) {
           setConfirmingDiscardFile(null);
@@ -284,7 +318,7 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
     };
     document.addEventListener("keydown", handleKeyDown, true);
     return () => document.removeEventListener("keydown", handleKeyDown, true);
-  }, [confirmingDiscardAll, confirmingDeleteTag, confirmingDiscardFile, disabled, editingRemote, onClose]);
+  }, [confirmingDiscardAll, confirmingDeleteTag, confirmingDiscardFile, disabled, editingRemote, onClose, versionPreview]);
 
   return (
     <div role="presentation" className="git-panel-overlay">
@@ -294,6 +328,7 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
             只有内联的 paddingTop 能压住类里的 padding 简写。 */}
         <header
           className="git-panel-header"
+          inert={Boolean(versionPreview)}
           // 标题条可拖窗口：面板贴右侧、头上一整条与对话顶栏同高，鼠标自然
           // 会往那儿落。与 app-topbar 一样用 deep——裸属性只在直接点中这个
           // 元素时生效，而这条带子里铺着图标、标题、路径、按钮。
@@ -306,7 +341,7 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
           <button type="button" className="git-icon-btn" onClick={() => void refresh().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))} disabled={disabled} title={t("git.refreshStatus")} aria-label={t("git.refreshStatus")}><RefreshCw size={14} strokeWidth={2} aria-hidden="true" /></button>
           <button type="button" className="git-icon-btn" onClick={onClose} disabled={disabled} title={t("git.close")} aria-label={t("git.close")}><X size={15} strokeWidth={2} aria-hidden="true" /></button>
         </header>
-        <main className="git-panel-body">
+        <main className="git-panel-body" inert={Boolean(versionPreview)}>
           {error && <div role="alert" className="git-alert">{error}{sshAuthFailed && <div className="git-alert-detail">{t("git.sshKeyAuthFailed")}</div>}</div>}
           {!summary && !error && <div className="git-hint">{t("git.loadingRepository")}</div>}
           {summary && !summary.isGitRepository && <div className="git-hint">{t("git.notRepository")}</div>}
@@ -364,8 +399,11 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
                 <input className="git-input" value={tagMessage} onChange={(event) => setTagMessage(event.target.value)} placeholder={t("git.tagMessage")} title={t("git.tagMessage")} disabled={disabled} />
               </div>
               <div className="git-actions-row" style={{ marginBottom: summary.tags.length > 0 ? 9 : 0 }}>
-                <ActionButton label={t("git.createTag")} action="create_tag" busy={busy} disabled={!newTag.trim()} onClick={() => void run("create_tag", { tag: newTag.trim(), ...(tagMessage.trim() ? { message: tagMessage.trim() } : {}) })} />
+                <ActionButton label={t("git.createTag")} action="create_tag" busy={busy} disabled={!newTag.trim() || Boolean(versionPreview)} onClick={() => void run("create_tag", { tag: newTag.trim(), ...(tagMessage.trim() ? { message: tagMessage.trim() } : {}) })} />
+                {VERSION_UPGRADE_LEVELS.map((level) => <ActionButton key={level} label={t(`git.versionUpgrade.${level}`)} action={`bump_${level}`} busy={busy} disabled={!desktop || Boolean(summary.operation) || Boolean(versionPreview)} title={t(desktop ? "git.versionUpgradeHint" : "git.versionUpgradeDesktopOnly")} onClick={() => void versionUpgrade(level)} />)}
               </div>
+              {!desktop && <div className="git-hint">{t("git.versionUpgradeDesktopOnly")}</div>}
+              {versionResult && <div role="status" className="git-note">{versionResult}</div>}
               {summary.tags.length === 0
                 ? <div className="git-hint">{t("git.noTags")}</div>
                 : <div className="git-file-list">{summary.tags.map((tag) => (
@@ -378,6 +416,17 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
             </div>
           </>}
         </main>
+        {versionPreview && summary?.isGitRepository && <div ref={versionDialogRef} tabIndex={-1} role="alertdialog" aria-modal="true" aria-label={t("git.versionUpgradeConfirm", { version: versionPreview.data.version })} className="git-version-confirm">
+          <div className="git-confirm-panel">
+            <p className="git-confirm-text">{t("git.versionUpgradeConfirm", { version: versionPreview.data.version })}</p>
+            <p className="git-confirm-note">{t("git.versionUpgradeScope", { current: versionPreview.data.current, tag: versionPreview.data.tag })}</p>
+            <pre className="git-version-preview">{versionPreview.data.files.join("\n")}{"\n\n"}{versionPreview.data.output}</pre>
+            <div className="git-confirm-actions">
+              <ActionButton label={t("git.discardAllConfirmCancel")} action={`bump_${versionPreview.level}`} busy={busy} onClick={() => setVersionPreview(null)} />
+              <ActionButton label={t("git.versionUpgradeApply")} action={`bump_${versionPreview.level}`} busy={busy} onClick={() => void versionUpgrade(versionPreview.level, versionPreview.data)} />
+            </div>
+          </div>
+        </div>}
         {confirmingDiscardFile && summary?.isGitRepository && <DiscardFileConfirmDialog filePath={confirmingDiscardFile} busy={busy} onCancel={() => setConfirmingDiscardFile(null)} onConfirm={() => { const filePath = confirmingDiscardFile; setConfirmingDiscardFile(null); void run("discard", { paths: [filePath] }); }} />}
         {confirmingDiscardAll && summary?.isGitRepository && <DiscardAllConfirmDialog summary={summary} untrackedPaths={untrackedPaths} busy={busy} onCancel={() => setConfirmingDiscardAll(false)} onConfirm={() => { setConfirmingDiscardAll(false); void run("discard_all"); }} />}
         {confirmingDeleteTag && summary?.isGitRepository && <DeleteTagConfirmDialog tag={confirmingDeleteTag} busy={busy} onCancel={() => setConfirmingDeleteTag(null)} onConfirm={() => { const tag = confirmingDeleteTag; setConfirmingDeleteTag(null); void run("delete_tag", { tag }); }} />}

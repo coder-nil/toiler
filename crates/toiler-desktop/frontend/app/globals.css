@@ -3017,6 +3017,39 @@ span.token.table {
   white-space: nowrap;
 }
 
+/* 升级会写版本文件并创建提交/标签，预览必须遮住底下的其它 Git 写操作。 */
+.git-version-confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  align-content: center;
+  padding: 14px;
+  background: var(--bg-overlay, #0008);
+}
+
+.git-version-confirm .git-confirm-panel {
+  min-height: 0;
+  max-height: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: auto;
+}
+
+.git-version-preview {
+  max-height: 40vh;
+  margin: 0;
+  padding: 9px;
+  overflow: auto;
+  background: var(--bg);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* 底部确认条（discard_all）与浮在列表上的确认卡（discard 单个文件）。 */
 .git-confirm-panel {
   display: grid;
