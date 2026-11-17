@@ -2435,7 +2435,7 @@ export function AppShell() {
         } as React.CSSProperties}
       >
         {/* Right panel tab bar */}
-        <div className="app-file-panel-titlebar" style={{
+        <div className="app-chrome app-file-panel-titlebar" data-tauri-drag-region="deep" style={{
           display: "flex",
           /* 标签栏自己会被下面那个 42px 高度钉住，但它的子元素（标签条）
              要能沿交叉轴撑满，所以不能在这里写 align-items: center——

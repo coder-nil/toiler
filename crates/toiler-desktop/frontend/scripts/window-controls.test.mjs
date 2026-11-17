@@ -81,9 +81,25 @@ test("右侧栏开关时由窗口最右侧顶栏避让控制按钮", async () =>
   assert.ok(css.includes(".toiler-custom-titlebar .right-panel-open .app-file-panel-titlebar"));
   assert.ok(css.includes("box-sizing:border-box;padding-right:138px"));
   const shell = await readFile(new URL("../components/AppShell.tsx", import.meta.url), "utf8");
-  assert.match(shell, /<div className="app-file-panel-titlebar"/);
+  assert.match(shell, /<div className="app-chrome app-file-panel-titlebar"/);
   const header = shell.slice(shell.indexOf('{/* Right panel tab bar */}'), shell.indexOf('{/* Only the active panel body'));
   assert.ok(header.includes('onClick={() => setRightPanelOpen(false)}'), "收起键必须与标签条一起避让");
+});
+
+test("文件预览标题栏空白可拖动，文件标签与操作按钮保持可点击", async () => {
+  const shell = await readFile(new URL("../components/AppShell.tsx", import.meta.url), "utf8");
+  const header = shell.slice(shell.indexOf('{/* Right panel tab bar */}'), shell.indexOf('{/* Only the active panel body'));
+  assert.match(header, /className="app-chrome app-file-panel-titlebar"[^>]*data-tauri-drag-region="deep"/);
+  assert.ok(header.includes('onClick={() => setRightPanelOpen(false)}'));
+  assert.match(header, /<button[\s\S]*?onClick=\{\(\) => setRightPanelOpen\(false\)\}/, "收起面板仍使用原生按钮，自动排除窗口拖拽");
+
+  const tabs = await readFile(new URL("../components/TabBar.tsx", import.meta.url), "utf8");
+  assert.match(tabs, /key=\{tab.id\}[\s\S]*?data-tauri-drag-region="false"\s+onClick=\{\(\) => onSelectTab\(tab.id\)\}/);
+  assert.ok(tabs.includes("onAuxClick={(e) => {"), "保留中键关闭文件标签");
+  assert.match(tabs, /<button\s+onClick=\{\(e\) => \{ e.stopPropagation\(\); onCloseTab\(tab.id\); \}\}/, "关闭标签仍使用原生按钮");
+
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(styles, /\.app-chrome,\s*\.app-chrome \*\s*\{[^}]*user-select:\s*none/);
 });
 
 test("Git 面板刷新和关闭按钮与顶栏一起避让窗口控制区", async () => {

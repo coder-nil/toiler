@@ -56,6 +56,8 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
         return (
           <div
             key={tab.id}
+            // 标签用 div 接收点击，需显式排除标题栏拖拽，保留切换与中键关闭。
+            data-tauri-drag-region="false"
             onClick={() => onSelectTab(tab.id)}
             onMouseDown={(e) => {
               if (e.button === 1) e.preventDefault();
