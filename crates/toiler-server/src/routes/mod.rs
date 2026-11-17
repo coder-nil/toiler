@@ -211,6 +211,7 @@ pub fn router(state: AppState) -> Router {
             post(crate::routes::projects::validate).get(crate::routes::projects::validate),
         )
         // ---- misc ----
+        .route("/api/app-update", get(misc::app_update))
         .route(
             "/api/checkpoints",
             get(unsupported::checkpoints).post(unsupported::checkpoints),

@@ -407,6 +407,29 @@ fn parse_mode(raw: Option<&str>, field: &str) -> Result<Option<QueueMode>, Strin
     }
 }
 
+/// `GET /api/app-update` —— 查 GitHub Releases 判断有没有新版本。
+///
+/// 缺了这条路由，前端 `AppShell` 的启动检查会落到静态兜底的 404，请求静默失败，
+/// 「有新版本」的提示永远不会出现（``catch`` 里不报错，排查时看不出问题）。
+/// `?refresh=1` 跳过进程内缓存（见 [`crate::app_update`]）。
+pub async fn app_update(_trusted: Trusted, Query(params): Query<AppUpdateParams>) -> Response {
+    let refresh = matches!(params.refresh.as_deref(), Some("1" | "true"));
+    match crate::app_update::app_update(refresh).await {
+        Ok(body) => Json(body).into_response(),
+        // 上游不可达/返回异常：502 与 pi 一致。前端对非 2xx 静默。
+        Err(message) => {
+            (StatusCode::BAD_GATEWAY, Json(json!({ "error": message }))).into_response()
+        }
+    }
+}
+
+/// `GET /api/app-update` 的查询参数。
+#[derive(Debug, Deserialize)]
+pub struct AppUpdateParams {
+    /// `1` / `true` 时跳过进程内缓存。
+    refresh: Option<String>,
+}
+
 fn bad_request(message: &str) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
 }
