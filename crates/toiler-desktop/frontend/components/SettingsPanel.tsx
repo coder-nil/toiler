@@ -751,7 +751,7 @@ export function SettingsPanel({ cwd, hasProject, projectTrusted, sessionId, onCl
 
           <main style={{ display: isMobile && visibleView === "menu" ? "none" : "block", flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", position: "relative" }}>
             {visitedSections.has("general") && (
-              <section hidden={activeSection !== "general"} aria-hidden={activeSection !== "general"} style={{ height: "100%", overflowY: "auto" }}>
+              <section hidden={activeSection !== "general"} aria-hidden={activeSection !== "general"} className="settings-general-pane">
                 <div className="settings-pane-head">{t("settings.generalDescription")}</div>
                 <div className="settings-general">
                   <SettingsGroup>
@@ -779,7 +779,9 @@ export function SettingsPanel({ cwd, hasProject, projectTrusted, sessionId, onCl
                   )}
 
                   {/* 「关于」固定在常规页最底部。 */}
-                  <SettingsGroup>{renderAboutRow()}</SettingsGroup>
+                  <div className="settings-general-about">
+                    <SettingsGroup>{renderAboutRow()}</SettingsGroup>
+                  </div>
                 </div>
               </section>
             )}

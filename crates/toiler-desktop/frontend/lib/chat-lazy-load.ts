@@ -112,11 +112,14 @@ export function getPromptAnchorSpacerHeight(
   targetTop: number,
   contentEnd: number,
   clientHeight: number,
+  bottomClearance = 0,
 ): number {
   const clampedTargetTop = Math.max(0, targetTop);
   if (clampedTargetTop === 0) return 0;
 
+  // 固定底部留白也属于可滚动高度；不扣除它，流式贴底会越过置顶目标，
+  // 将原本留在顶部 16px 的用户气泡推到裁剪区之外。
   return Math.max(0, Math.ceil(
-    clampedTargetTop + clientHeight - Math.max(0, contentEnd),
+    clampedTargetTop + clientHeight - Math.max(0, contentEnd) - Math.max(0, bottomClearance),
   ));
 }

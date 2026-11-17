@@ -561,6 +561,7 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, newSessionD
         targetTop,
         contentEnd,
         container.clientHeight,
+        CHAT_JUMP_CLEARANCE,
       );
 
       const isInitialMeasurement = !promptAnchorAdjustmentDoneRef.current;

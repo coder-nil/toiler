@@ -39,6 +39,7 @@ import {
   type ClientAssistantMessageEvent,
 } from "@/lib/streaming-message";
 import { SESSION_PAGE_SIZE, prependContextPage } from "@/lib/session-paging";
+import { createChatRefreshHandler } from "@/lib/chat-refresh-shortcut";
 
 export interface SessionData {
   sessionId: string;
@@ -634,6 +635,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (showLoading && !messagesLoaded) setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    const handler = createChatRefreshHandler(async () => {
+      const sid = sessionIdRef.current;
+      // 空白会话只拦截窗口重载，不创建会话，也不丢弃草稿。
+      if (sid) await loadSession(sid, false, true);
+    });
+    document.addEventListener("keydown", handler, true);
+    return () => document.removeEventListener("keydown", handler, true);
+  }, [loadSession]);
 
   const loadContext = useCallback(async (sid: string, leafId: string | null) => {
     // `leafId === null` 是「没有叶子」的显式状态（编辑第一条消息、切到根）：

@@ -786,13 +786,29 @@ html.dark {
   line-height: 1.5;
 }
 
-.settings-general {
-  width: min(720px, 100%);
-  padding: 10px 10px 20px;
+/* 只在显示时启用弹性布局，避免覆盖原生 hidden 的页签隐藏行为。 */
+.settings-general-pane {
+  height: 100%;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
-.settings-general-group + .settings-general-group {
-  margin-top: 18px;
+.settings-general-pane:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-general {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+  gap: 18px;
+  width: 100%;
+  padding: 14px 18px 18px;
+}
+
+.settings-general-about {
+  margin-top: auto;
 }
 
 /* 分组卡片：内嵌圆角块，行在里面靠 hover 区分，不用逐行分割线。 */
@@ -813,8 +829,8 @@ html.dark {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 44px;
-  padding: 8px 10px;
+  min-height: 52px;
+  padding: 10px 12px;
   border-radius: var(--radius-md);
   transition: background-color 120ms ease;
 }
@@ -856,6 +872,7 @@ html.dark {
 .settings-row-text {
   min-width: 0;
   flex: 1;
+  overflow-wrap: anywhere;
 }
 
 .settings-row-title {
@@ -1046,6 +1063,23 @@ html.dark {
 .settings-general :is(button, select, input):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+@media (max-width: 600px) {
+  .settings-general {
+    padding: 12px 10px 14px;
+    gap: 14px;
+  }
+
+  .settings-row,
+  .settings-slider-head {
+    gap: 8px;
+  }
+
+  .settings-select {
+    max-width: min(140px, 40%);
+    min-width: 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1820,6 +1820,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     other: t("chat.otherSkills"),
   };
 
+  // 发送消息后按钮保留位置，但收起已有菜单，避免从菜单修改本轮运行配置。
+  useEffect(() => {
+    if (isStreaming) setThinkingDropdownOpen(false);
+    if (toolPresetDisabled) setToolDropdownOpen(false);
+  }, [isStreaming, toolPresetDisabled]);
+
   // Close dropdowns on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -3249,7 +3255,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           {/* spacer */}
           {!isMobile && <div style={{ flex: 1 }} />}
 
-          {/* RIGHT: model + thinking + tools preset + sound (idle) | Model + Stop + sound (streaming) */}
+          {/* 右侧配置在处理中保留显示，仅禁用操作，避免工具栏跳动。 */}
           <div ref={controlsMenuRef} style={{
             flex: "0 0 auto",
             display: "flex",
@@ -3325,7 +3331,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 backdropFilter: "blur(10px)",
               } : null),
             }}>
-            {!isStreaming && onThinkingLevelChange && (
+            {onThinkingLevelChange && (
               <div ref={thinkingDropdownRef} style={{ position: "relative" }}>
                 <button
                   onClick={() => !isStreaming && setThinkingDropdownOpen((v) => !v)}
@@ -3363,7 +3369,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   </svg>
                   {(!isMobile || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{thinkingDisplayLabel}</span>}
                 </button>
-                {thinkingDropdownOpen && (
+                {thinkingDropdownOpen && !isStreaming && (
                   <div style={{
                     position: "absolute", bottom: "calc(100% + 6px)",
                     ...(isMobile ? { left: 0 } : { right: 0 }),
@@ -3413,7 +3419,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 )}
               </div>
             )}
-            {!isStreaming && onToolPresetChange && (
+            {onToolPresetChange && (
               <div ref={toolDropdownRef} style={{ position: "relative" }}>
                 <button
                   onClick={() => !toolPresetDisabled && setToolDropdownOpen((v) => !v)}
@@ -3449,7 +3455,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   </svg>
                   {(!isMobile || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{toolPresetLabel}</span>}
                 </button>
-                {toolDropdownOpen && (
+                {toolDropdownOpen && !toolPresetDisabled && (
                   <div style={{
                     position: "absolute",
                     bottom: "calc(100% + 6px)",
