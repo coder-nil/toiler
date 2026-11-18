@@ -16,7 +16,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 toiler-server = { path = "../toiler-server" }
-tauri = { version = "2.0.0", features = ["unstable", "image-png"] }
+tauri = { version = "2.0.0", features = ["unstable", "image-png", "macos-private-api"] }
 # pi 前端在 __PI_WEB_DESKTOP__ 为 true 时走 tauri 通知（lib/desktop-notifications.ts）
 tauri-plugin-notification = "2"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net", "time", "signal"] }
@@ -33,5 +33,5 @@ portable-pty = "0.9"
 # 取决于 AppKit 的默认布局；我们要的是“圆心对到顶栏中线”，只能自己算。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSView", "NSApplication", "NSImage"] }
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSView", "NSApplication", "NSImage", "NSColor", "NSVisualEffectView"] }
 objc2-foundation = { version = "0.3", features = ["NSData"] }

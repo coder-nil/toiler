@@ -1908,14 +1908,14 @@ export function AppShell() {
         }
       }
     `}</style>
-    <div style={{
+    <div className="app-workspace" style={{
       display: "flex",
       width: "100%",
       height: "var(--app-viewport-height, 100dvh)",
       paddingLeft: "env(safe-area-inset-left)",
       paddingRight: "env(safe-area-inset-right)",
       overflow: "hidden",
-      background: "var(--bg)",
+      background: "var(--workspace-surface, var(--bg))",
     }}>
       {/* Mobile overlay backdrop */}
       <div
@@ -1940,7 +1940,7 @@ export function AppShell() {
         style={{
           "--sidebar-width": `${sidebarResizer.width}px`,
           /* 外壳面用 --bg-chrome：侧栏与顶部条是“应用壳”，不是内容。 */
-          background: "var(--bg-chrome)",
+          background: "var(--sidebar-surface, var(--bg-chrome))",
           borderRight: "none",
           display: "flex",
           flexDirection: "column",
@@ -1973,7 +1973,7 @@ export function AppShell() {
           // 而这条带子里铺满了子节点（标题、间距），鼠标几乎不可能点中它本身。
           // deep 让子树里的空白区域也能拖，按钮/链接/输入框依旧会拦住拖拽。
           data-tauri-drag-region="deep"
-          style={{ flexShrink: 0, background: "var(--bg-chrome)" }}
+          style={{ flexShrink: 0, background: "var(--titlebar-surface, var(--bg-chrome))" }}
         >
         <div
           style={{ display: "flex", alignItems: "center", position: "relative", height: `calc(${CHAT_TOP_BAR_HEIGHT}px + env(safe-area-inset-top))`, paddingTop: "env(safe-area-inset-top)" }}
@@ -2431,7 +2431,7 @@ export function AppShell() {
           display: "flex",
           flexDirection: "column",
           borderLeft: "1px solid var(--border)",
-          background: "var(--bg)",
+          background: "var(--file-panel-surface, var(--bg))",
         } as React.CSSProperties}
       >
         {/* Right panel tab bar */}
@@ -2446,7 +2446,7 @@ export function AppShell() {
              必须在同一条 y 上，否则一眼就能看出是拼起来的。 */
           height: `calc(${CHAT_TOP_BAR_HEIGHT}px + env(safe-area-inset-top))`,
           paddingTop: "env(safe-area-inset-top)",
-          background: "var(--bg-chrome)",
+          background: "var(--titlebar-surface, var(--bg-chrome))",
           borderBottom: "1px solid var(--border)",
         }}>
           {/* 这一层只负责横向占用与溢出裁剪；高度必须由它撑满，
