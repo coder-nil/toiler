@@ -117,10 +117,14 @@ impl ProjectStore {
                 "ALTER TABLE added_projects ADD COLUMN starred INTEGER NOT NULL DEFAULT 0",
             )?;
         }
+        migrate_expanded_prefixes(&conn)?;
         Ok(conn)
     }
 
     /// 全部项目（星标优先，其次按加入时间倒序）。
+    ///
+    /// 返回前统一去掉 Windows 扩展路径前缀（读侧也做，老库里已有的带前缀行
+    /// 不用等到下次写入就能正常显示）。
     pub fn list(&self) -> Result<Vec<Project>> {
         let conn = self.open()?;
         let mut stmt = conn.prepare(
@@ -130,9 +134,9 @@ impl ProjectStore {
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Project {
-                project_key: row.get(0)?,
-                project_root: row.get(1)?,
-                cwd: row.get(2)?,
+                project_key: paths::simplified(&row.get::<_, String>(0)?),
+                project_root: paths::simplified(&row.get::<_, String>(1)?),
+                cwd: paths::simplified(&row.get::<_, String>(2)?),
                 added_at: row.get(3)?,
                 starred: row.get::<_, i64>(4)? == 1,
             })
@@ -141,8 +145,15 @@ impl ProjectStore {
     }
 
     /// 加入 / 更新项目（父目录变化时以新值为准）。
+    ///
+    /// 三个路径参数先过 [`paths::simplified`]：路由层可能把 `canonicalize` 的
+    /// 结果（Windows 上是 `\\?\C:\…`）直接传进来，存带前缀的版本会让界面
+    /// 显示得很奇怪，并且与用户自己输入的写法成两行。
     pub fn upsert(&self, project_key: &str, project_root: &str, cwd: &str) -> Result<Project> {
         let now = crate::toiler_now_iso();
+        let project_key = paths::simplified(project_key);
+        let project_root = paths::simplified(project_root);
+        let cwd = paths::simplified(cwd);
         let conn = self.open()?;
         conn.execute(
             "INSERT INTO added_projects(project_key, project_root, cwd, added_at, starred)
@@ -171,6 +182,7 @@ impl ProjectStore {
 
     /// 改星标；返回是否命中一行。
     pub fn set_starred(&self, project_key: &str, starred: bool) -> Result<bool> {
+        let project_key = paths::simplified(project_key);
         let conn = self.open()?;
         let changed = conn.execute(
             "UPDATE added_projects SET starred = ?1 WHERE project_key = ?2",
@@ -181,6 +193,7 @@ impl ProjectStore {
 
     /// 移除项目；返回是否命中一行。
     pub fn remove(&self, project_key: &str) -> Result<bool> {
+        let project_key = paths::simplified(project_key);
         let conn = self.open()?;
         let changed = conn.execute(
             "DELETE FROM added_projects WHERE project_key = ?1",
@@ -206,16 +219,19 @@ impl ProjectStore {
         let root = value.get("projectRoot").and_then(Value::as_str);
         match (key, root) {
             (Some(key), Some(root)) if !key.is_empty() && !root.is_empty() => {
-                Ok(Some((key.to_string(), root.to_string())))
+                Ok(Some((paths::simplified(key), paths::simplified(root))))
             }
             _ => Ok(None),
         }
     }
 
-    /// 写选中项（`58641.Ey`）。
+    /// 写选中项（`58641.Ey`）—— 同样去扩展前缀再存。
     pub fn set_selected(&self, project_key: &str, project_root: &str) -> Result<()> {
         let now = crate::toiler_now_iso();
-        let value = json!({ "projectKey": project_key, "projectRoot": project_root });
+        let value = json!({
+            "projectKey": paths::simplified(project_key),
+            "projectRoot": paths::simplified(project_root),
+        });
         let conn = self.open()?;
         conn.execute(
             "INSERT INTO app_preferences(key, value, updated_at)
@@ -258,7 +274,8 @@ impl ProjectStore {
         let value: Value = serde_json::from_str(&raw).ok()?;
         let key = value.get("projectKey").and_then(Value::as_str)?;
         let root = value.get("projectRoot").and_then(Value::as_str)?;
-        (!key.is_empty() && !root.is_empty()).then(|| (key.to_string(), root.to_string()))
+        (!key.is_empty() && !root.is_empty())
+            .then(|| (paths::simplified(key), paths::simplified(root)))
     }
 
     /// 首次建库时从旧的 `pi.sqlite` 导入项目与选中项。
@@ -372,6 +389,113 @@ impl ProjectStore {
     }
 }
 
+/// 把历史行里的 Windows 扩展前缀（`\\?\`）归一成用户习惯的写法。
+///
+/// 早期版本把 `canonicalize` 的结果直接存进了项目库，于是界面上显示
+/// `\\?\C:\…`。这里在 [`ProjectStore::open`] 里顺手改掉：只碰真的带前缀
+/// 的行，没有这种行时零写入。
+///
+/// 归一后可能撞上已有的同名行（用户已经在正常写法下重新加过同一个项目），
+/// 合并时保留星标、保留更早的 `added_at`，避免出现两行指向同一个目录。
+fn migrate_expanded_prefixes(conn: &Connection) -> Result<()> {
+    // 绝大多数库（macOS/Linux、以及已经迁过的 Windows 库）一条都不用改，
+    // 先用一条 LIKE 判存在，避开每次 `open()` 都扫全表。
+    let any = {
+        let mut stmt = conn.prepare(
+            "SELECT 1 FROM added_projects
+             WHERE project_key LIKE '\\\\?\\%' OR project_root LIKE '\\\\?\\%'
+                OR cwd LIKE '\\\\?\\%'
+                OR project_key LIKE '/?/%' OR project_root LIKE '/?/%' OR cwd LIKE '/?/%'
+             LIMIT 1",
+        )?;
+        stmt.exists([])?
+    };
+    if !any {
+        return Ok(());
+    }
+    let rows: Vec<(String, String, String, String, i64)> = {
+        let mut stmt = conn.prepare(
+            "SELECT project_key, project_root, cwd, added_at, starred FROM added_projects",
+        )?;
+        let mapped = stmt.query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?;
+        mapped.filter_map(Result::ok).collect()
+    };
+    let stale: Vec<_> = rows
+        .into_iter()
+        .filter(|(key, root, cwd, _, _)| {
+            let plain = (
+                paths::simplified(key),
+                paths::simplified(root),
+                paths::simplified(cwd),
+            );
+            plain.0 != *key || plain.1 != *root || plain.2 != *cwd
+        })
+        .collect();
+    if stale.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    for (key, root, cwd, added_at, starred) in stale {
+        let new_key = paths::simplified(&key);
+        let new_root = paths::simplified(&root);
+        let new_cwd = paths::simplified(&cwd);
+        tx.execute(
+            "DELETE FROM added_projects WHERE project_key = ?1",
+            params![key],
+        )?;
+        // `ON CONFLICT` 保留星标与更早的加入时间（两条都指向同一目录）。
+        tx.execute(
+            "INSERT INTO added_projects(project_key, project_root, cwd, added_at, starred)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(project_key) DO UPDATE SET
+               project_root = excluded.project_root,
+               cwd = excluded.cwd,
+               added_at = MIN(added_projects.added_at, excluded.added_at),
+               starred = MAX(added_projects.starred, excluded.starred)",
+            params![new_key, new_root, new_cwd, added_at, starred],
+        )?;
+    }
+    // 选中项里也可能存着带前缀的版本。
+    let selected: Option<String> = tx
+        .query_row(
+            "SELECT value FROM app_preferences WHERE key = 'last_selected_project'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    if let Some(raw) = selected {
+        if let Ok(mut value) = serde_json::from_str::<Value>(&raw) {
+            let mut changed = false;
+            for field in ["projectKey", "projectRoot"] {
+                if let Some(text) = value.get(field).and_then(Value::as_str) {
+                    let plain = paths::simplified(text);
+                    if plain != text {
+                        value[field] = json!(plain);
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                tx.execute(
+                    "UPDATE app_preferences SET value = ?1, updated_at = ?2
+                     WHERE key = 'last_selected_project'",
+                    params![value.to_string(), crate::toiler_now_iso()],
+                )?;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +540,86 @@ mod tests {
             Some(("/tmp/a".to_string(), "/tmp/a".to_string()))
         );
         assert_eq!(store.selected_json()["projectRoot"], "/tmp/a");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Windows 上 `canonicalize` 的结果带 `\\?\` 前缀，存进来就会原样显示给用户。
+    /// 写入时就去掉；已存在的带前缀旧行也要在 `open()` 里被改掉。
+    #[test]
+    fn stores_and_migrates_plain_windows_paths() {
+        let (dir, store) = store("prefix");
+        let prefixed = r"\\?\C:\Users\me\proj";
+        let plain = r"C:\Users\me\proj";
+
+        // 写入：带前缀的入参落库时就是普通写法
+        let project = store.upsert(prefixed, prefixed, prefixed).unwrap();
+        assert_eq!(project.project_key, plain);
+        assert_eq!(store.list().unwrap()[0].project_root, plain);
+
+        // 选中项同理
+        store.set_selected(prefixed, prefixed).unwrap();
+        assert_eq!(
+            store.selected().unwrap(),
+            Some((plain.to_string(), plain.to_string()))
+        );
+
+        // 已是普通写法时，带前缀的键也能命中同一行（前端可能回传任一写法）
+        assert!(store.set_starred(prefixed, true).unwrap());
+        assert!(store.remove(prefixed).unwrap());
+        assert!(store.list().unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 老库里已经有带前缀的行：下次打开库时被就地改成普通写法，星标不丢。
+    #[test]
+    fn open_rewrites_legacy_prefixed_rows() {
+        let dir =
+            std::env::temp_dir().join(format!("toiler-projects-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("work.sqlite");
+        {
+            let store = ProjectStore::at(&db);
+            store.open().unwrap();
+        }
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute(
+                "INSERT INTO added_projects(project_key, project_root, cwd, added_at, starred)
+                 VALUES (?1, ?1, ?1, '2026-01-01T00:00:00.000Z', 1)",
+                params![r"\\?\C:\Users\me\proj"],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO app_preferences(key, value, updated_at) VALUES ('last_selected_project', ?1, 'x')",
+                params![r#"{"projectKey":"\\\\?\\C:\\Users\\me\\proj","projectRoot":"\\\\?\\C:\\Users\\me\\proj"}"#],
+            )
+            .unwrap();
+        }
+
+        let store = ProjectStore::at(&db);
+        let projects = store.list().unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].project_key, r"C:\Users\me\proj");
+        assert!(projects[0].starred, "迁移不能丢星标");
+        assert_eq!(
+            store.selected().unwrap(),
+            Some((
+                r"C:\Users\me\proj".to_string(),
+                r"C:\Users\me\proj".to_string()
+            ))
+        );
+        // 落盘的也是普通写法，不只是读侧修的
+        {
+            let conn = Connection::open(&db).unwrap();
+            let stored: String = conn
+                .query_row("SELECT project_key FROM added_projects", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(stored, r"C:\Users\me\proj");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -121,14 +121,17 @@ fn not_implemented(message: &str) -> Response {
 }
 
 fn skill_json(skill: &Skill, source: &str, scope: &str) -> Value {
-    let base_dir = Path::new(&skill.file_path)
+    // 技能文件路径可能来自 `canonicalize`（Windows 上是 `\\?\C:\…`），面板上
+    // 直接显示给用户，先去掉扩展前缀。
+    let file_path = crate::paths::simplified(&skill.file_path);
+    let base_dir = Path::new(&file_path)
         .parent()
-        .map(|parent| parent.to_string_lossy().to_string())
+        .map(|parent| crate::paths::simplified(&parent.to_string_lossy()))
         .unwrap_or_default();
     json!({
         "name": skill.name,
         "description": skill.description,
-        "filePath": skill.file_path,
+        "filePath": file_path,
         "baseDir": base_dir,
         "disableModelInvocation": skill.disable_model_invocation.unwrap_or(false),
         "sourceInfo": { "source": source, "scope": scope },

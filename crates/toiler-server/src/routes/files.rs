@@ -682,7 +682,7 @@ fn list_dir(target: &Path, hide_dot_dirs: bool) -> Response {
         })
     });
     Json(json!({
-        "path": target.to_string_lossy(),
+        "path": crate::paths::simplified(&target.to_string_lossy()),
         "isDirectory": true,
         "entries": items,
     }))
@@ -726,7 +726,10 @@ async fn watch(target: PathBuf) -> Response {
         yield Ok::<Event, Infallible>(
             Event::default()
                 .event("connected")
-                .data(json!({ "filePath": target.to_string_lossy() }).to_string()),
+                .data(
+                    json!({ "filePath": crate::paths::simplified(&target.to_string_lossy()) })
+                        .to_string(),
+                ),
         );
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -899,7 +902,11 @@ pub async fn rename(
         .map(|n| n == name.as_str())
         .unwrap_or(false)
     {
-        return Json(json!({ "path": target.to_string_lossy(), "name": name })).into_response();
+        return Json(json!({
+            "path": crate::paths::simplified(&target.to_string_lossy()),
+            "name": name
+        }))
+        .into_response();
     }
     if destination.exists() {
         // 同一个 inode 的「改名成自己」不算冲突（大小写不敏感文件系统上会出现）。
@@ -949,7 +956,7 @@ pub async fn rename(
             .into_response();
     }
     Json(json!({
-        "path": destination.to_string_lossy(),
+        "path": crate::paths::simplified(&destination.to_string_lossy()),
         "name": name,
     }))
     .into_response()

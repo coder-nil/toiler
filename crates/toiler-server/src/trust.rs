@@ -85,13 +85,14 @@ impl TrustStore {
             key.clone(),
             decision.map(Value::from).unwrap_or(Value::Null),
         );
-        // 清掉「同一路径但写法不同」的旧键（大小写、符号链接）
-        let canonical = std::fs::canonicalize(cwd).ok();
+        // 清掉「同一路径但写法不同」的旧键（大小写、符号链接、扩展前缀）
+        let canonical = std::fs::canonicalize(cwd)
+            .ok()
+            .map(|real| paths::simplified(&real.to_string_lossy()));
         if let Some(canonical) = canonical {
-            let canonical = canonical.to_string_lossy().to_string();
             let dupes: Vec<String> = map
                 .keys()
-                .filter(|k| **k != key && *k == &canonical)
+                .filter(|k| **k != key && paths::simplified(k) == canonical)
                 .cloned()
                 .collect();
             for dupe in dupes {
@@ -114,7 +115,12 @@ impl TrustStore {
 }
 
 fn normalize(cwd: &str) -> PathBuf {
-    std::fs::canonicalize(cwd).unwrap_or_else(|_| paths::absolute(Path::new(cwd)))
+    // 去 Windows 扩展前缀：`trust.json` 的键就是这个函数的输出，界面上、以及
+    // 与用户输入的 cwd 对照时都得是同一种写法（`\\?\C:\a` ≠ `C:\a`）。
+    match std::fs::canonicalize(cwd) {
+        Ok(real) => paths::simplified_path(&real),
+        Err(_) => paths::absolute(Path::new(cwd)),
+    }
 }
 
 /// 项目里是否有需要信任才能加载的资源（`hasTrustRequiringProjectResources`）。

@@ -325,14 +325,163 @@ pub fn lexical_normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// 绝对化 + 词法规整（不 touch 磁盘）。
-pub fn absolute(path: &Path) -> PathBuf {
-    let joined = if path.is_absolute() {
+/// 去掉 Windows 扩展路径前缀（`\\?\` / `\\?\UNC\`），得到用户习惯的写法。
+///
+/// ```text
+/// \\?\C:\Users\me\proj      →  C:\Users\me\proj
+/// \\?\UNC\srv\share\proj    →  \\srv\share\proj
+/// /?/C:/Users/me            →  C:/Users/me     （旧前端剥过前导斜杠的写法）
+/// ```
+///
+/// 只处理「去掉前缀后依然能被 Win32 经典 API 打开」的路径，判定规则与 `dunce`
+/// 一致（盘符或 UNC 根、每段文件名合法、不是 DOS 保留名、总长 ≤ 260）：不满足
+/// 就原样返回。这些路径会被用在后续的文件操作上（前端把展示出来的路径原样回传），
+/// 剥掉前缀换来的是「看起来正常」，代价必须是不影响「能不能打开」。
+///
+/// 纯字符串处理，不 touch 磁盘，任何平台都可调用（macOS 上只会原样返回）。
+pub fn simplified(raw: &str) -> String {
+    let (body, unc) = if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        (rest, true)
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        (rest, false)
+    } else if let Some(rest) = raw.strip_prefix("//?/UNC/") {
+        (rest, true)
+    } else if let Some(rest) = raw.strip_prefix("//?/") {
+        (rest, false)
+    } else {
+        return raw.to_string();
+    };
+    if unc {
+        // `\\srv\share\a`：前两段是服务器与共享名（共享名允许 $），后面照常判定。
+        // 旧前端把分隔符换成过 `/`，所以两种分隔符都按段切开，输出统一用 `\`。
+        let segments: Vec<&str> = body.split(['\\', '/']).collect();
+        let server = segments.first().copied().unwrap_or("");
+        let share = segments.get(1).copied().unwrap_or("");
+        let rest = segments.get(2..).unwrap_or(&[]);
+        if !is_plain_segment(server) || !is_share_segment(share) {
+            return raw.to_string();
+        }
+        if !rest
+            .iter()
+            .all(|seg| seg.is_empty() || is_openable_segment(seg))
+        {
+            return raw.to_string();
+        }
+        let tail: Vec<&str> = rest.iter().copied().filter(|s| !s.is_empty()).collect();
+        let mut out = format!(r"\\{server}\{share}");
+        for seg in tail {
+            out.push('\\');
+            out.push_str(seg);
+        }
+        return if out.chars().count() <= UNC_MAX_CHARS {
+            out
+        } else {
+            raw.to_string()
+        };
+    }
+    // `C:\…`：盘符之后每段都要能落在经典路径里。`\\?\Volume{…}` 之类不转换。
+    let bytes = body.as_bytes();
+    if !(bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':') {
+        return raw.to_string();
+    }
+    let rest = &body[2..];
+    // `//?/C:/a` 这种旧前端写法用正斜杠，`\\?\C:\a` 用反斜杠，两种都认。
+    if !(rest.is_empty() || rest.starts_with('\\') || rest.starts_with('/')) {
+        return raw.to_string();
+    }
+    if !rest
+        .split(['\\', '/'])
+        .all(|seg| seg.is_empty() || is_openable_segment(seg))
+    {
+        return raw.to_string();
+    }
+    if body.chars().count() > MAX_CLASSIC_CHARS {
+        return raw.to_string();
+    }
+    // 分隔符统一成 `\`：`C:/Users/me` 与 `C:\Users\me` 在 `PathBuf` 里是**不相等**
+    // 的两个值，归一后必须落到同一种写法，否则允许根判定会互相判成不同目录。
+    let mut out = body[..2].to_string();
+    for seg in rest.split(['\\', '/']).filter(|seg| !seg.is_empty()) {
+        out.push('\\');
+        out.push_str(seg);
+    }
+    if rest.ends_with(['\\', '/']) {
+        out.push('\\');
+    }
+    out
+}
+
+/// [`simplified`] 的 `Path` 版本；没有前缀时原样返回（不丢失非 UTF-8 段）。
+pub fn simplified_path(path: &Path) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    let out = simplified(text);
+    if out == text {
         path.to_path_buf()
+    } else {
+        PathBuf::from(out)
+    }
+}
+
+/// Win32 经典 API 的路径上限（字符）。超过就只能靠 `\\?\` 前缀访问。
+const MAX_CLASSIC_CHARS: usize = 260;
+/// UNC 共享路径的实际可访问上限：`\\srv\share` 之后仍有 260 字符额度。
+const UNC_MAX_CHARS: usize = 260;
+
+fn is_plain_segment(segment: &str) -> bool {
+    !segment.is_empty() && segment != "." && segment != ".." && !segment.contains(['/', '\\'])
+}
+
+/// 共享名比文件名宽松一点：`C$` 这类管理共享允许 `$`。
+fn is_share_segment(segment: &str) -> bool {
+    is_plain_segment(segment) && !segment.ends_with(' ')
+}
+
+/// 该段能否作为经典路径的一部分（与 `dunce` 的 `is_valid_filename` 同规则）。
+fn is_openable_segment(segment: &str) -> bool {
+    let bytes = segment.as_bytes();
+    if bytes.is_empty() || bytes.len() > 255 || segment == "." || segment == ".." {
+        return false;
+    }
+    if bytes.iter().any(|&c| {
+        c <= 31
+            || matches!(
+                c,
+                b'<' | b'>' | b':' | b'"' | b'/' | b'\\' | b'|' | b'?' | b'*'
+            )
+    }) {
+        return false;
+    }
+    if matches!(bytes.last(), Some(b' ' | b'.')) {
+        return false;
+    }
+    // `con.txt` 同样是保留名（DOS 语义），所以按主干判断。
+    let stem = segment.split('.').next().unwrap_or("");
+    let stem = stem.trim_end_matches(' ');
+    !DOS_RESERVED
+        .iter()
+        .any(|name| stem.eq_ignore_ascii_case(name))
+}
+
+const DOS_RESERVED: [&str; 22] = [
+    "AUX", "NUL", "PRN", "CON", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// 绝对化 + 词法规整（不 touch 磁盘）。
+///
+/// 顺带去掉 Windows 扩展路径前缀：`canonicalize` 出来的 `\\?\C:\a` 与前端回传
+/// 的 `C:\a` 是同一个目录，允许根判定、项目键、去重都必须在同一写法上比较，
+/// 否则会互相判成「不同目录」（`allows` 为 false → 403）。
+pub fn absolute(path: &Path) -> PathBuf {
+    let path = simplified_path(path);
+    let joined = if path.is_absolute() {
+        path
     } else {
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("/"))
-            .join(path)
+            .join(&path)
     };
     lexical_normalize(&joined)
 }
@@ -504,6 +653,48 @@ mod tests {
         assert!(!is_pi_cwd_dir_name("pi-cwd-2026111"));
         assert!(!is_pi_cwd_dir_name("pi-cwd-20261110x"));
         assert!(!is_pi_cwd_dir_name("pi-cwd-abcdefgh"));
+    }
+
+    /// `\\?\` 前缀只是 Win32 的长路径开关，不该出现在界面与项目库里。
+    #[test]
+    fn strips_expanded_path_prefix_when_the_result_stays_openable() {
+        assert_eq!(simplified(r"\\?\C:\Users\me\proj"), r"C:\Users\me\proj");
+        assert_eq!(simplified(r"\\?\C:\"), r"C:\");
+        assert_eq!(simplified(r"\\?\UNC\srv\share\proj"), r"\\srv\share\proj");
+        // 管理共享名里的 `$` 不能被当成非法字符
+        assert_eq!(simplified(r"\\?\UNC\srv\C$\a"), r"\\srv\C$\a");
+        // 旧前端把前导斜杠剥掉了，这种写法也要认（分隔符统一成反斜杠）
+        assert_eq!(simplified("//?/C:/Users/me"), r"C:\Users\me");
+        assert_eq!(simplified(r"\\?\C:/Users/me"), r"C:\Users\me");
+    }
+
+    /// 剥掉前缀会让路径打不开的情况，必须原样留着。
+    #[test]
+    fn keeps_the_prefix_when_stripping_would_break_the_path() {
+        // 超过 260 字符只能靠扩展前缀访问
+        let long = format!(r"\\?\C:\{}", "a".repeat(300));
+        assert_eq!(simplified(&long), long);
+        // DOS 保留名
+        let reserved = r"\\?\C:\proj\CON\a.txt";
+        assert_eq!(simplified(reserved), reserved);
+        // 卷 GUID 不是盘符路径
+        let volume = r"\\?\Volume{4c1b02c1}\a";
+        assert_eq!(simplified(volume), volume);
+        // 文件名里的非法字符（经典 API 会拒绝）
+        let illegal = r"\\?\C:\a<b";
+        assert_eq!(simplified(illegal), illegal);
+        // 没有前缀的内容原样返回
+        assert_eq!(simplified("/Users/me/proj"), "/Users/me/proj");
+        assert_eq!(simplified(r"C:\Users\me"), r"C:\Users\me");
+    }
+
+    /// 带前缀与不带的两种写法必须映到同一个路径，否则允许根判定会误判。
+    #[test]
+    fn absolute_treats_prefixed_and_plain_forms_alike() {
+        assert_eq!(
+            absolute(Path::new(r"\\?\C:\Users\me\proj")),
+            absolute(Path::new(r"C:\Users\me\proj"))
+        );
     }
 
     /// 目录布局：通用根 / toiler 专属根 / 各自的子目录。

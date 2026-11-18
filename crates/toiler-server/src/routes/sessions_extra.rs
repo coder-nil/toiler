@@ -1445,7 +1445,7 @@ fn render_export_html(
 ) -> String {
     let s = strings_for(lang == STRINGS_ZH.lang);
     let name = session.name().unwrap_or_else(|| id.to_string());
-    let cwd = session.header.cwd.clone();
+    let cwd = crate::paths::simplified(&session.header.cwd);
     let view = session_view::context_view(&session.entries, None);
 
     // 按「用户提问」切轮次。工具输出占真实会话的 76%，跟正文平铺在一起

@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::mobile_view;
+use crate::paths;
 use crate::security::Trusted;
 use crate::session_view;
 use crate::settings::{self, ModelPattern, QueueMode, QueueModePatch};
@@ -301,7 +302,7 @@ pub async fn default_cwd(State(state): State<AppState>, _trusted: Trusted) -> Re
         )
             .into_response();
     }
-    Json(json!({ "cwd": cwd.to_string_lossy() })).into_response()
+    Json(json!({ "cwd": paths::simplified(&cwd.to_string_lossy()) })).into_response()
 }
 
 /// `GET /api/tools/settings` —— Shell 工具开关。

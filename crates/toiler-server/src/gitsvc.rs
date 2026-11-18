@@ -158,8 +158,16 @@ pub fn repository_root(cwd: &Path) -> Option<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())
 }
 
+/// realpath；Windows 上的 `\\?\` 前缀在这里就去掉。
+///
+/// 保留了 realpath 的语义（符号链接、盘符大小写都跟着系统），只是换回经典写法：
+/// 这个函数的返回值会被拼成字符串出现在 `/api/git`、`/api/worktrees` 与文件列表
+/// 里，前缀漏到界面上就变成「路径前面多了一串 `\\?\`」。
 fn real_or_self(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    match std::fs::canonicalize(path) {
+        Ok(real) => crate::paths::simplified_path(&real),
+        Err(_) => crate::paths::simplified_path(path),
+    }
 }
 
 fn relative_posix(from: &Path, to: &Path) -> String {
@@ -301,7 +309,7 @@ pub fn status(cwd: &Path) -> Value {
             untracked_additions += count_lines(&absolute);
         }
         files.push(json!({
-            "filePath": absolute.to_string_lossy(),
+            "filePath": crate::paths::simplified(&absolute.to_string_lossy()),
             "status": status_name,
             "code": code,
             "indexStatus": entry.index.to_string(),
@@ -344,7 +352,7 @@ pub fn status(cwd: &Path) -> Value {
 
     json!({
         "isGitRepository": true,
-        "repositoryRoot": root.to_string_lossy(),
+        "repositoryRoot": crate::paths::simplified(&root.to_string_lossy()),
         "files": files,
         "additions": additions + untracked_additions,
         "deletions": deletions,
@@ -804,7 +812,7 @@ pub fn repo_info(cwd: &str) -> RepoInfo {
     };
     RepoInfo {
         project_root: if is_top_level {
-            real_or_self(&root_path).to_string_lossy().to_string()
+            crate::paths::simplified(&real_or_self(&root_path).to_string_lossy())
         } else {
             paths_absolute(&cwd_path)
         },
@@ -814,6 +822,7 @@ pub fn repo_info(cwd: &str) -> RepoInfo {
     }
 }
 
+/// 绝对路径字符串（`\\?\` 前缀已去）。
 fn paths_absolute(path: &Path) -> String {
     crate::paths::absolute(path).to_string_lossy().to_string()
 }
@@ -871,7 +880,7 @@ pub fn create_worktree(cwd: &Path, branch: &str) -> Result<(String, String), Git
         STATUS_TIMEOUT,
     )
     .is_ok();
-    let target_str = target.to_string_lossy().to_string();
+    let target_str = crate::paths::simplified(&target.to_string_lossy());
     if exists {
         run_git(
             &root,

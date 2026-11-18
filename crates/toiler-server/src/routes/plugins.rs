@@ -1378,7 +1378,9 @@ fn relative_from(root: &Path, path: &Path) -> Option<String> {
 }
 
 fn posix(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    // 先去 Windows 扩展路径前缀（会在插件目录本身来自 `canonicalize` 时出现），
+    // 再统一成 POSIX 分隔符。
+    crate::paths::simplified(&path.to_string_lossy()).replace('\\', "/")
 }
 
 #[cfg(test)]

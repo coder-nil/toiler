@@ -565,7 +565,8 @@ async fn probe_command(name: &str, command: &str) -> Value {
 
 /// 统一 POSIX 分隔符（Windows 上 `join` 会给出 `\`）。
 fn posix(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    // 先去 Windows 扩展路径前缀，再统一成 POSIX 分隔符（与 `routes::plugins` 同理）。
+    crate::paths::simplified(&path.to_string_lossy()).replace('\\', "/")
 }
 
 #[cfg(test)]

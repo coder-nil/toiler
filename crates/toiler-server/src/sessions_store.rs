@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use toiler_session::V3Header;
 
+use crate::paths;
+
 /// 列表缓存 TTL（pi：30s）。
 const LIST_CACHE_TTL: Duration = Duration::from_secs(30);
 
@@ -332,8 +334,11 @@ pub fn read_all_summaries(root: &Path) -> Vec<SessionSummary> {
 }
 
 /// posix 归一化 + 去尾部分隔符（复刻 `74244.z`）。
+///
+/// 先去掉 Windows 扩展路径前缀：`canonicalize` 出来的 `\\?\C:\…` 与用户习惯
+/// 的 `C:\…` 是同一个目录，界面、项目键、会话列表都得用同一种写法。
 pub fn normalize_path(path: &str) -> String {
-    let mut out = path.to_string();
+    let mut out = crate::paths::simplified(path);
     while out.len() > 1 && out.ends_with('/') {
         out.pop();
     }
@@ -455,9 +460,12 @@ impl SessionList {
                 });
                 let project_root = hint.root.clone();
                 let mut obj = serde_json::Map::new();
-                obj.insert("path".into(), json!(s.path.to_string_lossy().to_string()));
+                obj.insert(
+                    "path".into(),
+                    json!(paths::simplified(&s.path.to_string_lossy())),
+                );
                 obj.insert("id".into(), json!(s.header.id));
-                obj.insert("cwd".into(), json!(s.header.cwd));
+                obj.insert("cwd".into(), json!(paths::simplified(&s.header.cwd)));
                 obj.insert("name".into(), json!(s.name));
                 obj.insert(
                     "created".into(),

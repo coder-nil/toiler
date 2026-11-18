@@ -225,7 +225,9 @@ pub async fn new_session(
         }
         return (StatusCode::BAD_REQUEST, Json(Value::Object(body))).into_response();
     }
-    let cwd = cwd.to_string();
+    // 写进 v3 header 的 cwd 先去 Windows 扩展前缀：会话文件是 append-only，
+    // 写进去就改不回来了，界面上的「工作目录」也直接读这个值。
+    let cwd = crate::paths::simplified(cwd);
 
     // 前端明确选过的模型优先，缺省才用默认模型（下一步在 `ensure_agent` 里解析）。
     // 成对校验与 pi 一致：只给一个说明调用方写错了，静默容忍会让「选了却没生效」
@@ -433,7 +435,7 @@ async fn ensure_agent_with_model(
         return Err(AgentError::NotFound);
     };
     let cwd = crate::sessions_store::read_session(&path)
-        .map(|s| s.header.cwd)
+        .map(|s| crate::paths::simplified(&s.header.cwd))
         .unwrap_or_else(|_| state.default_cwd().to_string_lossy().to_string());
 
     if !state.live().guard_starting(id) {

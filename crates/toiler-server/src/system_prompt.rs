@@ -94,7 +94,9 @@ impl PromptInputs {
         let context_files = load_project_context_files(&env, Path::new(cwd), agent_dir).await;
         let skills = crate::skills::load(Path::new(cwd), trusted).await.skills;
         Self {
-            cwd: cwd.to_string(),
+            // `<cwd>` 段会直接发给模型并显示在导出页里，去掉 Windows 扩展前缀
+            // （文件操作仍用调用方传进来的原路径）。
+            cwd: crate::paths::simplified(cwd),
             tool_names: tool_names.to_vec(),
             context_files,
             skills,

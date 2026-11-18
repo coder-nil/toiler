@@ -250,7 +250,12 @@ pub async fn browse(_trusted: Trusted, Query(query): Query<BrowseQuery>) -> Resp
         None => paths::home_dir(),
         Some(text) => paths::expand_tilde(text),
     };
-    // 与 pi 一致：realpath 之后再列（符号链接指到目录也认）
+    // 与 pi 一致：realpath 之后再列（符号链接指到目录也认）。
+    //
+    // Windows 上 `canonicalize` 返回的是 `\\?\C:\…`（扩展路径）。那套前缀是
+    // Win32 的长路径开关，不该原样给用户看，也不该被前端当成「另一个目录」
+    // 回传。这里保留原始 `PathBuf` 做文件操作（长路径依然能用），只在序列化
+    // 成字符串时去掉前缀；去不掉的情况（超长、DOS 保留名）`simplified` 会原样返回。
     let Ok(real) = std::fs::canonicalize(&target) else {
         return error(StatusCode::NOT_FOUND, "Directory does not exist");
     };
@@ -267,7 +272,7 @@ pub async fn browse(_trusted: Trusted, Query(query): Query<BrowseQuery>) -> Resp
             if file_type.is_dir() {
                 directories.push(json!({
                     "name": entry.file_name().to_string_lossy(),
-                    "path": path.to_string_lossy(),
+                    "path": paths::simplified(&path.to_string_lossy()),
                 }));
                 continue;
             }
@@ -280,7 +285,7 @@ pub async fn browse(_trusted: Trusted, Query(query): Query<BrowseQuery>) -> Resp
             if resolved.is_dir() {
                 directories.push(json!({
                     "name": entry.file_name().to_string_lossy(),
-                    "path": path.to_string_lossy(),
+                    "path": paths::simplified(&path.to_string_lossy()),
                 }));
             }
         }
@@ -291,9 +296,11 @@ pub async fn browse(_trusted: Trusted, Query(query): Query<BrowseQuery>) -> Resp
         an.to_lowercase().cmp(&bn.to_lowercase())
     });
 
-    let parent = real.parent().map(|p| p.to_string_lossy().to_string());
+    let parent = real
+        .parent()
+        .map(|p| paths::simplified(&p.to_string_lossy()));
     Json(json!({
-        "path": real.to_string_lossy(),
+        "path": paths::simplified(&real.to_string_lossy()),
         "parentPath": parent,
         "directories": directories,
     }))
