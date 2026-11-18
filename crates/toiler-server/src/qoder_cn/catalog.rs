@@ -105,6 +105,11 @@ pub fn find(models_json: &Path, auth: &AuthStore, key: &str) -> Option<CatalogMo
         .find(|model| model.key == key)
 }
 
+/// 当前账号是否已经拉过远端目录（卡片计数不该再把旧静态快照算进去）。
+pub fn has_remote_cache(models_json: &Path, auth: &AuthStore) -> bool {
+    cached(models_json, auth).is_some()
+}
+
 fn field<'a>(value: &'a Value, names: &[&str]) -> Option<&'a Value> {
     names
         .iter()
@@ -192,11 +197,19 @@ pub fn parse(payload: &Value) -> Result<Vec<CatalogModel>, String> {
             for item in list {
                 visit(item, depth + 1, models);
             }
-        } else if let Some(model) = parse_model(value) {
-            models.push(model);
         } else {
-            for key in ["data", "models", "model_list", "modelList", "list", "body"] {
-                if let Some(child) = value.get(key) {
+            // 先看包裹层：信封自己也可能带 `id`（请求 id），不能当成模型条目。
+            let children: Vec<&Value> =
+                ["data", "models", "model_list", "modelList", "list", "body"]
+                    .iter()
+                    .filter_map(|key| value.get(key))
+                    .collect();
+            if children.is_empty() {
+                if let Some(model) = parse_model(value) {
+                    models.push(model);
+                }
+            } else {
+                for child in children {
                     visit(child, depth + 1, models);
                 }
             }
@@ -333,6 +346,11 @@ mod tests {
             parse(&json!({"statusCodeValue":200,"body":encoded})).unwrap(),
             models
         );
+        // 信封自己带 `id`（请求 id）时不能当成模型，否则真实模型会被整批丢掉。
+        let envelope =
+            parse(&json!({"id":"req-1","data":{"models":[{"key":"qmodel_future"}]}})).unwrap();
+        assert_eq!(envelope.len(), 1);
+        assert_eq!(envelope[0].key, "qmodel_future");
         for empty in [
             json!({}),
             json!({"data":[]}),
@@ -352,7 +370,7 @@ mod tests {
         .remove(0);
         let models = super::super::models_from_catalog(
             "http://127.0.0.1:3000/qoder-cn/token",
-            &[entry.clone()],
+            std::slice::from_ref(&entry),
         );
         assert_eq!(models[0].id, "qmodel_future");
         assert_eq!(models[0].input.len(), 2);

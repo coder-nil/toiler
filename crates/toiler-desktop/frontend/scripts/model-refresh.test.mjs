@@ -47,6 +47,8 @@ test("模型设置保留再次刷新入口，并在成功后通知模型列表�
   assert.ok(detail.includes("onChanged?.()"));
   assert.ok(detail.includes("reloadKey={`${configured}:${reloadKey}:${refreshTick}`}"));
   assert.ok(detail.includes("abortRef.current?.abort()"));
+  assert.ok(!detail.includes("const disabled = !configured"), "未登录 / 未保存 Key 时也要能点，让服务端说明原因");
+  assert.ok(detail.includes('t("models.refreshProviderModels")'), "图标缺失无障碍名称");
   assert.ok(detail.includes('aria-label={t("models.refreshProviderModels")}'));
   assert.ok(detail.includes("<RefreshCw"));
   assert.ok(detail.includes('"animate-spin"'));

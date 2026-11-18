@@ -330,22 +330,11 @@ impl ModelCatalog {
         Ok(catalog)
     }
 
-    /// 把内置 `qoder-cn` 目录注入一份副本（`base_url` 指向本机转发端点）。
-    ///
-    /// `qoder-cn` 是订阅 provider：模型清单在 pi 侧是静态快照，不走 `models.json`。
-    /// 用户自己在 `models.json` 里写了同名 provider 的话，调用方不该再注入
-    /// （[`crate::state::AppState::attach_qoder_cn`] 会先查一遍）。
-    pub fn with_qoder_cn(mut self, base_url: &str) -> Self {
-        let provider_id = crate::qoder_cn::PROVIDER_ID;
-        if self.providers.iter().any(|p| p.id() == provider_id) {
-            return self;
-        }
-        let models = crate::qoder_cn::models(base_url);
-        self = self.with_qoder_cn_models(models);
-        self
-    }
-
     /// 订阅目录刷新后替换旧快照，provider 仍保持匿名的本机转发链路。
+    ///
+    /// 注入是**替换**而不是追加：刷新后模型清单会变，只 add 不 remove 会让同一个
+    /// id 在目录里出现两次。模型清单由调用方读好（静态快照或远端缓存）再传进来，
+    /// 这一层不联网。
     pub fn with_qoder_cn_models(mut self, models: Vec<Model>) -> Self {
         self = self.without_provider(crate::qoder_cn::PROVIDER_ID);
         self.entries.extend(models.iter().map(entry_for_model));

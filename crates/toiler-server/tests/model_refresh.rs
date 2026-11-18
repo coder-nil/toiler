@@ -260,6 +260,69 @@ async fn cached_models_survive_restart_and_disappear_when_key_is_removed() {
 }
 
 #[tokio::test]
+async fn subscription_refresh_requires_login_and_stays_separate_from_api_keys() {
+    // 订阅详情与 API Key 详情共用同一颗刷新图标，但订阅令牌唯不能用去请求 `/models`。
+    let root = fixture();
+    let state = state(&root).with_binding("127.0.0.1", 30142);
+    let (status, payload) = call(
+        &state,
+        "POST",
+        "/api/models-config/refresh",
+        Some(json!({"providerName":"qoder-cn"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{payload}");
+    assert!(payload["error"].as_str().unwrap().contains("未登录"));
+
+    // 其它已登录的 OAuth 供应商：明确说尚未实现，不能拿订阅令牌当 API Key 用。
+    state
+        .auth()
+        .set(
+            "anthropic",
+            json!({"type":"oauth","access":"oauth-access","refresh":"oauth-refresh"}),
+        )
+        .unwrap();
+    let (status, payload) = call(
+        &state,
+        "POST",
+        "/api/models-config/refresh",
+        Some(json!({"providerName":"anthropic"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{payload}");
+    assert!(payload["error"].as_str().unwrap().contains("订阅"));
+
+    // 同名自定义 provider：交给导入模型入口，不覆盖用户配置。
+    state
+        .auth()
+        .set(
+            "qoder-cn",
+            json!({"type":"oauth","uid":"uid-a","access":"a","refresh":"r"}),
+        )
+        .unwrap();
+    state
+        .models_file()
+        .write(&json!({"providers":{"qoder-cn":{
+            "api":"openai-completions", "baseUrl":"https://example.invalid/v1",
+            "models":[{"id":"custom"}]
+        }}}))
+        .unwrap();
+    let before = std::fs::read(state.models_file().path()).unwrap();
+    let (status, payload) = call(
+        &state,
+        "POST",
+        "/api/models-config/refresh",
+        Some(json!({"providerName":"qoder-cn"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{payload}");
+    assert!(payload["error"].as_str().unwrap().contains("自定义"));
+    assert_eq!(before, std::fs::read(state.models_file().path()).unwrap());
+    assert!(!toiler_server::remote_models::store_path(state.models_file().path()).exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn refresh_validates_credentials_protocol_and_request_trust_without_network() {
     // 未保存 Key、非内置供应商、未支持协议和跨源请求均须显式报错，不能返回假成功。
     let root = fixture();

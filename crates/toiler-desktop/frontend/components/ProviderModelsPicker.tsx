@@ -35,7 +35,7 @@ export function ProviderModelsPicker({ providerId, configured, busy = false, rel
   }, [providerId, configured, reloadKey]);
 
   const refresh = useCallback(async () => {
-    if (!configured || busy || abortRef.current) return;
+    if (busy || abortRef.current) return;
     const controller = new AbortController();
     abortRef.current = controller;
     setState({ phase: "loading" });
@@ -53,9 +53,10 @@ export function ProviderModelsPicker({ providerId, configured, busy = false, rel
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
     }
-  }, [busy, configured, onChanged, onRefresh, providerId]);
+  }, [busy, onChanged, onRefresh, providerId]);
 
-  const disabled = !configured || busy || state.phase === "loading";
+  // 未配置凭据时不禁用：让服务端回一句具体的「先登录 / 先保存 Key」，比一颗点不动的图标清楚。
+  const disabled = busy || state.phase === "loading";
   return (
     <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
       {state.phase === "success" && (
@@ -77,7 +78,7 @@ export function ProviderModelsPicker({ providerId, configured, busy = false, rel
             aria-label={t("models.refreshProviderModels")}
             aria-busy={state.phase === "loading"}
             disabled={disabled}
-            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, padding: 0, border: "none", borderRadius: 4, background: "transparent", color: "var(--text-muted)", opacity: !configured || busy ? 0.5 : 1, cursor: disabled ? "not-allowed" : "pointer", flexShrink: 0 }}
+            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, padding: 0, border: "none", borderRadius: 4, background: "transparent", color: configured ? "var(--text-muted)" : "var(--text-dim)", cursor: disabled ? "not-allowed" : "pointer", flexShrink: 0 }}
           >
             <RefreshCw size={14} strokeWidth={1.8} aria-hidden="true" className={state.phase === "loading" ? "animate-spin" : undefined} />
           </button>

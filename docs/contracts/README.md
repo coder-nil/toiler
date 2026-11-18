@@ -451,11 +451,17 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
   Coding 继续走自己的多协议映射和 `apisets-models-api-v2` 缓存。
 - 不重写 `models.json` 或 `settings.json`；用户模型与远端目录取并集，同 id
   优先采用用户元数据。远端旧模型会被新快照替换；失败不会清空旧缓存。
+- `qoder-cn` 的缓存带 `accountUid`：换个账号登录后旧账号的模型不会串用。
 - `enabledModels` 白名单原样保留：新模型不一定自动显示在对话框，要在设置中勾选。
   普通供应商重启复用缓存，只在用户手动刷新时联网；Coding 保留原有启动预热。
 - 400：缺供应商/Key/Base URL、不适用的供应商；409：已有刷新在进行；
-  501：协议尚不支持；502：上游拒绝、非 JSON 或空模型列表；504：超时。
-  接口沿用 Host/Origin 校验，不支持 OAuth 供应商的远端刷新。
+  501：协议尚不支持或该订阅尚未实现目录刷新；502：上游拒绝、非 JSON 或空模型列表；
+  504：超时。接口沿用 Host/Origin 校验，订阅令牌不会降级用作 API Key。
+- 订阅分流：`qoder-cn` 要求 OAuth 已登录，用 COSY 签名的官方 `GET /algo/api/v2/model/list?Encode=1`
+  （20 秒超时、不跟重定向；401/403 先续期一次）；目录写入同一个 `models-store.json`
+  （`etag=qoder-cn-models-api-v1`、`accountUid`），账号变化后自动回落静态快照；
+  刷新成功会重建运行时目录，新模型在对话里可直接选用。其它 OAuth 订阅返回 501。
+  Qoder CN 若存在同名用户自定义 provider 配置，改用自定义 Provider 的导入模型入口。
 
 ## GET /api/mobile/state
 
