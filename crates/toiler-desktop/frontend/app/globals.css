@@ -1174,11 +1174,9 @@ body {
   flex-direction: column;
 }
 
-/* 原生材质在 WebView 后面，CSS blur 只能模糊网页，不能替代它。
-   macOS 覆盖式窗口的根背景直接透明，不依赖 :has 的动态匹配；
-   实色正文由工作台绘制，网页端和手机端不受影响。
-   高度与 panel-layout.ts 的 CHAT_TOP_BAR_HEIGHT 保持一致；渐变使用硬切点，
-   只露出标题带，不把聊天内容或侧栏正文变成半透明。 */
+/* 顶部只留透明窗口，由下方具名 NSVisualEffectView 实时模糊窗口后方。
+   不叠加 PNG、截图或高不透明度底色，避免把实时材质遮成一条实色带。
+   高度与 panel-layout.ts / Rust 的 TITLEBAR_HEIGHT 一致；正文仍为实色。 */
 html.pi-overlay-chrome,
 html.pi-overlay-chrome body {
   background: transparent;
@@ -1193,7 +1191,9 @@ html.pi-overlay-chrome body {
   --sidebar-surface: linear-gradient(to bottom,
     transparent var(--native-titlebar-height),
     var(--bg-chrome) var(--native-titlebar-height));
-  --file-panel-surface: var(--workspace-surface);
+  --file-panel-surface: linear-gradient(to bottom,
+    transparent var(--native-titlebar-height),
+    var(--bg) var(--native-titlebar-height));
 }
 
 /* 滚动条：桌面窗口里把样式交给系统。WKWebView 一旦侦测到 ::-webkit-scrollbar

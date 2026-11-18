@@ -19,6 +19,8 @@ use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 mod lan_proxy;
 mod mobile;
+#[cfg(target_os = "macos")]
+mod native_titlebar;
 mod seasonal_icon;
 pub mod server;
 mod terminal;
@@ -51,6 +53,24 @@ fn safe_external_url(raw: &str) -> Result<String, String> {
 fn hide_startup_overlay() -> Result<(), String> {
     // toiler 没有原生启动遮罩（不需要等 node 起来），保留这个命令是为了让
     // pi 前端的 `pi-app-ready` 回调不至于报错。
+    Ok(())
+}
+
+#[tauri::command]
+fn sync_titlebar_appearance(window: tauri::WebviewWindow, dark: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let target = window.clone();
+        window
+            .run_on_main_thread(move || {
+                if let Err(error) = native_titlebar::update(&target, Some(dark), true) {
+                    tracing::warn!("同步实时标题栏材质失败：{error}");
+                }
+            })
+            .map_err(|error| error.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, dark);
     Ok(())
 }
 
@@ -254,6 +274,9 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
         // 不依赖 React 布局：导航到独立导出页后仍要保留关闭/还原入口。
         script.push_str(include_str!("../frontend/public/window-controls.js"));
     }
+    if overlay_titlebar {
+        script.push_str(include_str!("../frontend/public/native-titlebar.js"));
+    }
     if let Some(guard) = context_menu_guard_script() {
         script.push_str(guard);
     }
@@ -270,20 +293,12 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
     #[cfg(target_os = "macos")]
     {
         // 红绿灯位置在 place_traffic_lights 里算（不走 wry 的 inset）。
-        // WebView 必须透明才能看见系统的 behind-window 材质；前端只在
-        // 42px 标题带留透明窗口，内容区继续绘制实色背景，避免整页透出桌面。
+        // 原生材质由 native_titlebar 模块放在 WebView 下方，前端不再用
+        // PNG 或高不透明度底色遮住系统对窗口后方的实时采样。
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
             .hidden_title(true)
-            .transparent(true)
-            .effects(
-                tauri::window::EffectsBuilder::new()
-                    // 透明底色由原生窗口提供，磨砂必须保留完整合成强度；
-                    // 不再用降低材质层 alpha 的方式制造“透明”。
-                    .effect(tauri::window::Effect::UnderWindowBackground)
-                    .state(tauri::window::EffectState::Active)
-                    .build(),
-            );
+            .transparent(true);
     }
 
     // Windows 使用页内顶栏与窗口控制按钮，避免再叠一层系统标题栏。
@@ -296,46 +311,25 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
         .build()
         .map_err(|error| format!("创建窗口失败：{error}"))?;
     #[cfg(target_os = "macos")]
-    if let Err(error) = tune_titlebar_material(&window) {
-        tracing::warn!("调整标题栏磨砂透明度失败：{error}");
+    {
+        native_titlebar::update(&window, None, true)?;
+        let target = window.clone();
+        window.on_window_event(move |event| {
+            if matches!(
+                event,
+                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+            ) {
+                let inner = target.clone();
+                let _ = target.run_on_main_thread(move || {
+                    if let Err(error) = native_titlebar::update(&inner, None, false) {
+                        tracing::warn!("更新实时标题栏布局失败：{error}");
+                    }
+                });
+            }
+        });
     }
     #[cfg(not(target_os = "macos"))]
     let _ = window;
-    Ok(())
-}
-
-/// NSVisualEffectView 必须保持 alpha=1，降低整个视图的 alpha 会让清晰的
-/// 桌面背景参与混合，甚至使 AppKit 的背景模糊合成失效。透明感应由材质决定。
-#[cfg(target_os = "macos")]
-fn tune_titlebar_material(window: &tauri::WebviewWindow) -> Result<(), String> {
-    use objc2_app_kit::{
-        NSColor, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
-        NSVisualEffectView, NSWindow,
-    };
-
-    fn tune(view: &NSView) -> usize {
-        if let Some(effect) = view.downcast_ref::<NSVisualEffectView>() {
-            effect.setAlphaValue(1.0);
-            effect.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-            effect.setState(NSVisualEffectState::Active);
-            effect.setMaterial(NSVisualEffectMaterial::UnderWindowBackground);
-            return 1;
-        }
-        view.subviews().iter().map(|child| tune(&child)).sum()
-    }
-
-    let raw = window.ns_window().map_err(|error| error.to_string())?;
-    // SAFETY: 建窗回调运行于主线程，指针由同一窗口的 ns_window 提供。
-    let native: &NSWindow = unsafe { &*(raw as *mut NSWindow) };
-    native.setOpaque(false);
-    native.setBackgroundColor(Some(&NSColor::clearColor()));
-    native.setTitlebarAppearsTransparent(true);
-    let content = native.contentView().ok_or("窗口没有 contentView")?;
-    let count = tune(&content);
-    if count == 0 {
-        return Err("未找到原生磨砂层，不能调整透明度".to_string());
-    }
-    tracing::info!("已清空原生窗口底色，启用 {count} 个完整强度的窗口后方磨砂层");
     Ok(())
 }
 
@@ -392,6 +386,7 @@ pub fn run() {
         .manage(seasonal_icon::SeasonalIconState::default())
         .invoke_handler(tauri::generate_handler![
             hide_startup_overlay,
+            sync_titlebar_appearance,
             open_release_url,
             open_external_url,
             terminal::terminal_start,

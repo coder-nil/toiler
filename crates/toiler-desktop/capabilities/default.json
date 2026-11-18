@@ -17,6 +17,7 @@
     "core:window:allow-is-maximized",
     "core:window:allow-close",
     "allow-hide-startup-overlay",
+    "allow-sync-titlebar-appearance",
     "allow-open-release-url",
     "allow-open-external-url",
     "allow-terminal-start",
