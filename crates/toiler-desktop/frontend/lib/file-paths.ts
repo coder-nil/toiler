@@ -6,7 +6,10 @@ export function normalizeFilePathSlashes(filePath: string): string {
 }
 
 export function encodeFilePathForApi(filePath: string): string {
-  return normalizeFilePathSlashes(filePath)
+  const normalized = normalizeFilePathSlashes(filePath);
+  // UNC 的双斜杠是路径的一部分，把它编码在路由参数中，不能当作空段丢掉。
+  const prefix = normalized.startsWith("//") ? "%2F%2F" : "";
+  return prefix + normalized
     .split("/")
     .filter(Boolean)
     .map(encodeURIComponent)

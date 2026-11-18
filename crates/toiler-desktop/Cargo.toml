@@ -25,6 +25,8 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = "0.1"
 libc = "0.2"
+# 寿星天文历：离线计算四立交节时刻，不依赖网络、固定日期或电脑所在时区。
+lunar_rust = "1.0.1"
 # 内置终端的跨平台 PTY（与 pi 同一版本）。只在桌面壳里用：服务端不该有起 shell 的能力。
 portable-pty = "0.9"
 

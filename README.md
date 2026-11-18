@@ -84,8 +84,9 @@ npm exec --yes --package=node@22.23.5 -- node scripts/build.mjs
 从 Finder 双击也行（`bundle` 见 `crates/toiler-desktop/tauri.conf.json`）。
 启动后只监听 `127.0.0.1:<随机端口>`，手机访问要另外在设置页开关。
 
-运行中的应用图标按电脑本地月份轮换：3–5 月春、6–8 月夏、9–11 月秋、12–2 月冬。
-启动即生效，跨季或休眠唤醒后最多一分钟更新。macOS 更新 Dock，Windows/Linux
+运行中的应用图标按中国传统四季轮换：立春入春、立夏入夏、立秋入秋、立冬入冬。
+使用离线天文历计算到秒的交节时刻，统一按 UTC 比较，不受本机时区影响。
+启动即生效，临近交节会定时到该时刻；休眠唤醒或修改系统时间后重新判断。macOS 更新 Dock，Windows/Linux
 更新窗口图标；Finder、启动器和固定快捷方式仍用原版静态图标，不改已签名应用包。
 
 ### Git 面板版本升级

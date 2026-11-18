@@ -56,8 +56,10 @@ pub struct LiveAgent {
     thinking_level: Mutex<rpi_ai::ThinkingLevel>,
     /// 切模型时按 `provider/modelId` 查 `rpi_ai::Model`。
     ///
-    /// 活会话比一次请求活得久，不能临时从 `AppState` 借引用。
-    catalog: ModelCatalog,
+    /// 活会话比一次请求活得久，不能临时从 `AppState` 借引用；而设置页保存
+    /// `models.json` 后目录会变，所以存的是可替换的 `RwLock` 而非常量副本
+    /// （见 [`Self::replace_catalog`]）。
+    catalog: std::sync::RwLock<ModelCatalog>,
     /// 活会话表的变化通知（`insert` 之后才挂上）
     changes: Mutex<Option<broadcast::Sender<()>>>,
     /// `settings.json`：`set_steering_mode` / `set_follow_up_mode` 要落盘。
@@ -240,7 +242,7 @@ impl LiveAgent {
             running: Arc::new(AtomicBool::new(false)),
             model: Mutex::new(model),
             thinking_level: Mutex::new(thinking_level),
-            catalog: catalog.clone(),
+            catalog: std::sync::RwLock::new(catalog.clone()),
             changes: Mutex::new(None),
             settings: settings.clone(),
             prompt_inputs: Mutex::new(prompt_inputs),
@@ -270,6 +272,30 @@ impl LiveAgent {
 
     pub fn is_streaming(&self) -> bool {
         self.running.load(Ordering::Relaxed)
+    }
+
+    /// 换掉本会话持有的模型目录副本（设置页保存 `models.json` 后调）。
+    ///
+    /// 换两处东西：
+    /// 1. `self.catalog` —— `set_model` 靠它查模型元数据。
+    /// 2. harness 的 provider 注册表（`set_models`）—— 发请求时按
+    ///    `model.provider` 解析真实现；只换第一处的话，新 provider 的模型能选中
+    ///    但发不出去（`No provider registered for model provider …`）。
+    ///
+    /// 不动当前模型，也不动正在跑的轮次：它用的是已解析好的 `Model` 与已拿到的
+    /// provider，下一次请求才走新注册表。
+    ///
+    /// 用 `set_models` 而不是重建 harness：重建会把正在跑的轮次与已连上的 SSE 流
+    /// 一起拆掉（与 `set_model` 同一条约束）。
+    pub async fn replace_catalog(&self, catalog: ModelCatalog) -> Result<()> {
+        // provider 注册表必须重新包一层重试装饰器：目录里的 `providers` 是裸的
+        // （`ModelCatalog` 不管重试），直接装上去会让本会话丢掉传输层中断重试。
+        let providers = crate::retry_provider::wrap_all(&catalog.providers);
+        if let Ok(mut guard) = self.catalog.write() {
+            *guard = catalog;
+        }
+        self.harness.set_models(providers).await?;
+        Ok(())
     }
 
     /// `{"type":…}` 命令（pi 的 `session.send(command)`）。
@@ -435,6 +461,10 @@ impl LiveAgent {
     /// pi 的 `setModel` 会往会话文件追加一条 `model_change`，前端切完立刻
     /// `loadSession` 读回的 `context.model` 就是它。只改内存不落盘的话，界面
     /// 会在切换成功的下一秒弹回旧模型 —— 看起来像「切了但没生效」。
+    ///
+    /// 目录查本会话自己那份副本。设置页刚保存 `models.json` 时它可能还是旧的，
+    /// 所以 `PUT` / `DELETE /api/models-config` 必须跟一次
+    /// [`crate::state::AppState::sync_live_catalogs`]。
     async fn set_model(&self, command: &Value) -> Result<Value> {
         let provider = command
             .get("provider")
@@ -446,8 +476,9 @@ impl LiveAgent {
             .unwrap_or_default();
         let model = self
             .catalog
-            .model_for(provider, model_id)
-            .cloned()
+            .read()
+            .map(|catalog| catalog.model_for(provider, model_id).cloned())
+            .unwrap_or(None)
             .ok_or_else(|| anyhow::anyhow!("Model not found: {provider}/{model_id}"))?;
 
         let session = self.harness.session();
@@ -1400,6 +1431,15 @@ impl LiveSessions {
 
     pub fn get(&self, id: &str) -> Option<Arc<LiveAgent>> {
         self.map.lock().expect("live").get(id).cloned()
+    }
+
+    /// 当前所有活会话的快照（设置页保存 `models.json` 后要挨个对齐目录）。
+    ///
+    /// 先把 `Arc` 全收集出来再返回，**不在持锁时调 `replace_catalog`**：
+    /// 后者是 async（要 `harness.set_models`），持锁跨 await 会把整个活会话表
+    /// 卡住，连 `/api/agent/running/events` 都推不出去。
+    pub fn all(&self) -> Vec<Arc<LiveAgent>> {
+        self.map.lock().expect("live").values().cloned().collect()
     }
 
     pub fn insert(&self, agent: Arc<LiveAgent>) {

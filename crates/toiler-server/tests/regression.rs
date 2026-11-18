@@ -171,11 +171,14 @@ async fn get(router: axum::Router, uri: &str) -> Reply {
 /// 把绝对路径编码成前端 `encodeFilePathForApi` 的形状（去前导斜杠，逐段编码）。
 fn encode_path(path: &Path) -> String {
     let raw = path.to_string_lossy().replace('\\', "/");
-    raw.split('/')
+    let prefix = if raw.starts_with("//") { "%2F%2F" } else { "" };
+    let segments = raw
+        .split('/')
         .filter(|segment| !segment.is_empty())
         .map(url_encode)
         .collect::<Vec<_>>()
-        .join("/")
+        .join("/");
+    format!("{prefix}{segments}")
 }
 
 fn url_encode(segment: &str) -> String {
@@ -235,6 +238,54 @@ async fn files_list_hides_ignored_names_and_marks_git_roots() {
     assert_eq!(readme["size"], 0);
     assert_eq!(readme["modified"], "");
 
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn files_list_and_read_project_paths_from_directory_picker() {
+    // FileExplorer：项目可手动输入，也可选择 `/api/cwd/browse` 返回的 realpath。
+    // Windows 下这两种形式分别覆盖普通盘符路径和 `\\?\` 扩展路径。
+    let root = fixture_root("picker-files");
+    let project = root.join("项目 100%20");
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    let name = "说明 %2E.txt";
+    std::fs::write(project.join(name), "project contents").unwrap();
+    let configs = root.join("configs");
+    let router = app_with_agent_dir(&root.join("sessions"), &workspace, Some(&configs));
+    let browse_url = format!(
+        "/api/cwd/browse?path={}",
+        url_encode(&project.to_string_lossy())
+    );
+    let browse = get(router.clone(), &browse_url).await;
+    assert_eq!(browse.status, StatusCode::OK, "{}", browse.text());
+    let browse_body = browse.json();
+    let from_picker = browse_body["path"].as_str().unwrap();
+
+    for selected in [project.as_path(), Path::new(from_picker)] {
+        let payload = json!({ "cwd": selected }).to_string();
+        let validated = call(
+            router.clone(),
+            "POST",
+            "/api/cwd/validate",
+            Some(&payload),
+            &[],
+        )
+        .await;
+        assert_eq!(validated.status, StatusCode::OK, "{}", validated.text());
+        let validated = validated.json();
+        let cwd = Path::new(validated["cwd"].as_str().unwrap());
+        let url = format!("/api/files/{}?type=list", encode_path(cwd));
+        let listed = get(router.clone(), &url).await;
+        assert_eq!(listed.status, StatusCode::OK, "{url}: {}", listed.text());
+        assert_eq!(listed.json()["entries"][0]["name"], name);
+
+        let url = format!("/api/files/{}?type=read", encode_path(&cwd.join(name)));
+        let file = get(router.clone(), &url).await;
+        assert_eq!(file.status, StatusCode::OK, "{url}: {}", file.text());
+        assert_eq!(file.json()["content"], "project contents");
+    }
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -563,9 +614,41 @@ async fn files_watch_emits_named_sse_events() {
 #[tokio::test]
 async fn files_get_refuses_paths_outside_allowed_roots() {
     let root = fixture_root("deny");
-    let reply = get(app(&root, &root), "/api/files/etc/hosts?type=read").await;
+    let allowed = root.join("allowed");
+    std::fs::create_dir(&allowed).unwrap();
+    let outside = root.join("outside.txt");
+    std::fs::write(&outside, "outside").unwrap();
+    let router = app_with_agent_dir(
+        &root.join("sessions"),
+        &allowed,
+        Some(&root.join("configs")),
+    );
+    let url = format!("/api/files/{}?type=read", encode_path(&outside));
+    let reply = get(router, &url).await;
     assert_eq!(reply.status, StatusCode::FORBIDDEN);
     assert_eq!(reply.json()["error"], "Access denied");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn files_get_refuses_symlinks_outside_allowed_roots() {
+    // 文件面板可以看到符号链接的名字，但打开时仍要检查 realpath。
+    let root = fixture_root("deny-symlink");
+    let allowed = root.join("allowed");
+    std::fs::create_dir(&allowed).unwrap();
+    let outside = root.join("outside.txt");
+    std::fs::write(&outside, "outside").unwrap();
+    let link = allowed.join("link.txt");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    let router = app_with_agent_dir(
+        &root.join("sessions"),
+        &allowed,
+        Some(&root.join("configs")),
+    );
+    let url = format!("/api/files/{}?type=read", encode_path(&link));
+    let reply = get(router, &url).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -580,11 +663,13 @@ async fn files_get_rejects_unknown_types_and_dotdot_escapes() {
         StatusCode::BAD_REQUEST
     );
 
-    let escape = format!("/api/files/{}/../etc/hosts", encode_path(&root));
-    assert_eq!(
-        get(app(&root, &root), &escape).await.status,
-        StatusCode::BAD_REQUEST
-    );
+    for parent in ["..", "%2E%2E"] {
+        let escape = format!("/api/files/{}/{parent}/etc/hosts", encode_path(&root));
+        assert_eq!(
+            get(app(&root, &root), &escape).await.status,
+            StatusCode::BAD_REQUEST
+        );
+    }
     std::fs::remove_dir_all(&root).ok();
 }
 

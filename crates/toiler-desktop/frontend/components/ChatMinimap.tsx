@@ -8,7 +8,8 @@ import {
   normalizeDisplayMath,
 } from "@/lib/markdown";
 import { splitFinalAssistantBlocks } from "@/lib/message-display";
-import { measureMinimapTurnPositions, resolveMinimapViewport, type MinimapTurnPosition } from "@/lib/chat-minimap-viewport";
+import { measureMinimapTurnPositions, resolveMinimapViewport, resolveMinimapViewportBand, type MinimapTurnPosition } from "@/lib/chat-minimap-viewport";
+import { MAX_NODE_GAP, layoutNodes, nodeVisualFor, type NodeLayout } from "@/lib/chat-minimap-layout";
 import type { AgentMessage, AssistantMessage, TextContent, UserMessage } from "@/lib/types";
 import styles from "./ChatMinimap.module.css";
 
@@ -20,19 +21,6 @@ interface Props {
   onRevealHistory: () => void;
 }
 
-const MAX_NODE_GAP = 50;
-const MINIMAP_PADDING = 12;
-/**
- * 节点是横条而不是方块：轨道只有 28px 宽，同样面积下横向更长更好点中，
- * 密集时又能压成一根根刻度线，不会叠成一串圆点。
- */
-const MAX_NODE_WIDTH = 14;
-const MIN_NODE_WIDTH = 4;
-/** 厚度上限 4px，几百轮时才不会糊成一条带。 */
-const MAX_NODE_HEIGHT = 4;
-const MIN_NODE_HEIGHT = 2;
-/** 相邻横条之间至少保留的空白。 */
-const NODE_CLEARANCE = 1;
 const PREVIEW_SHOW_DELAY = 500;
 const PREVIEW_HIDE_DELAY = 250;
 const NAVIGATION_ACTIVE_LOCK_MS = 1600;
@@ -204,62 +192,13 @@ function createTurnNodes(turns: TurnInfo[]): NodeInfo[] {
   }));
 }
 
-interface NodeLayout {
-  nodes: NodeInfo[];
-  gap: number;
-  fillsHeight: boolean;
-  /** 横条长度。 */
-  nodeWidth: number;
-  /** 横条厚度。 */
-  nodeHeight: number;
-}
+const initialNodeLayout: NodeLayout<NodeInfo> = {
+  nodes: [],
+  gap: MAX_NODE_GAP,
+  fillsHeight: false,
+  ...nodeVisualFor(MAX_NODE_GAP),
+};
 
-/**
- * 横条的长度随间距生长（稀疏时是一条能看清的短线），厚度一旦放不下就压扁
- * （并保持至少 NODE_CLEARANCE 的空隙），这样有限的 minimap 高度里能塞下更多轮次，
- * 而不是让几十根横条叠成一片。
- */
-function nodeVisualFor(gap: number): { nodeWidth: number; nodeHeight: number } {
-  const clearance = Math.max(0, gap - NODE_CLEARANCE);
-  const nodeHeight = Math.round(
-    Math.max(MIN_NODE_HEIGHT, Math.min(MAX_NODE_HEIGHT, clearance)) * 2,
-  ) / 2;
-  // 长度也跟着间距收缩：密集时还维持 16px 宽的话，就会连成一条实心竖带。
-  const nodeWidth = Math.round(
-    Math.min(MAX_NODE_WIDTH, Math.max(MIN_NODE_WIDTH, clearance * 2.2)),
-  );
-  return { nodeWidth, nodeHeight };
-}
-
-export function layoutNodes(allNodes: NodeInfo[], minimapHeight: number, topInset = 0): NodeLayout {
-  if (allNodes.length === 0) {
-    return { nodes: [], gap: MAX_NODE_GAP, fillsHeight: false, ...nodeVisualFor(MAX_NODE_GAP) };
-  }
-
-  const height = Math.max(1, minimapHeight);
-  const firstTop = Math.min(topInset + MINIMAP_PADDING, Math.max(0, height - MINIMAP_PADDING));
-  const usableHeight = Math.max(0, height - firstTop - MINIMAP_PADDING);
-  if (allNodes.length === 1) {
-    return {
-      nodes: [{ ...allNodes[0], topRatio: firstTop / height }],
-      gap: MAX_NODE_GAP,
-      fillsHeight: false,
-      ...nodeVisualFor(MAX_NODE_GAP),
-    };
-  }
-
-  const naturalGap = usableHeight / (allNodes.length - 1);
-  const gap = Math.min(MAX_NODE_GAP, naturalGap);
-  return {
-    nodes: allNodes.map((node, index) => ({
-      ...node,
-      topRatio: (firstTop + index * gap) / height,
-    })),
-    gap,
-    fillsHeight: naturalGap <= MAX_NODE_GAP,
-    ...nodeVisualFor(gap),
-  };
-}
 
 export function ChatMinimap({
   messages,
@@ -277,12 +216,7 @@ export function ChatMinimap({
   const draggingRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const allNodesRef = useRef<NodeInfo[]>([]);
-  const nodeLayoutRef = useRef<NodeLayout>({
-    nodes: [],
-    gap: MAX_NODE_GAP,
-    fillsHeight: false,
-    ...nodeVisualFor(MAX_NODE_GAP),
-  });
+  const nodeLayoutRef = useRef<NodeLayout<NodeInfo>>(initialNodeLayout);
   const previewBoxRef = useRef<HTMLDivElement>(null);
   const viewportBandRef = useRef<HTMLDivElement>(null);
   const previewItemRefs = useRef(new Map<number, HTMLDivElement>());
@@ -343,7 +277,7 @@ export function ChatMinimap({
   const syncViewportBand = useCallback((scrollEl: HTMLDivElement, nextNodes: NodeInfo[]) => {
     const band = viewportBandRef.current;
     if (!band) return;
-    const { nodes, gap } = nodeLayoutRef.current;
+    const { nodes, gap, nodeHeight } = nodeLayoutRef.current;
     const height = containerRef.current?.clientHeight ?? 0;
     if (nodes.length === 0 || height <= 0 || nextNodes.length === 0) {
       band.style.opacity = "0";
@@ -357,15 +291,23 @@ export function ChatMinimap({
       band.style.opacity = "0";
       return;
     }
-    const { first, last } = viewport;
 
-    const topPx = nodes[first].topRatio * height - gap * 0.5;
-    const bottomPx = nodes[last].topRatio * height + gap * 0.5;
-    const bandTop = Math.max(0, Math.min(height, topPx));
-    const bandHeight = Math.max(16, Math.min(height - bandTop, bottomPx - bandTop));
+    // 胶囊几何交给纯函数：端部外扩要同时受容器边缘与横条厚度约束，
+    // 否则首尾节点会贴住轨道顶端、横条偏在胶囊上半截。
+    const geometry = resolveMinimapViewportBand({
+      firstCenter: nodes[viewport.first].topRatio * height,
+      lastCenter: nodes[viewport.last].topRatio * height,
+      trackHeight: height,
+      gap,
+      nodeThickness: nodeHeight,
+    });
+    if (!geometry) {
+      band.style.opacity = "0";
+      return;
+    }
 
-    band.style.top = `${bandTop}px`;
-    band.style.height = `${bandHeight}px`;
+    band.style.top = `${geometry.top}px`;
+    band.style.height = `${geometry.height}px`;
     band.style.opacity = "1";
   }, []);
 

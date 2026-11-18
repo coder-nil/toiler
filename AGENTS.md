@@ -275,6 +275,13 @@ scope 用 crate 短名：`server` / `session` / `desktop` / `poc` / `docs` / `to
   另外 minimap 是**浮在消息区右边缘的一层**（`ChatWindow` 的
   `data-chat-minimap-dock`），不是布局列：它没有背景/边框，`pointer-events`
   只在节点带上打开，别再加回与 sidebar 平级的常驻列。
+- **视口胶囊（高亮带）的几何必须走 `resolveMinimapViewportBand`**
+  （`lib/chat-minimap-viewport.ts`），节点布局走 `lib/chat-minimap-layout.ts`，
+  两边都不能写回内联算术。旧写法用 `±gap / 2` 从首尾节点外扩，而首尾节点没有
+  邻居，外扩量会被 `max(0, …)` 裁掉；再叠加 `MINIMAP_PADDING` 只有 12px（刚好
+  等于胶囊半高），单轮对话下胶囊就贴住轨道顶端、蓝色横条偏在胶囊上半截。
+  现在内边距是 22px（首节点落点），胶囊以区间中心线为轴，顶部留 12px 空隙。
+  回归用例守着「首轮胶囊下移 / 横条居中 / 底部对称」这几条。
 - **端口由内核分配（`port = 0`）**，桌面壳不会抢 8787，也没有「端口被占用」。
   需要固定端口的场景走 `toiler-server --port`。
 - **`/api` 与前端同源**：静态资源挂在 `Router::fallback`，`/api/*` 是具体路由，

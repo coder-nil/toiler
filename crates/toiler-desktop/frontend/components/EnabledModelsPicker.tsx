@@ -9,6 +9,12 @@ interface ProviderModelRow {
   selected: boolean;
 }
 
+/** 上游发现到、但尚未写进 `models.json` 的模型（复用发现接口的返回形状）。 */
+export interface PendingModelRow {
+  id: string;
+  name?: string;
+}
+
 type PickerState =
   | { phase: "loading" }
   | { phase: "error"; message: string }
@@ -23,18 +29,30 @@ interface EnabledModelsPickerProps {
   reloadKey?: string | number;
   /** 勾选变化并保存成功后触发，用于刷新对话框的模型选择列表。 */
   onChanged?: () => void;
-  /** 紧跟在已选数量后的操作入口（例如远端目录刷新）。 */
+  /** 紧跟在已选数量后的操作入口（刷新图标）。 */
   countAction?: React.ReactNode;
+  /**
+   * 上游发现到、尚未导入 `models.json` 的模型。
+   *
+   * 它们与已导入的模型画在**同一个列表**里，带「待导入」标记：勾选即导入并设为可见。
+   * 早先「导入上游模型」是上面一个独立区块，用户得先在那里导入、再到下面这里勾选，
+   * 两步不在一个地方，实际用起来就是「刷新完好像没生效」。
+   */
+  pendingModels?: PendingModelRow[];
+  /** 勾选一个待导入模型（父组件负责导入 + 保存 + 写入可见范围）。 */
+  onImportPending?: (id: string) => void;
+  /** 正在导入的模型 id：勾选框置灰并显示进行中状态。 */
+  importingIds?: string[];
 }
 
 /**
- * 服务商详情里的「可用模型 + 勾选」区块。
+ * 服务商详情里的「模型选择列表」区块。
  *
  * 勾选结果写入 pi 的 `enabledModels` 设置，因此对话框的模型选择列表（以及 pi
  * CLI 的 `--models` 作用域）会立即收窄到勾选的模型。整组勾选会简写成
  * `provider/*`，全部勾选则清空设置（回到“全部可见”的默认状态）。
  */
-export function EnabledModelsPicker({ providerId, disabled = false, reloadKey, onChanged, countAction }: EnabledModelsPickerProps) {
+export function EnabledModelsPicker({ providerId, disabled = false, reloadKey, onChanged, countAction, pendingModels = [], onImportPending, importingIds = [] }: EnabledModelsPickerProps) {
   const { t } = useI18n();
   const [state, setState] = useState<PickerState>({ phase: "loading" });
   const [query, setQuery] = useState("");
@@ -126,10 +144,18 @@ export function EnabledModelsPicker({ providerId, disabled = false, reloadKey, o
 
   const models = state.phase === "ready" ? state.models : [];
   const selectedCount = models.filter((model) => model.selected).length;
+  // pending 模型已经在 models 里的要从待导入列表里剔除：导入完、父组件还没清掉
+  // 勾选时就靠这一条避免同一个 id 画两行。
+  const knownIds = new Set(models.map((model) => model.id));
+  const pendingRows = pendingModels.filter((model) => !knownIds.has(model.id));
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const visibleModels = models.filter((model) => !normalizedQuery
     || model.name.toLocaleLowerCase().includes(normalizedQuery)
     || model.id.toLocaleLowerCase().includes(normalizedQuery));
+  const visiblePending = pendingRows.filter((model) => !normalizedQuery
+    || (model.name ?? model.id).toLocaleLowerCase().includes(normalizedQuery)
+    || model.id.toLocaleLowerCase().includes(normalizedQuery));
+  const totalRows = models.length + pendingRows.length;
 
   const toggle = (id: string) => {
     if (disabled) return;
@@ -167,8 +193,7 @@ export function EnabledModelsPicker({ providerId, disabled = false, reloadKey, o
               {t("models.visibleSelectedCount", { selected: selectedCount, total: models.length })}
             </span>
           )}
-          {countAction}
-        </div>
+          {countAction}        </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           {saving && <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{t("models.visibleSaving")}</span>}
           {!saving && savedAt > 0 && <span style={{ fontSize: 11, color: "#16a34a" }}>{t("models.visibleSaved")}</span>}
@@ -214,7 +239,7 @@ export function EnabledModelsPicker({ providerId, disabled = false, reloadKey, o
         </div>
       )}
 
-      {state.phase === "ready" && models.length === 0 && (
+      {state.phase === "ready" && models.length === 0 && pendingRows.length === 0 && (
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{t("models.visibleEmpty")}</span>
           <button
@@ -227,9 +252,9 @@ export function EnabledModelsPicker({ providerId, disabled = false, reloadKey, o
         </div>
       )}
 
-      {state.phase === "ready" && models.length > 0 && (
+      {state.phase === "ready" && (models.length > 0 || pendingRows.length > 0) && (
         <>
-          {models.length > 8 && (
+          {totalRows > 8 && (
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -259,7 +284,38 @@ export function EnabledModelsPicker({ providerId, disabled = false, reloadKey, o
                 </span>
               </label>
             ))}
-            {visibleModels.length === 0 && (
+            {/* 上游发现到、尚未导入的模型：同一个列表里的最后几行，勾选即导入。 */}
+            {visiblePending.map((model) => {
+              const importing = importingIds.includes(model.id);
+              const canImport = Boolean(onImportPending);
+              return (
+                <label
+                  key={`pending:${model.id}`}
+                  title={canImport ? t("models.pendingImportHint") : undefined}
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderBottom: "1px solid var(--border)", cursor: canImport && !importing ? "pointer" : "default", opacity: importing ? 0.5 : 1 }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={importing}
+                    disabled={!canImport || importing}
+                    onChange={() => onImportPending?.(model.id)}
+                    style={{ margin: 0, accentColor: "var(--accent)", flexShrink: 0 }}
+                  />
+                  <span style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0, flex: 1 }}>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {model.name || model.id}
+                    </span>
+                    {(model.name ?? "") !== model.id && (
+                      <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{model.id}</span>
+                    )}
+                  </span>
+                  <span style={{ fontSize: 9, color: "var(--text-dim)", border: "1px solid var(--border)", borderRadius: 4, padding: "1px 6px", whiteSpace: "nowrap", flexShrink: 0 }}>
+                    {importing ? t("models.pendingImporting") : t("models.pendingNew")}
+                  </span>
+                </label>
+              );
+            })}
+            {visibleModels.length === 0 && visiblePending.length === 0 && (
               <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--text-dim)" }}>{t("models.discoveryNoMatches")}</div>
             )}
           </div>

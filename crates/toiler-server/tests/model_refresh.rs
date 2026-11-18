@@ -374,3 +374,175 @@ async fn refresh_validates_credentials_protocol_and_request_trust_without_networ
     assert!(!toiler_server::remote_models::store_path(state.models_file().path()).exists());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// 设置页保存 `models.json` 后，新增的 provider 与模型必须当场出现在
+/// `/api/models` 的 `modelList` 里。
+///
+/// 对应前端 `ChatInput.tsx:modelOptions`（它读 `modelList`）。历史故障：
+/// `PUT /api/models-config` 只写文件不重建运行时目录，而目录是启动时的快照，
+/// 于是用户新加的 provider 在对话框的模型切换器里**一个都不显示**，只有重启
+/// 进程才出现 —— 用户看到的是「加了但没生效」。
+#[tokio::test]
+async fn saving_models_config_exposes_new_providers_to_the_picker() {
+    let root = fixture();
+    let state = state(&root);
+    // 起始状态：只有一家 provider，模型选择器里只有它。
+    let (status, _) = call(
+        &state,
+        "PUT",
+        "/api/models-config",
+        Some(json!({"providers":{"first":{
+            "api":"openai-completions",
+            "baseUrl":"https://first.example.test/v1",
+            "apiKey":"test-key",
+            "models":[{"id":"model-a","name":"Model A"}]
+        }}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, visible) = call(&state, "GET", "/api/models", None).await;
+    let listed: Vec<&str> = visible["modelList"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect();
+    assert_eq!(listed, vec!["model-a"], "{visible}");
+
+    // 保存第二家 provider + 新模型：两条都要出现在选择器里。
+    let (status, body) = call(
+        &state,
+        "PUT",
+        "/api/models-config",
+        Some(json!({"providers":{
+            "first":{
+                "api":"openai-completions",
+                "baseUrl":"https://first.example.test/v1",
+                "apiKey":"test-key",
+                "models":[{"id":"model-a","name":"Model A"}]
+            },
+            "second":{
+                "api":"openai-completions",
+                "baseUrl":"https://second.example.test/v1",
+                "apiKey":"test-key",
+                "models":[{"id":"model-b","name":"Model B"}]
+            }
+        }})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (_, visible) = call(&state, "GET", "/api/models", None).await;
+    let pairs: Vec<(String, String)> = visible["modelList"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                item["provider"].as_str().unwrap().to_string(),
+                item["id"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert!(
+        pairs.contains(&("second".to_string(), "model-b".to_string())),
+        "新增 provider 的模型必须出现在 modelList 里：{visible}"
+    );
+    assert!(
+        pairs.contains(&("first".to_string(), "model-a".to_string())),
+        "老模型不能被弄丢：{visible}"
+    );
+    // `models` 字典与 `modelList` 必须同步（两者分隔符不同但内容一致）。
+    assert!(visible["models"]["second:model-b"].is_string(), "{visible}");
+    assert_eq!(
+        visible["models"].as_object().unwrap().len(),
+        visible["modelList"].as_array().unwrap().len()
+    );
+
+    // 目录里也要真的能解析出 rpi 的 `Model`：只更新 modelList 而没建 provider
+    // 的话，界面能选中但发请求会报 `No provider registered`。
+    assert!(state.catalog().model_for("second", "model-b").is_some());
+    assert!(state
+        .catalog()
+        .providers
+        .iter()
+        .any(|provider| provider.id() == "second"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// 删除 provider / 模型后，`/api/models` 也必须当场摘掉它。
+///
+/// 否则 `modelList` 里留着已删项，选中就报 `Model not found`
+/// （`LiveAgent::set_model` 从目录里查不到模型）。
+#[tokio::test]
+async fn deleting_models_config_removes_them_from_the_picker() {
+    let root = fixture();
+    let state = state(&root);
+    let (status, _) = call(
+        &state,
+        "PUT",
+        "/api/models-config",
+        Some(json!({"providers":{
+            "first":{
+                "api":"openai-completions",
+                "baseUrl":"https://first.example.test/v1",
+                "apiKey":"test-key",
+                "models":[{"id":"model-a"},{"id":"model-b"}]
+            },
+            "second":{
+                "api":"openai-completions",
+                "baseUrl":"https://second.example.test/v1",
+                "apiKey":"test-key",
+                "models":[{"id":"model-c"}]
+            }
+        }})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // 删单个模型：另一条必须留下。
+    let (status, body) = call(
+        &state,
+        "DELETE",
+        "/api/models-config",
+        Some(json!({"kind":"model","provider":"first","modelId":"model-a"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, visible) = call(&state, "GET", "/api/models", None).await;
+    let ids: Vec<&str> = visible["modelList"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect();
+    assert!(!ids.contains(&"model-a"), "已删模型不能还在：{visible}");
+    assert!(ids.contains(&"model-b"), "{visible}");
+    assert!(state.catalog().model_for("first", "model-a").is_none());
+
+    // 删整个 provider：它的模型全部消失，provider 实例也要摘掉。
+    let (status, body) = call(
+        &state,
+        "DELETE",
+        "/api/models-config",
+        Some(json!({"kind":"provider","provider":"second"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, visible) = call(&state, "GET", "/api/models", None).await;
+    assert!(
+        !visible["modelList"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["provider"] == "second"),
+        "已删 provider 不能还在：{visible}"
+    );
+    assert!(state.catalog().model_for("second", "model-c").is_none());
+    assert!(!state
+        .catalog()
+        .providers
+        .iter()
+        .any(|provider| provider.id() == "second"));
+    std::fs::remove_dir_all(root).unwrap();
+}

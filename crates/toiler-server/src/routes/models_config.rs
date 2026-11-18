@@ -34,6 +34,11 @@ pub async fn get(State(state): State<AppState>, _trusted: Trusted) -> Response {
 }
 
 /// `PUT /api/models-config`
+///
+/// 写盘之后**必须重建运行时目录**：`/api/models` 的 `modelList` 读的是目录快照，
+/// 只写文件的话，用户刚在设置页加上去的 provider / 模型在对话框的模型切换器里
+/// 一个都不会出现（只能重启进程）。详见
+/// [`crate::state::AppState::reload_catalog_from_models_file`]。
 pub async fn put(
     State(state): State<AppState>,
     _trusted: Trusted,
@@ -41,6 +46,16 @@ pub async fn put(
 ) -> Response {
     match state.models_file().write(&body) {
         Ok(_) => {
+            // 重建失败不能默不作声：那意味着界面上看不到刚保存的模型，而文件
+            // 已经写进去了（两边不一致），所以这里把错误透出去。旧目录保持不变，
+            // 至少比清空成空列表好 —— 用户还能继续用旧模型并在下次保存时重试。
+            if let Err(error) = state.reload_catalog_from_models_file().await {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("模型已保存，但重建模型目录失败：{error}") })),
+                )
+                    .into_response();
+            }
             state.sessions().invalidate();
             Json(json!({ "success": true })).into_response()
         }
@@ -99,6 +114,15 @@ pub async fn delete(
         &provider,
         if provider_gone { None } else { Some(&model_id) },
     );
+    // 删完也要重建目录：否则被删掉的 provider / 模型继续留在 `/api/models` 的
+    // `modelList` 里，选了就报 `Model not found`。
+    if let Err(error) = state.reload_catalog_from_models_file().await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("已删除，但重建模型目录失败：{error}") })),
+        )
+            .into_response();
+    }
     state.sessions().invalidate();
     Json(json!({ "success": true })).into_response()
 }

@@ -58,3 +58,44 @@ test("模型设置保留再次刷新入口，并在成功后通知模型列表�
   const otherActions = picker.indexOf('{saving && <span');
   assert.ok(counter < refreshIcon && refreshIcon < otherActions, "刷新图标必须紧跟已选数量，而不是出现在全选操作之后");
 });
+
+test("上游发现到的模型与勾选列表合并，刷新入口在已选数量之后", async () => {
+  const picker = await readFile(new URL("../components/EnabledModelsPicker.tsx", import.meta.url), "utf8");
+  // 待导入模型与已导入模型在同一个列表容器里渲染：这是「合并」的判据。
+  const listStart = picker.indexOf('<div style={{ display: "flex", flexDirection: "column", maxHeight: 260');
+  const listEnd = picker.indexOf("{state.phase === \"ready\" && state.warnings.length > 0");
+  assert.ok(listStart > 0 && listEnd > listStart);
+  const list = picker.slice(listStart, listEnd);
+  assert.ok(list.includes("visibleModels.map"), "已导入模型在列表里");
+  assert.ok(list.includes("visiblePending.map"), "待导入模型也在同一个列表里");
+  assert.ok(list.includes('t("models.pendingNew")'));
+  assert.ok(list.includes("onImportPending"));
+
+  // 刷新入口（countAction）仍紧跟「已选 N/M」。
+  const counter = picker.indexOf('t("models.visibleSelectedCount"');
+  const refreshIcon = picker.indexOf("{countAction}");
+  const otherActions = picker.indexOf("{saving && <span");
+  assert.ok(counter < refreshIcon && refreshIcon < otherActions);
+
+  // 自定义 Provider 详情里不再有独立的「导入模型」区块，而是把发现结果交给勾选列表。
+  const source = await readFile(new URL("../components/ModelsConfig.tsx", import.meta.url), "utf8");
+  const detail = source.slice(source.indexOf("function ProviderDetail"), source.indexOf("// ── ThinkingLevelMap editor"));
+  assert.ok(!detail.includes('t("models.discoveryAddSelected")'), "不应再有独立的「添加所选模型」按钮");
+  assert.ok(!detail.includes("discoverySelectShown"), "不应再有独立的选择当前结果工具栏");
+  assert.ok(detail.includes("pendingModels={pendingModels}"));
+  assert.ok(detail.includes("onImportPending={importPendingModel}"));
+  assert.ok(detail.includes("countAction={("), "刷新图标作为 countAction 传入");
+  assert.ok(detail.includes("<RefreshCw"));
+});
+
+test("导入并设为可见是一次点击：先写 models.json 再写 enabledModels", async () => {
+  const source = await readFile(new URL("../components/ModelsConfig.tsx", import.meta.url), "utf8");
+  const start = source.indexOf("const importModelAsVisible = useCallback");
+  assert.ok(start > 0, "必须有 importModelAsVisible");
+  const body = source.slice(start, source.indexOf("const handleSave = useCallback(async () => {\n    setSaving(true);", start));
+  const putModels = body.indexOf('method: "PUT"');
+  const putEnabled = body.indexOf('"/api/models-config/enabled"');
+  assert.ok(putModels > 0 && putEnabled > putModels, "必须先写 models.json、再写可见范围");
+  assert.ok(body.includes("providerName"), "可见范围按 provider 写入");
+  assert.ok(body.includes("modelIds"), "把当前勾选 + 新模型一起提交");
+});

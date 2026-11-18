@@ -563,8 +563,8 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
 | `POST /api/auth/login/{provider}` | ⚠️ | 501 + `{error}`：只有 `qoder-cn` 有 OAuth 登录，且走 GET（见下一行） |
 | `GET /api/auth/login/{provider}` | ✅ | `text/event-stream`（前端用 `EventSource`）。`qoder-cn` 走真实的设备码登录；其它 provider 只发一条 `{type:"error",message}` 就结束 |
 | `GET /api/models-config` | ✅ | 原样返回 `models.json` |
-| `PUT /api/models-config` | ✅ | 保留 `$schema`、清洗无 id 的模型、`cost` 缺项补 0 |
-| `DELETE /api/models-config` | ✅ | `{kind:"provider"\|"model", provider, modelId?}`，顺手清 `enabledModels` |
+| `PUT /api/models-config` | ✅ | 保留 `$schema`、清洗无 id 的模型、`cost` 缺项补 0。**写盘后当场重建运行时目录**（见差异 25），新增 provider / 模型立刻进入 `/api/models` 的 `modelList` |
+| `DELETE /api/models-config` | ✅ | `{kind:"provider"\|"model", provider, modelId?}`，顺手清 `enabledModels`；同样会重建目录，删掉的项不再出现在 `modelList` |
 | `GET /api/models-config/enabled?provider=` | ✅ | `{provider,models[],enabledModels,unscoped,warnings:string[],refreshing}`；`warnings` 是**字符串数组**（pi 取 `resolveModelScopeWithDiagnostics` 的 `diagnostics.map(d => d.message)`），前端逐条当文本渲染，给对象会整页崩。`apisets`（Coding）的清单来自远端目录缓存，空列表时会顺手发起一次后台刷新并回 `refreshing:true`（见差异 21） |
 | `PUT /api/models-config/enabled` | ✅ | `{provider,modelIds}` → 折叠成 `provider/*` 或逐条写 `settings.json` |
 | `POST /api/models-config/discover` | ✅ | 打上游 `/models` 并按 pi 的字段兼容表解析 → `{models,endpoint}` |
@@ -592,9 +592,10 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
 
 ### `/api/files` 的实现细节（阶段 5）
 
-- **路径形状**：三种都认 —— `/api/files//Users/me/a.ts`、`/api/files/Users/me/a.ts`、
-  `/api/files`（空 → 默认 cwd）。解析**只有一种解释**：去前导斜杠后从根拼回去，
-  不再猜「相对 cwd」，否则不存在的路径会被解析到别处、把 404 变成 403。
+- **路径形状**：POSIX 接受 `/api/files//Users/me/a.ts` 与 `/api/files/Users/me/a.ts`；
+  Windows 接受盘符路径（如 `/api/files/C%3A/project/a.ts`）、UNC 和 `\\?\` 扩展路径。
+  前端对 UNC 或扩展路径的双斜杠用 `%2F%2F` 保留，后端也兼容旧前端省略斜杠的 `?/…`。
+  URL 路径只解码一次；`/api/files` 和尾部仅有斜杠时使用默认 cwd。非空路径不猜测相对 cwd。
 - **授权**：两层 —— 词法包含（`within_roots`）+ realpath 包含（`within_roots_real`）。
   另外接受第二条通道：`?sessionId=` 对应的会话正文里提到过这个绝对路径（pi 的
   `isFilePathReferencedBySession`，边界判定含 `a.rs:12:5` 这类行列号）。
@@ -881,6 +882,34 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
     注意这层只装在 `AgentHarnessOptions::models`（活会话）上：同目录的
     `oneshot`（自动起标题 / commit message / 模型连通性测试）是「不重试、不落
     会话」的一次性补全，那边不能被改写文案。
+
+25. **`PUT`/`DELETE /api/models-config` 会当场重建运行时模型目录（pi 是每次请求重建）**：
+    toiler 的 `ModelCatalog` 是**启动时一次性构建的快照**，而 `/api/models` 的
+    `modelList` 直接读它。pi 那边 `/api/models` 里现场 `getAvailable()`（每次请求
+    都重新解析 `models.json`），所以不存在这个问题。
+
+    历史故障：设置页保存 `models.json` 后只写文件、不重建目录，用户新加的
+    provider 与模型**一个都不会出现在对话框的模型切换器里**，只有重启进程才
+    出现 —— 用户看到的就是「加了但没生效」。删除同理：已删的项留在 `modelList`
+    里，选中就报 `Model not found`。
+
+    修法：`AppState::reload_catalog_from_models_file()` 从落盘的 `models.json`
+    重建目录，再用 `AppState::sync_live_catalogs()` 推给所有活会话。活会话那一步
+    不能省：`LiveAgent` 各自持一份目录副本（它比一次请求活得久），只更新
+    `AppState` 的话，界面上的 `modelList` 有新模型、但 `set_model` 走旧副本仍报
+    `Model not found` —— 变成「选择器里有、一点就报错」。推的时候同步调
+    `harness.set_models()`，否则新 provider 的模型能选中却发不出去
+    （`No provider registered for model provider …`）。
+
+    重建失败时保留旧目录并把错误透给前端：宁可显示旧清单，也不要清空成空列表。
+    回归用例：`tests/model_refresh.rs::saving_models_config_exposes_new_providers_to_the_picker`、
+    `tests/model_refresh.rs::deleting_models_config_removes_them_from_the_picker`。
+
+    > 可见范围仍然是另一回事：`enabledModels` 白名单存在时，新 provider 的模型
+    > 仍需要在设置页勾选才会出现在对话框（与 pi 的语义一致）。界面上把「刷新上游
+    > 模型」入口做成勾选列表标题里的图标，发现的模型直接作为「待导入」行画进同一
+    > 个列表 —— 勾一下即完成导入并设为可见（前端发两次串行 PUT：先 `models.json`
+    > 再 `enabledModels`，因为后者会拒绝 `models.json` 里还不存在的模型）。
 
 ### 目录与文件
 

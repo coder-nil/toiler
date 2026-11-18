@@ -27,6 +27,58 @@ export function measureMinimapTurnPositions(
   return turns;
 }
 
+/** 视口带（轨道上的高亮胶囊）的最小高度。 */
+const MIN_BAND_HEIGHT = 16;
+/** 胶囊在区间两端最多外扩多少：半个节点间距在稀疏时（50px）会外扩到 25px，
+    单轮对话下那圈余量比横条本身厚好几倍，看起来像胶囊自己没对齐。 */
+const MAX_BAND_PAD = 10;
+/** 横条外沿与胶囊边之间留的空隙，避免胶囊把横条切在边上。 */
+const BAND_EDGE_INSET = 2;
+
+export interface MinimapBandInput {
+  /** 区间首个节点的中心线位置（px）。 */
+  firstCenter: number;
+  /** 区间末个节点的中心线位置（px）。 */
+  lastCenter: number;
+  /** 轨道总高度（px）。 */
+  trackHeight: number;
+  /** 相邻节点间距（px）。 */
+  gap: number;
+  /** 横条厚度（px）。 */
+  nodeThickness: number;
+}
+
+/**
+ * 把「当前视口覆盖的节点区间」换算成胶囊的 top / height。
+ *
+ * 不能用 `±gap / 2` 直接外扩：首尾节点没有相邻节点，外扩量一旦超过容器内边距
+ * 就会被 `max(0, …)` 裁掉，结果是胶囊贴着窗口顶端、横条偏在胶囊上半截（只有
+ * 一两轮对话时最明显）。所以端部外扩量要同时受容器边缘与 `MAX_BAND_PAD` 约束，
+ * 并且胶囊始终以区间中心线为轴 —— 横条才留在胶囊正中，顶部也不会贴边。
+ */
+export function resolveMinimapViewportBand({
+  firstCenter,
+  lastCenter,
+  trackHeight,
+  gap,
+  nodeThickness,
+}: MinimapBandInput): { top: number; height: number } | null {
+  if (!(trackHeight > 0)) return null;
+
+  const first = Math.max(0, Math.min(trackHeight, firstCenter));
+  const last = Math.max(first, Math.min(trackHeight, lastCenter));
+  const center = (first + last) / 2;
+  // 半径以 center 为轴：越过容器上下缘就会一侧被裁、横条再次偏心。
+  const maxHalf = Math.max(0, Math.min(center, trackHeight - center));
+  const halfSpan = (last - first) / 2;
+  const minPad = Math.max(0, nodeThickness) / 2 + BAND_EDGE_INSET;
+  const pad = Math.max(minPad, Math.min(gap / 2, MAX_BAND_PAD, maxHalf));
+  const half = Math.min(maxHalf, Math.max(MIN_BAND_HEIGHT / 2, halfSpan + pad));
+  const top = Math.max(0, center - half);
+
+  return { top, height: Math.max(0, Math.min(trackHeight - top, half * 2)) };
+}
+
 export function resolveMinimapViewport(
   positions: readonly MinimapTurnPosition[],
   scrollTop: number,

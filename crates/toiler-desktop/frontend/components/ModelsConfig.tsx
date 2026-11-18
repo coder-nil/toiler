@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
+import { RefreshCw } from "lucide-react";
 import { SelectPicker } from "./SelectPicker";
 import { EnabledModelsPicker } from "./EnabledModelsPicker";
 import { ProviderModelsPicker } from "./ProviderModelsPicker";
@@ -343,20 +344,18 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 
 // ── Provider detail ───────────────────────────────────────────────────────────
 
-function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddModels, onModelsChanged, savedTick }: {
+function ProviderDetail({ name, provider, onChange, onRename, onDelete, onImportModel, onModelsChanged, savedTick }: {
   name: string; provider: ProviderEntry;
   onChange: (p: ProviderEntry) => void; onRename: (n: string) => void; onDelete: () => void;
-  onAddModels: (models: DiscoveredModel[]) => void;
+  /** 导入一个上游模型并设为可见；外层负责两次串行 PUT。 */
+  onImportModel?: (providerName: string, model: DiscoveredModel) => Promise<boolean>;
   onModelsChanged?: () => void; savedTick?: number;
 }) {
   const { t } = useI18n();
   const [editingName, setEditingName] = useState(name);
   const [discoveryState, setDiscoveryState] = useState<ModelDiscoveryState>({ phase: "idle" });
-  const [discoveryQuery, setDiscoveryQuery] = useState("");
-  const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
-  const [modelInputOverrides, setModelInputOverrides] = useState<Record<string, ("text" | "image")[]>>({});
+  const [importingIds, setImportingIds] = useState<string[]>([]);
   const discoveryRequestIdRef = useRef(0);
-  const selectShownRef = useRef<HTMLInputElement>(null);
   useEffect(() => setEditingName(name), [name]);
   const set = <K extends keyof ProviderEntry>(k: K, v: ProviderEntry[K]) => onChange({ ...provider, [k]: v });
 
@@ -368,15 +367,13 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
   useEffect(() => {
     discoveryRequestIdRef.current += 1;
     setDiscoveryState({ phase: "idle" });
-    setDiscoveryQuery("");
-    setSelectedModelIds([]);
+    setImportingIds([]);
   }, [name, provider.baseUrl, provider.api, provider.apiKey]);
 
   const handleDiscoverModels = useCallback(async () => {
     if (!provider.baseUrl?.trim() || discoveryState.phase === "loading") return;
     const requestId = ++discoveryRequestIdRef.current;
     setDiscoveryState({ phase: "loading" });
-    setSelectedModelIds([]);
     try {
       const res = await fetch("/api/models-config/discover", {
         method: "POST",
@@ -396,61 +393,27 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
     }
   }, [discoveryState.phase, name, provider]);
 
+  // 上游发现到、尚未导入 models.json 的模型：直接作为待导入行画进勾选列表。
   const existingModelIds = new Set((provider.models ?? []).map((model) => model.id));
   const discoveredModels = discoveryState.phase === "success" ? discoveryState.models : [];
-  const normalizedDiscoveryQuery = discoveryQuery.trim().toLocaleLowerCase();
-  const filteredDiscoveredModels = discoveredModels.filter((model) => !normalizedDiscoveryQuery
-    || model.id.toLocaleLowerCase().includes(normalizedDiscoveryQuery)
-    || model.name?.toLocaleLowerCase().includes(normalizedDiscoveryQuery));
-  const shownDiscoveredModels = filteredDiscoveredModels.slice(0, 300);
-  const selectableShownIds = shownDiscoveredModels
-    .filter((model) => !existingModelIds.has(model.id))
-    .map((model) => model.id);
-  const selectedCount = selectedModelIds.filter((id) => !existingModelIds.has(id)).length;
-  const allShownSelected = selectableShownIds.length > 0
-    && selectableShownIds.every((id) => selectedModelIds.includes(id));
-  const someShownSelected = !allShownSelected
-    && selectableShownIds.some((id) => selectedModelIds.includes(id));
+  const pendingModels = discoveredModels.filter((model) => !existingModelIds.has(model.id));
 
-  useEffect(() => {
-    if (selectShownRef.current) selectShownRef.current.indeterminate = someShownSelected;
-  }, [someShownSelected]);
-
-  const toggleDiscoveredModel = (id: string) => {
-    setSelectedModelIds((current) => current.includes(id)
-      ? current.filter((entry) => entry !== id)
-      : [...current, id]);
-  };
-
-  const toggleModelInput = (id: string) => {
-    setModelInputOverrides((prev) => {
-      const current = prev[id] ?? ["text"];
-      const next: ("text" | "image")[] = current.includes("image") ? ["text"] : ["text", "image"];
-      return { ...prev, [id]: next };
+  /**
+   * 勾选一个待导入模型：导入 models.json + 写入可见范围。
+   *
+   * 两件事必须一起做。只导入不勾选的话，模型进了文件却不在可见范围里（用户看到的
+   * 仍然是「刷新完没生效」）；只勾选不导入则后台根本没有这个模型。
+   *
+   * 实际持久化交给外层的 `onImportModel`（它返回 Promise）：全程需要两次串行
+   * PUT，且顺序不能换（`PUT /enabled` 会拒绝 models.json 里不存在的模型）。
+   */
+  const importPendingModel = (id: string) => {
+    const model = discoveredModels.find((entry) => entry.id === id);
+    if (!model || importingIds.includes(id)) return;
+    setImportingIds((current) => [...current, id]);
+    void onImportModel?.(name, model).finally(() => {
+      setImportingIds((current) => current.filter((entry) => entry !== id));
     });
-  };
-
-  const toggleShownModels = () => {
-    const shownIds = new Set(selectableShownIds);
-    setSelectedModelIds((current) => allShownSelected
-      ? current.filter((id) => !shownIds.has(id))
-      : Array.from(new Set([...current, ...selectableShownIds])));
-  };
-
-  const addSelectedModels = () => {
-    if (discoveryState.phase !== "success") return;
-    const selected = new Set(selectedModelIds);
-    const additions = discoveryState.models
-      .filter((model) => selected.has(model.id) && !existingModelIds.has(model.id))
-      .map((model) => {
-        const override = modelInputOverrides[model.id];
-        if (override) return { ...model, input: override };
-        return model;
-      });
-    if (additions.length === 0) return;
-    onAddModels(additions);
-    setSelectedModelIds([]);
-    setModelInputOverrides({});
   };
 
   return (
@@ -500,130 +463,40 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
         </span>
       </Field>
 
-      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-          <button
-            onClick={handleDiscoverModels}
-            disabled={!provider.baseUrl?.trim() || discoveryState.phase === "loading"}
-            style={{
-              alignSelf: "flex-start", height: 30, padding: "0 12px", border: "1px solid var(--border)", borderRadius: 5,
-              background: "var(--bg-panel)", color: !provider.baseUrl?.trim() || discoveryState.phase === "loading" ? "var(--text-dim)" : "var(--text-muted)",
-              cursor: !provider.baseUrl?.trim() || discoveryState.phase === "loading" ? "not-allowed" : "pointer", fontSize: 11,
-            }}
-          >
-            {discoveryState.phase === "loading" ? t("models.discoveryFetching") : discoveryState.phase === "success" ? t("models.refreshProviderModels") : t("models.discoveryFetch")}
-          </button>
-
-        {discoveryState.phase === "error" && (
-          <div style={{ padding: "7px 9px", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 5, color: "#ef4444", fontSize: 11, lineHeight: 1.4 }}>
-            {discoveryState.message}
-          </div>
-        )}
-
-        {discoveryState.phase === "success" && (
-          <>
-            <input
-              value={discoveryQuery}
-              onChange={(event) => setDiscoveryQuery(event.target.value)}
-              placeholder={t("models.discoveryFilterPlaceholder", { count: discoveryState.models.length })}
-              aria-label={t("models.discoveryFilter")}
-              style={{ ...inputStyle, width: "100%", minWidth: 0 }}
-            />
-
-            <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)" }}>
-              <label
-                style={{
-                  minHeight: 32, padding: "5px 9px", display: "flex", alignItems: "center", gap: 8,
-                  position: "sticky", top: 0, zIndex: 1, borderBottom: "1px solid var(--border)",
-                  background: "var(--bg)", cursor: selectableShownIds.length ? "pointer" : "default",
-                  color: "var(--text-muted)", fontSize: 10, fontWeight: 600,
-                }}
-              >
-                <input
-                  ref={selectShownRef}
-                  type="checkbox"
-                  checked={allShownSelected}
-                  disabled={selectableShownIds.length === 0}
-                  onChange={toggleShownModels}
-                  style={{ width: 13, height: 13, accentColor: "var(--accent)", flexShrink: 0 }}
-                />
-                {t("models.discoverySelectShown")}
-              </label>
-              {shownDiscoveredModels.length === 0 ? (
-                <div style={{ padding: 12, color: "var(--text-dim)", fontSize: 11 }}>{t("models.discoveryNoMatches")}</div>
-              ) : shownDiscoveredModels.map((model, index) => {
-                const alreadyAdded = existingModelIds.has(model.id);
-                const checked = selectedModelIds.includes(model.id);
-                const effectiveInput = modelInputOverrides[model.id] ?? model.input ?? ["text"];
-                const capabilityLabel = effectiveInput.includes("image")
-                  ? t("models.capabilityTextImage")
-                  : t("models.capabilityText");
-                return (
-                  <label
-                    key={model.id}
-                    style={{
-                      minHeight: 36, padding: "6px 9px", display: "flex", alignItems: "center", gap: 8,
-                      borderTop: index === 0 ? "none" : "1px solid var(--border)", cursor: alreadyAdded ? "default" : "pointer",
-                      opacity: alreadyAdded ? 0.65 : 1,
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked || alreadyAdded}
-                      disabled={alreadyAdded}
-                      onChange={() => toggleDiscoveredModel(model.id)}
-                      style={{ width: 13, height: 13, accentColor: "var(--accent)", flexShrink: 0 }}
-                    />
-                    <span style={{ minWidth: 0, flex: 1 }}>
-                      <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text)", fontSize: 11 }}>{model.name ?? model.id}</span>
-                      {model.name && <code style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)" }}>{model.id}</code>}
-                    </span>
-                    {!alreadyAdded ? (
-                      <div style={{ display: "flex", alignItems: "center", gap: 4 }} onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          checked={effectiveInput.includes("image")}
-                          onChange={() => toggleModelInput(model.id)}
-                          title={t("models.imageInput")}
-                          style={{ width: 11, height: 11, accentColor: "var(--accent)", flexShrink: 0 }}
-                        />
-                        <span style={{ fontSize: 9, color: "var(--text-muted)", background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 4, padding: "1px 6px", whiteSpace: "nowrap" }}>
-                          {capabilityLabel}
-                        </span>
-                      </div>
-                    ) : (
-                      <span style={{ fontSize: 9, color: "var(--text-muted)", background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 4, padding: "1px 6px", whiteSpace: "nowrap" }}>
-                        {capabilityLabel}
-                      </span>
-                    )}
-                    {alreadyAdded && <span style={{ color: "var(--text-dim)", fontSize: 10 }}>{t("models.discoveryAdded")}</span>}
-                  </label>
-                );
-              })}
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-              <span title={discoveryState.endpoint} style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-dim)", fontSize: 10 }}>
-                {filteredDiscoveredModels.length > shownDiscoveredModels.length
-                  ? t("models.discoveryShowing", { shown: shownDiscoveredModels.length, total: filteredDiscoveredModels.length })
-                  : t("models.discoveryFetched", { count: discoveryState.models.length })}
-              </span>
-              <button
-                onClick={addSelectedModels}
-                disabled={selectedCount === 0}
-                style={{ height: 28, padding: "0 11px", border: "none", borderRadius: 5, background: selectedCount ? "var(--accent)" : "var(--bg-panel)", color: selectedCount ? "#fff" : "var(--text-dim)", cursor: selectedCount ? "pointer" : "not-allowed", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}
-              >
-                {selectedCount
-                  ? t("models.discoveryAddSelectedCount", { count: selectedCount })
-                  : t("models.discoveryAddSelected")}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
+      {/* 「导入模型」不再是一个独立区块：上游刷新入口挂在勾选列表标题里
+          （`countAction`），发现的模型直接画进同一个列表并标「待导入」。
+          早先两块分开时，用户刷新完还得在另一处导入、再回这一处勾选，很容易
+          以为「刷新完什么都没发生」。 */}
+      {discoveryState.phase === "error" && (
+        <div style={{ padding: "7px 9px", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 5, color: "#ef4444", fontSize: 11, lineHeight: 1.4 }}>
+          {discoveryState.message}
+        </div>
+      )}
 
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
-        <EnabledModelsPicker providerId={name} reloadKey={savedTick} onChanged={onModelsChanged} />
+        <EnabledModelsPicker
+          providerId={name}
+          reloadKey={savedTick}
+          onChanged={onModelsChanged}
+          pendingModels={pendingModels}
+          onImportPending={importPendingModel}
+          importingIds={importingIds}
+          countAction={(
+            <button
+              type="button"
+              onClick={() => void handleDiscoverModels()}
+              disabled={!provider.baseUrl?.trim() || discoveryState.phase === "loading"}
+              title={discoveryState.phase === "loading" ? t("models.discoveryFetching") : t("models.refreshProviderModels")}
+              aria-label={t("models.refreshProviderModels")}
+              aria-busy={discoveryState.phase === "loading"}
+              style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, padding: 0, border: "none", borderRadius: 4, background: "transparent", color: provider.baseUrl?.trim() ? "var(--text-muted)" : "var(--text-dim)", cursor: !provider.baseUrl?.trim() || discoveryState.phase === "loading" ? "not-allowed" : "pointer", flexShrink: 0 }}
+            >
+              <RefreshCw size={14} strokeWidth={1.8} aria-hidden="true" className={discoveryState.phase === "loading" ? "animate-spin" : undefined} />
+            </button>
+          )}
+        />
       </div>
+
     </div>
   );
 }
@@ -2361,26 +2234,6 @@ export function ModelsConfig({ embedded = false, onClose, onSaved }: ModelsConfi
     });
   }, []);
 
-  const addDiscoveredModels = useCallback((providerName: string, discovered: DiscoveredModel[]) => {
-    setConfig((prev) => {
-      const provider = prev.providers?.[providerName] ?? {};
-      const models = [...(provider.models ?? [])];
-      const existingIds = new Set(models.map((model) => model.id));
-      for (const discoveredModel of discovered) {
-        if (existingIds.has(discoveredModel.id)) continue;
-        existingIds.add(discoveredModel.id);
-        models.push({
-          id: discoveredModel.id,
-          ...(discoveredModel.name ? { name: discoveredModel.name } : {}),
-          ...(discoveredModel.contextWindow ? { contextWindow: discoveredModel.contextWindow } : {}),
-          ...(discoveredModel.maxTokens ? { maxTokens: discoveredModel.maxTokens } : {}),
-          ...(discoveredModel.input ? { input: [...discoveredModel.input] } : {}),
-        });
-      }
-      return { ...prev, providers: { ...(prev.providers ?? {}), [providerName]: { ...provider, models } } };
-    });
-  }, []);
-
   const updateModel = useCallback((providerName: string, index: number, m: ModelEntry) => {
     setConfig((prev) => {
       const provider = prev.providers?.[providerName] ?? {};
@@ -2405,6 +2258,82 @@ export function ModelsConfig({ embedded = false, onClose, onSaved }: ModelsConfi
     });
     setSelection({ type: "provider", name: providerName });
   }, [config.providers, persistDeletion]);
+
+  /**
+   * 导入上游模型并设为可见（一次点击完成两件事）。
+   *
+   * 先 PUT `models.json` 把模型写进去，再 PUT `enabledModels` 把它勾上。两步分开是
+   * 必须的：`PUT /api/models-config/enabled` 会拒绝 models.json 里还不存在的模型
+   * （报 `Unknown models for …`），所以顺序不能换。
+   *
+   * 任一步失败都把错误透出去，并让勾选区重拉列表（服务端可能已经落了一部分）。
+   */
+  const importModelAsVisible = useCallback(async (providerName: string, model: DiscoveredModel): Promise<boolean> => {
+    setSaveError(null);
+    setSavedOk(false);
+    // 拼一份带新模型的 models.json；`config` 里可能已经有用户刚改的字段，所以基于它改。
+    const provider = config.providers?.[providerName] ?? {};
+    const models = [...(provider.models ?? [])];
+    if (!models.some((entry) => entry.id === model.id)) {
+      models.push({
+        id: model.id,
+        ...(model.name ? { name: model.name } : {}),
+        ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+        ...(model.maxTokens ? { maxTokens: model.maxTokens } : {}),
+        ...(model.input ? { input: [...model.input] } : {}),
+      });
+    }
+    const payload: ModelsJson = {
+      ...config,
+      providers: { ...(config.providers ?? {}), [providerName]: { ...provider, models } },
+    };
+    try {
+      const res = await fetch("/api/models-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const d = await res.json() as { success?: boolean; error?: string };
+      if (!res.ok || d.error) {
+        setSaveError(d.error ?? `HTTP ${res.status}`);
+        return false;
+      }
+      setConfig(payload);
+      // 写可见范围：把服务端当前的勾选状态读回来，再把新模型加进去。
+      // （`PUT /enabled` 接收该 provider 的完整 modelIds，`provider/*` 折叠由服务端算。）
+      const current = await fetch(`/api/models-config/enabled?provider=${encodeURIComponent(providerName)}`);
+      const enabled = await current.json() as { models?: { id: string; selected: boolean }[]; error?: string };
+      if (!current.ok || enabled.error || !Array.isArray(enabled.models)) {
+        setSaveError(enabled.error ?? `HTTP ${current.status}`);
+        setSavedTick((tick) => tick + 1);
+        onSaved?.();
+        return false;
+      }
+      const modelIds = enabled.models
+        .filter((entry) => entry.selected || entry.id === model.id)
+        .map((entry) => entry.id);
+      const saveRes = await fetch("/api/models-config/enabled", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: providerName, modelIds }),
+      });
+      const saveData = await saveRes.json() as { error?: string };
+      if (!saveRes.ok || saveData.error) {
+        setSaveError(saveData.error ?? `HTTP ${saveRes.status}`);
+        setSavedTick((tick) => tick + 1);
+        onSaved?.();
+        return false;
+      }
+      setSavedOk(true);
+      setSavedTick((tick) => tick + 1);
+      onSaved?.();
+      setTimeout(() => setSavedOk(false), 2000);
+      return true;
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+  }, [config, onSaved]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -2460,7 +2389,7 @@ export function ModelsConfig({ embedded = false, onClose, onSaved }: ModelsConfi
           onChange={(p) => updateProvider(selection.name, p)}
           onRename={(n) => renameProvider(selection.name, n)}
           onDelete={() => deleteProvider(selection.name)}
-          onAddModels={(models) => addDiscoveredModels(selection.name, models)}
+          onImportModel={(providerName, model) => importModelAsVisible(providerName, model)}
           onModelsChanged={onSaved}
           savedTick={savedTick}
         />
