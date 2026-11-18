@@ -25,6 +25,7 @@
 //! - `/api/files//Users/me/a.ts`（保留前导斜杠的绝对路径）
 //! - `/api/files/Users/me/a.ts`（去掉前导斜杠）
 //! - `/api/files`（空路径 → 默认 cwd）
+//! - Windows：`/api/files/C%3A/proj/a.ts`，以及保留 UNC 或 `\\?\` 前缀的路径
 //!
 //! 授权分两层，与 pi 的 `getAllowedFileRoots` 对齐：先词法包含，再 realpath 包含
 //! （后者挡住「允许根里的符号链接逃逸」）。
@@ -96,26 +97,81 @@ pub struct FileParams {
     session_id: Option<String>,
 }
 
-/// 解析请求路径为绝对路径。
-///
-/// `..` 一律拒绕（pi 同样校验），避免把请求变成任意文件读取。
-///
-/// 与 pi 的 `filePathFromSegments` 同语义：**只有一种解释**——去掉前导斜杠后重新
-/// 从根拼回去。没有「相对 cwd」的分支，因为 pi 前端从不发相对路径；多一条猜测
-/// 只会让不存在的路径解析到别处（从而把 404 变成 403）。
+/// 解析 Axum 已解码的路径。只接受绝对路径的 URL 表示，不尝试相对 cwd 定位。
 #[allow(clippy::result_large_err)] // axum 的 Response 本身就是大结构，包一层只会更绕
-pub fn resolve(state: &AppState, raw: &str) -> Result<PathBuf, Response> {
-    let decoded = percent_decode(raw);
-    if decoded.split(['/', '\\']).any(|seg| seg == "..") {
+pub fn resolve(state: &AppState, path: &str) -> Result<PathBuf, Response> {
+    if path.contains('\0') || path.split(['/', '\\']).any(|seg| seg == "..") {
         return Err(bad_request("Invalid path"));
     }
-    let trimmed = decoded.trim_start_matches(['/', '\\']);
+    let trimmed = path.trim_start_matches(['/', '\\']);
     if trimmed.is_empty() {
         return Ok(state.default_cwd().to_path_buf());
     }
-    Ok(PathBuf::from(crate::sessions_store::normalize_path(
-        &format!("/{trimmed}"),
-    )))
+    #[cfg(windows)]
+    {
+        windows_file_path(path)
+            .map(PathBuf::from)
+            .ok_or_else(|| bad_request("Invalid path"))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(PathBuf::from(crate::sessions_store::normalize_path(
+            &format!("/{trimmed}"),
+        )))
+    }
+}
+
+/// 盘符根不能补 POSIX 前导 `/`；扩展路径必须用反斜杠，否则 Win32 不转换分隔符。
+#[cfg(any(windows, test))]
+fn windows_file_path(path: &str) -> Option<String> {
+    let slashed = path.replace('\\', "/");
+    // 旧版前端剥掉了 `//?/` 的前导斜杠，已登记的项目仍可能按 `?/…` 请求。
+    let (prefix, is_unc, body) = if let Some(body) = slashed
+        .strip_prefix("//?/")
+        .or_else(|| slashed.strip_prefix("?/"))
+    {
+        match body.strip_prefix("UNC/") {
+            Some(unc) => (r"\\?\UNC\", true, unc),
+            None => (r"\\?\", false, body),
+        }
+    } else if let Some(body) = slashed.strip_prefix("//") {
+        (r"\\", true, body)
+    } else {
+        ("", false, slashed.strip_prefix('/').unwrap_or(&slashed))
+    };
+    let parts: Vec<_> = body.split('/').collect();
+    let (root, tail) = match parts.as_slice() {
+        [server, share, tail @ ..]
+            if is_unc && valid_windows_segment(server) && valid_windows_segment(share) =>
+        {
+            (format!("{server}\\{share}"), tail)
+        }
+        [drive, tail @ ..]
+            if !is_unc
+                && matches!(drive.as_bytes(), [letter, b':'] if letter.is_ascii_alphabetic()) =>
+        {
+            (drive.to_string(), tail)
+        }
+        _ => return None,
+    };
+    let tail: Vec<_> = tail
+        .iter()
+        .copied()
+        .filter(|seg| !seg.is_empty() && *seg != ".")
+        .collect();
+    if !tail.iter().all(|seg| valid_windows_segment(seg)) {
+        return None;
+    }
+    // 盘符根被前端编码成 `C%3A`，须补回分隔符，不能变成盘符相对路径。
+    Some(format!("{prefix}{root}\\{}", tail.join("\\")))
+}
+
+#[cfg(any(windows, test))]
+fn valid_windows_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment != "."
+        && segment != ".."
+        && !segment.contains(['\0', ':', '?', '*', '"', '<', '>', '|'])
 }
 
 /// 会话正文里是否出现过这个绝对路径（pi 的 `containsExactPathReference`）。
@@ -275,8 +331,7 @@ pub async fn read_root(
     Query(params): Query<FileParams>,
     headers: HeaderMap,
 ) -> Response {
-    let cwd = state.default_cwd().to_string_lossy().to_string();
-    serve(&state, &cwd, params, &headers).await
+    serve(&state, "", params, &headers).await
 }
 
 async fn serve(state: &AppState, path: &str, params: FileParams, headers: &HeaderMap) -> Response {
@@ -290,26 +345,29 @@ async fn serve(state: &AppState, path: &str, params: FileParams, headers: &Heade
         Err(resp) => return resp,
     };
 
+    state.sync_allowed_roots();
+    let roots = state.roots().snapshot();
+    let in_roots = crate::paths::within_roots(&target, &roots);
+    // 会话引用只授权具体文件，不能枚举目录。未通过词法校验或引用授权前，
+    // 不查目标的元数据，避免仅凭一条未授权 UNC 路径就访问网络共享。
+    let allowed_by_reference = || {
+        raw_type != "list" && referenced_by_session(state, params.session_id.as_deref(), &target)
+    };
+    if !in_roots && !allowed_by_reference() {
+        return forbidden("Access denied");
+    }
+
     let meta = std::fs::metadata(&target).ok();
     // 目标不存在时用父目录做 realpath 判定（`?type=watch` 允许盯一个还没建的文件）。
     let existing_for_auth = if meta.is_some() {
-        target.clone()
+        &target
     } else {
-        target
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| target.clone())
+        target.parent().unwrap_or(&target)
     };
-
-    // 第二条授权途径（pi 的 `isFilePathReferencedBySession`）：路径不在允许根内，
-    // 但如果这个会话的正文里确实提到过它的绝对路径（agent 读过 / 写过），也放行。
-    // `list` 不适用：目录不属于「某个文件被引用」。
-    let in_roots = state.roots().allows(&target) && state.roots().allows_real(&existing_for_auth);
-    let allowed_by_reference = raw_type != "list"
-        && !in_roots
-        && referenced_by_session(state, params.session_id.as_deref(), &target);
-
-    if !allowed_by_reference && !authorize(state, &target, &existing_for_auth) {
+    if in_roots
+        && !crate::paths::within_roots_real(existing_for_auth, &roots)
+        && !allowed_by_reference()
+    {
         return forbidden("Access denied");
     }
 
@@ -955,6 +1013,10 @@ fn parse_rename_name(raw: &str) -> Option<String> {
     if name.contains('/') || name.contains('\\') || name.contains('\0') {
         return None;
     }
+    #[cfg(windows)]
+    if !valid_windows_segment(name) {
+        return None;
+    }
     Some(name.to_string())
 }
 
@@ -1036,6 +1098,11 @@ fn validate_upload_file_names(names: &[String]) -> Option<&'static str> {
         }
         if name.contains('/') || name.contains('\\') {
             return Some("File names must not contain a path");
+        }
+        // `PathBuf::join` 会把带盘符的名字当路径而非子文件名。
+        #[cfg(windows)]
+        if !valid_windows_segment(name) {
+            return Some("Invalid file name");
         }
         if !seen.insert(name.clone()) {
             return Some("Duplicate file name in upload");
@@ -1305,6 +1372,33 @@ mod tests {
         assert_eq!(parse_range("bytes=0-1,5-6", 1000), None);
         assert_eq!(parse_range("bytes=0-1", 0), None);
         assert_eq!(parse_range("items=0-1", 1000), None);
+    }
+
+    #[test]
+    fn decodes_windows_file_path_shapes_without_changing_their_roots() {
+        for (path, expected) in [
+            ("C:/项目 100%20/src", r"C:\项目 100%20\src"),
+            ("D:", "D:\\"),
+            ("//?/C:/project", r"\\?\C:\project"),
+            ("?/C:/project", r"\\?\C:\project"),
+            ("//server/share/project", r"\\server\share\project"),
+            (
+                "?/UNC/server/share/project",
+                r"\\?\UNC\server\share\project",
+            ),
+        ] {
+            assert_eq!(windows_file_path(path).as_deref(), Some(expected), "{path}");
+        }
+        for path in [
+            "project/src",
+            "D:project",
+            "C:/../project",
+            "//server",
+            "//./C:/project",
+            "//?/GLOBALROOT/project",
+        ] {
+            assert_eq!(windows_file_path(path), None, "{path}");
+        }
     }
 
     #[test]

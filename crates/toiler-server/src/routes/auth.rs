@@ -126,7 +126,16 @@ fn model_count(
 ) -> usize {
     let mut ids: BTreeSet<String> = BTreeSet::new();
     if let Some(provider) = builtin {
-        ids.extend(provider.models.iter().map(|model| (*model).to_string()));
+        // 已刷新过的目录以运行时快照为准，不再把旧静态表里的下架模型计入卡片。
+        let refreshed = crate::remote_models::read(state.models_file().path(), id).is_some()
+            || (id == crate::qoder_cn::PROVIDER_ID
+                && crate::qoder_cn::catalog::has_remote_cache(
+                    state.models_file().path(),
+                    state.auth(),
+                ));
+        if !refreshed {
+            ids.extend(provider.models.iter().map(|model| (*model).to_string()));
+        }
     }
     if let Some(list) = provider_config(models, id)
         .and_then(|config| config.get("models"))

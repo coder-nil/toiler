@@ -171,11 +171,14 @@ async fn get(router: axum::Router, uri: &str) -> Reply {
 /// 把绝对路径编码成前端 `encodeFilePathForApi` 的形状（去前导斜杠，逐段编码）。
 fn encode_path(path: &Path) -> String {
     let raw = path.to_string_lossy().replace('\\', "/");
-    raw.split('/')
+    let prefix = if raw.starts_with("//") { "%2F%2F" } else { "" };
+    let segments = raw
+        .split('/')
         .filter(|segment| !segment.is_empty())
         .map(url_encode)
         .collect::<Vec<_>>()
-        .join("/")
+        .join("/");
+    format!("{prefix}{segments}")
 }
 
 fn url_encode(segment: &str) -> String {
@@ -235,6 +238,54 @@ async fn files_list_hides_ignored_names_and_marks_git_roots() {
     assert_eq!(readme["size"], 0);
     assert_eq!(readme["modified"], "");
 
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn files_list_and_read_project_paths_from_directory_picker() {
+    // FileExplorer：项目可手动输入，也可选择 `/api/cwd/browse` 返回的 realpath。
+    // Windows 下这两种形式分别覆盖普通盘符路径和 `\\?\` 扩展路径。
+    let root = fixture_root("picker-files");
+    let project = root.join("项目 100%20");
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    let name = "说明 %2E.txt";
+    std::fs::write(project.join(name), "project contents").unwrap();
+    let configs = root.join("configs");
+    let router = app_with_agent_dir(&root.join("sessions"), &workspace, Some(&configs));
+    let browse_url = format!(
+        "/api/cwd/browse?path={}",
+        url_encode(&project.to_string_lossy())
+    );
+    let browse = get(router.clone(), &browse_url).await;
+    assert_eq!(browse.status, StatusCode::OK, "{}", browse.text());
+    let browse_body = browse.json();
+    let from_picker = browse_body["path"].as_str().unwrap();
+
+    for selected in [project.as_path(), Path::new(from_picker)] {
+        let payload = json!({ "cwd": selected }).to_string();
+        let validated = call(
+            router.clone(),
+            "POST",
+            "/api/cwd/validate",
+            Some(&payload),
+            &[],
+        )
+        .await;
+        assert_eq!(validated.status, StatusCode::OK, "{}", validated.text());
+        let validated = validated.json();
+        let cwd = Path::new(validated["cwd"].as_str().unwrap());
+        let url = format!("/api/files/{}?type=list", encode_path(cwd));
+        let listed = get(router.clone(), &url).await;
+        assert_eq!(listed.status, StatusCode::OK, "{url}: {}", listed.text());
+        assert_eq!(listed.json()["entries"][0]["name"], name);
+
+        let url = format!("/api/files/{}?type=read", encode_path(&cwd.join(name)));
+        let file = get(router.clone(), &url).await;
+        assert_eq!(file.status, StatusCode::OK, "{url}: {}", file.text());
+        assert_eq!(file.json()["content"], "project contents");
+    }
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -563,9 +614,41 @@ async fn files_watch_emits_named_sse_events() {
 #[tokio::test]
 async fn files_get_refuses_paths_outside_allowed_roots() {
     let root = fixture_root("deny");
-    let reply = get(app(&root, &root), "/api/files/etc/hosts?type=read").await;
+    let allowed = root.join("allowed");
+    std::fs::create_dir(&allowed).unwrap();
+    let outside = root.join("outside.txt");
+    std::fs::write(&outside, "outside").unwrap();
+    let router = app_with_agent_dir(
+        &root.join("sessions"),
+        &allowed,
+        Some(&root.join("configs")),
+    );
+    let url = format!("/api/files/{}?type=read", encode_path(&outside));
+    let reply = get(router, &url).await;
     assert_eq!(reply.status, StatusCode::FORBIDDEN);
     assert_eq!(reply.json()["error"], "Access denied");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn files_get_refuses_symlinks_outside_allowed_roots() {
+    // 文件面板可以看到符号链接的名字，但打开时仍要检查 realpath。
+    let root = fixture_root("deny-symlink");
+    let allowed = root.join("allowed");
+    std::fs::create_dir(&allowed).unwrap();
+    let outside = root.join("outside.txt");
+    std::fs::write(&outside, "outside").unwrap();
+    let link = allowed.join("link.txt");
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    let router = app_with_agent_dir(
+        &root.join("sessions"),
+        &allowed,
+        Some(&root.join("configs")),
+    );
+    let url = format!("/api/files/{}?type=read", encode_path(&link));
+    let reply = get(router, &url).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -580,11 +663,13 @@ async fn files_get_rejects_unknown_types_and_dotdot_escapes() {
         StatusCode::BAD_REQUEST
     );
 
-    let escape = format!("/api/files/{}/../etc/hosts", encode_path(&root));
-    assert_eq!(
-        get(app(&root, &root), &escape).await.status,
-        StatusCode::BAD_REQUEST
-    );
+    for parent in ["..", "%2E%2E"] {
+        let escape = format!("/api/files/{}/{parent}/etc/hosts", encode_path(&root));
+        assert_eq!(
+            get(app(&root, &root), &escape).await.status,
+            StatusCode::BAD_REQUEST
+        );
+    }
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -4692,6 +4777,108 @@ async fn new_session_honours_tool_names_and_bash_rule() {
         Some(value) => std::env::set_var("TOILER_AGENT_DIR", value),
         None => std::env::remove_var("TOILER_AGENT_DIR"),
     }
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+    std::fs::remove_dir_all(&project).ok();
+}
+
+/// 系统提示词的 `<skills>` 段：**名称 + 说明 + 绝对路径**都要在里面。
+///
+/// 这是曾经完全缺失的一节：`compose()` 只产出 tools / rules / project_context /
+/// cwd 四段，而 `AgentHarnessResources.skills` 也从未被填过，于是用户在技能面板
+/// 里看到一堆启用的技能，模型的系统提示词里却一个都不提 —— 它永远不知道该去哪里
+/// 读这些技能。两个消费方现在共用 `crate::skills` 的扫描结果，面板与提示词
+/// 不会再分叉。
+#[tokio::test]
+// 串行锁跨 await 持有是故意的（同其余改 `TOILER_AGENT_DIR` 的用例）。
+#[allow(clippy::await_holding_lock)]
+async fn system_prompt_lists_skills_with_name_description_and_path() {
+    let _env = env_guard();
+    let root = fixture_root("promptskills");
+    let agent_dir = fixture_root("promptskills-agent");
+    let project = fixture_root("promptskills-project");
+
+    // 名字取成本机不会存在的串，避免用户的 `~/.agents/skills` 混进断言。
+    let visible = project.join(".agents/skills/toiler-prompt-demo");
+    std::fs::create_dir_all(&visible).unwrap();
+    std::fs::write(
+        visible.join("SKILL.md"),
+        "---\nname: toiler-prompt-demo\ndescription: 演示提示词里的技能段\n---\n\n正文\n",
+    )
+    .unwrap();
+    let dormant = project.join(".agents/skills/toiler-prompt-dormant");
+    std::fs::create_dir_all(&dormant).unwrap();
+    std::fs::write(
+        dormant.join("SKILL.md"),
+        "---\nname: toiler-prompt-dormant\ndescription: 不该进提示词\ndisable-model-invocation: true\n---\n",
+    )
+    .unwrap();
+
+    // 项目技能只在项目被信任时加载（与 `/api/skills` 的 projectResourcesLoaded 同源）。
+    toiler_server::trust::TrustStore::at(agent_dir.join("trust.json"))
+        .set(project.to_str().unwrap(), Some(true))
+        .unwrap();
+
+    let cwd = project.to_string_lossy().to_string();
+    let dir = root.join(toiler_session::session_directory_name(&cwd));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(toiler_session::session_file_name(1794292904441, "sess-skills")),
+        format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"sess-skills\",\"timestamp\":\"2026-11-10T06:41:44.441Z\",\"cwd\":{}}}\n",
+            serde_json::to_string(&cwd).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let router = app_with_two_models(&root, &project, &agent_dir);
+    let zh = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-skills",
+        Some(r#"{"type":"set_ui_locale","locale":"zh-CN"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(zh.status, StatusCode::OK, "{}", zh.text());
+    let prompt = zh.json()["data"]["systemPrompt"]
+        .as_str()
+        .expect("set_ui_locale 必须返回 systemPrompt")
+        .to_string();
+
+    assert!(prompt.contains("<skills>"), "技能段缺失：{prompt}");
+    assert!(prompt.contains("toiler-prompt-demo"), "{prompt}");
+    assert!(
+        prompt.contains("演示提示词里的技能段"),
+        "技能说明要进提示词：{prompt}"
+    );
+    assert!(
+        prompt.contains(&format!(
+            "文件：{}/.agents/skills/toiler-prompt-demo/SKILL.md",
+            project.display()
+        )),
+        "要给绝对路径，模型才能 read：{prompt}"
+    );
+    // `disable-model-invocation: true` 的技能不进提示词（仍可 `/skill:` 显式调用）。
+    assert!(!prompt.contains("toiler-prompt-dormant"), "{prompt}");
+
+    // 切到英文：同一套结构，文案换成英文。
+    let en = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-skills",
+        Some(r#"{"type":"set_ui_locale","locale":"en"}"#),
+        &[],
+    )
+    .await;
+    let english = en.json()["data"]["systemPrompt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(english.contains("<skills>"), "{english}");
+    assert!(english.contains("toiler-prompt-demo"), "{english}");
+    assert!(english.contains("read its file in full"), "{english}");
+
     std::fs::remove_dir_all(&root).ok();
     std::fs::remove_dir_all(&agent_dir).ok();
     std::fs::remove_dir_all(&project).ok();

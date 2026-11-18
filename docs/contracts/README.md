@@ -146,9 +146,21 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 
 `systemPrompt`、`extensionStatuses`、`extensionWidgets`、
 `pendingUiRequests` 的含义：`systemPrompt` 的值是**实际发给模型的那一份**提示词：
-`preamble → <tools> → <rules> → <project_context> → <cwd>` 分节
+`preamble → <tools> → <rules> → <skills> → <project_context> → <cwd>` 分节
 （`system_prompt.rs`），与 pi 的 `effectiveSystemPrompt()` 同义。缺了它前端面板
 会一直显示「系统提示词尚未加载」，所以它是契约的一部分，不是可选字段。
+
+`<skills>` 段的内容与 `GET /api/skills` **同源**（`crate::skills::load`），
+每条是「名称: 说明」加一行「文件：<SKILL.md 绝对路径>」。两条门控：
+
+- 没有 `read` 工具时整节不出现（技能正文只能靠 `read` 打开）；
+- `disable-model-invocation: true` 的技能不列（面板里仍可见、仍可 `/skill:名称` 显式调用）。
+
+与 pi 的差异：pi（及 rpi 的 `format_skills_for_system_prompt`）用英文的
+`<available_skills>` 列表，toiler 按界面语言自己拼中文/英文 `<skills>` 段。
+为避免出现两份清单，装进 `AgentHarnessResources.skills` 的每个技能都带
+`disable_model_invocation: true`：rpi 的可见性过滤会跳过它们，但
+`/skill:名称` 的展开仍能查到（`expand_skill_input` 不过滤这个标志）。
 
 `get_tools` 返回 `[{name, description, active}]`，`set_tools`
 （`{"type":"set_tools","toolNames":[…]}`）返回 `null`。前端打开会话就用
@@ -298,21 +310,29 @@ qoder-cn 的同进程回环转发方式：`POST /reasoning-summary/{token}/v1/re
 ```
 
 - 顺序由前端自己排（`disableModelInvocation` 升序 → 名字），后端不必保证。
-- 同名技能：**项目与用户之间合并**（同名也各留一条，项目在前）；**用户目录之间按名字去重**
-  （`~/.agents/skills` 与 `~/.pi/agent/skills` 常有同一份副本）。pi 是全局按 name 去重，
-  项目版本会把用户版本顶掉 —— 这里刻意不同。
+- 同名技能：**项目与用户之间合并**（同名也各留一条，项目在前）。pi 是全局按 name 去重，
+  项目版本会把用户版本顶掉 —— 这里刻意不同。同一个文件被扫到两次才按 `filePath` 去重。
 - `sourceInfo` 决定前端的组：`user` → Global，`project` → Project；两者都没有时落到 Other。
 - `SKILL.md` **缺 `description`** 会被直接丢弃且**不产生诊断**（pi 与 toiler 一致），
   “技能写好了却不显示”先查 frontmatter（如新建的 `k8s-deploy` 曾因此消失）。
+- 这份列表与系统提示词的 `<skills>` 段**共享同一份扫描结果**
+  （`crate::skills::load`）。只改一处扫描规则而漏了另一处，就会出现「面板里
+  启用了、模型却看不到」这种静默失效 —— 以前正是如此（提示词里根本没有技能段）。
 
 ### 技能目录（决定「不同项目不同技能」）
+
+**只有两个来源**：一个项目目录 + 一个用户目录。
 
 | 来源 | 扫描范围 | `scope` |
 |---|---|---|
 | 项目 | **`$project/.agents/skills` 一层**。`$project` = 从 `cwd` 向上最近的 git 仓库根；不在 git 里就是 `cwd` 本身（跳过 `~/.agents/skills`） | `project` |
-| 用户 | `~/.agents/skills`（跨工具） | `user` |
-| 用户 | `~/.pi/agent/skills`（pi 的 agent 目录，迁移用户默认就在这） | `user` |
-| 用户 | `~/.agents/toiler/skills`（toiler 自己的 agent 目录） | `user` |
+| 用户 | `~/.agents/skills` | `user` |
+
+**不扫** `~/.pi/agent/skills`（pi 的 agent 目录）与 `~/.agents/toiler/skills`：
+技能目录只有一处约定，用户不必猜自己的技能为什么在一个地方生效、换个 agent 目录
+就失效。从 pi 迁过来的用户想继续用原有技能，把目录搬（或链接）到
+`~/.agents/skills` 即可——首次启动的配置播种只搬 `auth/models/settings/trust/
+git-credentials` 五份文件，**不搬技能目录**。
 
 两条前提，对应 pi 的 `collectAncestorAgentsSkillDirs` + `projectTrusted`：
 
@@ -417,6 +437,32 @@ const displayModel = match ?? nextModelList[0];
 回归用例：`tests/regression.rs::models_dict_and_list_share_the_same_keys`、
 `tests/regression.rs::thinking_levels_match_pi_semantics`。
 
+## POST /api/models-config/refresh（Toiler 扩展）
+
+依据：API Key 供应商详情与已实现订阅供应商详情原先只有本地目录重读，没有远端模型刷新入口；
+新增与前端刷新图标配套的写侧接口，不改变原有 `/discover`（仅发现、不落盘）的含义。
+
+请求：`{providerName:"openai"}`，只传内置供应商 id，凭据不返回浏览器。
+成功返回 `{models:[{id,name?,contextWindow?,maxTokens?,input?}],endpoint,refreshed:true}`。
+Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，并按当前 OAuth 账号缓存。
+
+- 用已保存的凭据请求远端 `/models`；普通供应商结果写入同目录的
+  `models-store.json`（`etag=builtin-models-api-v1`），并立即注入运行时目录；
+  Coding 继续走自己的多协议映射和 `apisets-models-api-v2` 缓存。
+- 不重写 `models.json` 或 `settings.json`；用户模型与远端目录取并集，同 id
+  优先采用用户元数据。远端旧模型会被新快照替换；失败不会清空旧缓存。
+- `qoder-cn` 的缓存带 `accountUid`：换个账号登录后旧账号的模型不会串用。
+- `enabledModels` 白名单原样保留：新模型不一定自动显示在对话框，要在设置中勾选。
+  普通供应商重启复用缓存，只在用户手动刷新时联网；Coding 保留原有启动预热。
+- 400：缺供应商/Key/Base URL、不适用的供应商；409：已有刷新在进行；
+  501：协议尚不支持或该订阅尚未实现目录刷新；502：上游拒绝、非 JSON 或空模型列表；
+  504：超时。接口沿用 Host/Origin 校验，订阅令牌不会降级用作 API Key。
+- 订阅分流：`qoder-cn` 要求 OAuth 已登录，用 COSY 签名的官方 `GET /algo/api/v2/model/list?Encode=1`
+  （20 秒超时、不跟重定向；401/403 先续期一次）；目录写入同一个 `models-store.json`
+  （`etag=qoder-cn-models-api-v1`、`accountUid`），账号变化后自动回落静态快照；
+  刷新成功会重建运行时目录，新模型在对话里可直接选用。其它 OAuth 订阅返回 501。
+  Qoder CN 若存在同名用户自定义 provider 配置，改用自定义 Provider 的导入模型入口。
+
 ## GET /api/mobile/state
 
 查询参数：`session`（id）、`cwd`、`limit`。
@@ -489,7 +535,7 @@ const displayModel = match ?? nextModelList[0];
 | `PATCH /api/files/{*path}` | ✅ | 重命名；纯文件名校验；撞名 409 `already_exists` |
 | `POST /api/files/{*path}` | ✅ | `?type=upload-check` / `?type=upload&conflict=error\|overwrite\|skip`；25MB 单文件 / 100MB 总量；部分成功 207 |
 | `GET /api/models` | ✅ | `{models, modelList, defaultModel, thinkingLevels, thinkingLevelMaps, thinkingLevelPins, source}` 全对齐；`models` 是 `provider:id` 字典；`defaultModel` 与建会话共用 `AppState::default_model_ref()`，**必定是 `modelList` 里的一项**（见下方「`defaultModel` 必须在 `modelList` 里」） |
-| `GET /api/skills` | ⚠️ | 项目技能：`$project/.agents/skills`（项目根 = 最近 git 根，需已信任）；用户技能：`~/.agents/skills` + `~/.pi/agent/skills` + `~/.agents/toiler/skills`，三者按名字去重；两组合并返回（同名不互相顶掉）。pi 的 `skillPaths`/package 技能没有（无 package 系统），`usageCount` 与缓存也不提供（`cacheHit` 恒 false） |
+| `GET /api/skills` | ⚠️ | 项目技能：`$project/.agents/skills`（项目根 = 最近 git 根，需已信任）；用户技能：`~/.agents/skills`；两组合并返回（同名不互相顶掉）。不扫 `~/.pi/agent/skills` / `~/.agents/toiler/skills`。pi 的 `skillPaths`/package 技能没有（无 package 系统），`usageCount` 与缓存也不提供（`cacheHit` 恒 false） |
 | `POST /api/skills/search` | ❌ | 501：技能市场（PLAN 已砍） |
 | `POST /api/skills/install` | ❌ | 501：技能市场（PLAN 已砍） |
 | `POST /api/skills/check\|update\|remove` | ❌ | 501：技能包管理未实现，只加载本地技能 |
@@ -517,11 +563,12 @@ const displayModel = match ?? nextModelList[0];
 | `POST /api/auth/login/{provider}` | ⚠️ | 501 + `{error}`：只有 `qoder-cn` 有 OAuth 登录，且走 GET（见下一行） |
 | `GET /api/auth/login/{provider}` | ✅ | `text/event-stream`（前端用 `EventSource`）。`qoder-cn` 走真实的设备码登录；其它 provider 只发一条 `{type:"error",message}` 就结束 |
 | `GET /api/models-config` | ✅ | 原样返回 `models.json` |
-| `PUT /api/models-config` | ✅ | 保留 `$schema`、清洗无 id 的模型、`cost` 缺项补 0 |
-| `DELETE /api/models-config` | ✅ | `{kind:"provider"\|"model", provider, modelId?}`，顺手清 `enabledModels` |
+| `PUT /api/models-config` | ✅ | 保留 `$schema`、清洗无 id 的模型、`cost` 缺项补 0。**写盘后当场重建运行时目录**（见差异 25），新增 provider / 模型立刻进入 `/api/models` 的 `modelList` |
+| `DELETE /api/models-config` | ✅ | `{kind:"provider"\|"model", provider, modelId?}`，顺手清 `enabledModels`；同样会重建目录，删掉的项不再出现在 `modelList` |
 | `GET /api/models-config/enabled?provider=` | ✅ | `{provider,models[],enabledModels,unscoped,warnings:string[],refreshing}`；`warnings` 是**字符串数组**（pi 取 `resolveModelScopeWithDiagnostics` 的 `diagnostics.map(d => d.message)`），前端逐条当文本渲染，给对象会整页崩。`apisets`（Coding）的清单来自远端目录缓存，空列表时会顺手发起一次后台刷新并回 `refreshing:true`（见差异 21） |
 | `PUT /api/models-config/enabled` | ✅ | `{provider,modelIds}` → 折叠成 `provider/*` 或逐条写 `settings.json` |
 | `POST /api/models-config/discover` | ✅ | 打上游 `/models` 并按 pi 的字段兼容表解析 → `{models,endpoint}` |
+| `POST /api/models-config/refresh` | ✅ | Toiler 扩展：刷新内置 API Key 或已实现订阅供应商的远端目录，缓存并注入运行时，保留用户配置与白名单 |
 | `POST /api/models-config/test` | ✅ | 真跑一次补全 → `{ok,latencyMs,status,responseText}` |
 | `GET /api/models-config/catalog` | ⚠️ | models.dev 目录已砍，返回空表 + `note` |
 | `GET /api/git?cwd=` | ✅ | 分支/上游/增删/未跟踪/凭据类型/进行中的操作；`tags` 是 toiler 追加的字段（见差异 22） |
@@ -545,9 +592,10 @@ const displayModel = match ?? nextModelList[0];
 
 ### `/api/files` 的实现细节（阶段 5）
 
-- **路径形状**：三种都认 —— `/api/files//Users/me/a.ts`、`/api/files/Users/me/a.ts`、
-  `/api/files`（空 → 默认 cwd）。解析**只有一种解释**：去前导斜杠后从根拼回去，
-  不再猜「相对 cwd」，否则不存在的路径会被解析到别处、把 404 变成 403。
+- **路径形状**：POSIX 接受 `/api/files//Users/me/a.ts` 与 `/api/files/Users/me/a.ts`；
+  Windows 接受盘符路径（如 `/api/files/C%3A/project/a.ts`）、UNC 和 `\\?\` 扩展路径。
+  前端对 UNC 或扩展路径的双斜杠用 `%2F%2F` 保留，后端也兼容旧前端省略斜杠的 `?/…`。
+  URL 路径只解码一次；`/api/files` 和尾部仅有斜杠时使用默认 cwd。非空路径不猜测相对 cwd。
 - **授权**：两层 —— 词法包含（`within_roots`）+ realpath 包含（`within_roots_real`）。
   另外接受第二条通道：`?sessionId=` 对应的会话正文里提到过这个绝对路径（pi 的
   `isFilePathReferencedBySession`，边界判定含 `a.rs:12:5` 这类行列号）。
@@ -603,10 +651,10 @@ const displayModel = match ?? nextModelList[0];
    `modelCount` 取内置目录的 chat 模型数，加上 `models.json` 同名 provider 的模型并去重。
 
    仍然缺的部分：
-   - **内置模型目录没带过来**：`/api/models` 依旧只读 `models.json` + 内置静态目录
-     （`qoder-cn` 的快照、`apisets` 的远端缓存，见差异 21），pi 目录里其余 40 家的
-     模型清单没搬，所以选中那些供应商、填了 API Key 之后，还得自己把模型 id 写进
-     `models.json`。
+   - **内置模型目录并非完整静态快照**：`/api/models` 读取 `models.json` + 内置目录
+     （`qoder-cn` 的快照、`apisets` 的远端缓存，见差异 21），普通 API Key 供应商
+     可在详情页点「刷新模型列表」直接请求兼容的 `/models` 并缓存（见上述 Toiler 扩展）。
+     不提供模型发现接口或协议不受支持的供应商仍需手动配置，未引入 models.dev。
    - **OAuth 登录**（差异 7）：`/api/auth/providers` 里那 10 家照样列出来。
      `qoder-cn` 可以真的登录（设备码 + COSY 签名全部移植，模型能直接对话）；
      其余 9 家点「Login」只会拿到一条「OAuth 登录未实现」的 SSE 错误，其中 8 家是
@@ -627,8 +675,9 @@ const displayModel = match ?? nextModelList[0];
    所以把模型的 `baseUrl` 指到本进程，由它做 COSY 签名 + 请求体改写 + SSE 信封解包
    （等价于 pi 的 `withQoderCnFetch`）。路径令牌是进程启动时的随机串，且只收
    loopback 对端 —— 这条端点会带着账号凭据刷上游额度。
-   与 pi 的差异：模型目录用内置静态快照（pi 登录后还会拉一次官方 `model/list`）；
-   `user/plan`、`quota/usage` 这些用量接口没移植。
+   与 pi 的差异：模型目录默认使用静态快照；设置页刷新时，已登录的 Qoder CN 会用
+   OAuth 凭据和 COSY 签名请求官方 `model/list`，目录缓存绑定当前账号并同步到本机
+   转发层；其它未实现 OAuth 目录链路的订阅会返回明确提示。
 9. **`/api/auth/api-key/{provider}` 的 `displayName`** 取 `models.json` 的 `name`，缺省用 id
    （pi 取 models.dev 的展示名）。
 10. **git 凭据**：与 pi 同格式 —— AES-256-GCM 加密存进 `git-credentials.json`
@@ -833,6 +882,34 @@ const displayModel = match ?? nextModelList[0];
     注意这层只装在 `AgentHarnessOptions::models`（活会话）上：同目录的
     `oneshot`（自动起标题 / commit message / 模型连通性测试）是「不重试、不落
     会话」的一次性补全，那边不能被改写文案。
+
+25. **`PUT`/`DELETE /api/models-config` 会当场重建运行时模型目录（pi 是每次请求重建）**：
+    toiler 的 `ModelCatalog` 是**启动时一次性构建的快照**，而 `/api/models` 的
+    `modelList` 直接读它。pi 那边 `/api/models` 里现场 `getAvailable()`（每次请求
+    都重新解析 `models.json`），所以不存在这个问题。
+
+    历史故障：设置页保存 `models.json` 后只写文件、不重建目录，用户新加的
+    provider 与模型**一个都不会出现在对话框的模型切换器里**，只有重启进程才
+    出现 —— 用户看到的就是「加了但没生效」。删除同理：已删的项留在 `modelList`
+    里，选中就报 `Model not found`。
+
+    修法：`AppState::reload_catalog_from_models_file()` 从落盘的 `models.json`
+    重建目录，再用 `AppState::sync_live_catalogs()` 推给所有活会话。活会话那一步
+    不能省：`LiveAgent` 各自持一份目录副本（它比一次请求活得久），只更新
+    `AppState` 的话，界面上的 `modelList` 有新模型、但 `set_model` 走旧副本仍报
+    `Model not found` —— 变成「选择器里有、一点就报错」。推的时候同步调
+    `harness.set_models()`，否则新 provider 的模型能选中却发不出去
+    （`No provider registered for model provider …`）。
+
+    重建失败时保留旧目录并把错误透给前端：宁可显示旧清单，也不要清空成空列表。
+    回归用例：`tests/model_refresh.rs::saving_models_config_exposes_new_providers_to_the_picker`、
+    `tests/model_refresh.rs::deleting_models_config_removes_them_from_the_picker`。
+
+    > 可见范围仍然是另一回事：`enabledModels` 白名单存在时，新 provider 的模型
+    > 仍需要在设置页勾选才会出现在对话框（与 pi 的语义一致）。界面上把「刷新上游
+    > 模型」入口做成勾选列表标题里的图标，发现的模型直接作为「待导入」行画进同一
+    > 个列表 —— 勾一下即完成导入并设为可见（前端发两次串行 PUT：先 `models.json`
+    > 再 `enabledModels`，因为后者会拒绝 `models.json` 里还不存在的模型）。
 
 ### 目录与文件
 

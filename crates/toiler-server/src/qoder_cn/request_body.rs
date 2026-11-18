@@ -15,7 +15,8 @@ use serde_json::{json, Map, Value};
 use uuid::Uuid;
 
 use super::base64;
-use super::constants::{CatalogEntry, COSY_VERSION, DEFAULT_USER_TYPE};
+use super::catalog::CatalogModel;
+use super::constants::{COSY_VERSION, DEFAULT_USER_TYPE};
 
 /// 文本化工具历史时，assistant 请求调用工具的那行标记。
 const TOOL_CALL_MARKER: &str = "[assistant 请求调用工具]";
@@ -360,7 +361,7 @@ fn pick_max_tokens(body: &Value) -> Option<i64> {
     None
 }
 
-fn pick_effort(body: &Value, catalog: &CatalogEntry) -> Option<String> {
+fn pick_effort(body: &Value, catalog: &CatalogModel) -> Option<String> {
     let raw = body.get("reasoning_effort").and_then(Value::as_str)?;
     if raw.is_empty() || catalog.efforts.is_empty() {
         return None;
@@ -410,7 +411,7 @@ pub struct Conversation {
 pub fn build_request_body(
     openai_body: &Value,
     model_key: &str,
-    catalog: &CatalogEntry,
+    catalog: &CatalogModel,
     user_type: Option<&str>,
     conversation: Option<&Conversation>,
 ) -> String {
@@ -597,8 +598,8 @@ mod tests {
             "reasoning_effort": "medium",
             "tools": [{"type": "function", "function": {"name": "read", "parameters": {}}}],
         });
-        let entry = catalog_entry("qmodel_38max").unwrap();
-        let encoded = build_request_body(&openai, "qmodel_38max", entry, Some("personal"), None);
+        let entry = CatalogModel::from(catalog_entry("qmodel_38max").unwrap());
+        let encoded = build_request_body(&openai, "qmodel_38max", &entry, Some("personal"), None);
         let decoded = base64::decode(&encoded).expect("解码");
         let body: Value = serde_json::from_slice(&decoded).expect("JSON");
         assert_eq!(body["model_config"]["key"], "qmodel_38max");
@@ -619,8 +620,8 @@ mod tests {
             "reasoning_effort": "minimal",
         });
         // auto 目录没有档位 → 不接受任何 effort
-        let auto = catalog_entry("auto").unwrap();
-        let encoded = build_request_body(&openai, "auto", auto, None, None);
+        let auto = CatalogModel::from(catalog_entry("auto").unwrap());
+        let encoded = build_request_body(&openai, "auto", &auto, None, None);
         let body: Value = serde_json::from_slice(&base64::decode(&encoded).unwrap()).unwrap();
         assert!(body["parameters"].get("reasoning_effort").is_none());
     }

@@ -54,6 +54,8 @@ tools/
 | `paths.rs` | 目录约定 + 允许访问的根目录（词法 + realpath 两层判定） |
 | `security.rs` | Host 白名单 + Origin 同源校验（**不是** Basic Auth） |
 | `session_view.rs` | 会话投影：tree / 分页 / `totalActiveMs` |
+| `skills.rs` | 技能发现：目录约定 + 信任前提 + 去重规则。**技能面板（`/api/skills`）与系统提示词的 `<skills>` 段共用这一份**，改扫描规则只改这里 |
+| `system_prompt.rs` | 系统提示词的**唯一**文案来源：preamble → `<tools>` → `<rules>` → `<skills>` → `<project_context>` → `<cwd>` + 语言指令 |
 | `agent_runtime.rs` | 活会话（`LiveAgent`）、事件广播、SSE（含 `RetryNotice`：重试提示的成对帧） |
 | `retry_provider.rs` | Provider 装饰器：把传输层中断（连接被重置）标成 harness 认得的可重试错误（见差异 24） |
 | `gitsvc.rs` | git：status / diff / worktree / 20 个白名单动作 |
@@ -273,6 +275,13 @@ scope 用 crate 短名：`server` / `session` / `desktop` / `poc` / `docs` / `to
   另外 minimap 是**浮在消息区右边缘的一层**（`ChatWindow` 的
   `data-chat-minimap-dock`），不是布局列：它没有背景/边框，`pointer-events`
   只在节点带上打开，别再加回与 sidebar 平级的常驻列。
+- **视口胶囊（高亮带）的几何必须走 `resolveMinimapViewportBand`**
+  （`lib/chat-minimap-viewport.ts`），节点布局走 `lib/chat-minimap-layout.ts`，
+  两边都不能写回内联算术。旧写法用 `±gap / 2` 从首尾节点外扩，而首尾节点没有
+  邻居，外扩量会被 `max(0, …)` 裁掉；再叠加 `MINIMAP_PADDING` 只有 12px（刚好
+  等于胶囊半高），单轮对话下胶囊就贴住轨道顶端、蓝色横条偏在胶囊上半截。
+  现在内边距是 22px（首节点落点），胶囊以区间中心线为轴，顶部留 12px 空隙。
+  回归用例守着「首轮胶囊下移 / 横条居中 / 底部对称」这几条。
 - **端口由内核分配（`port = 0`）**，桌面壳不会抢 8787，也没有「端口被占用」。
   需要固定端口的场景走 `toiler-server --port`。
 - **`/api` 与前端同源**：静态资源挂在 `Router::fallback`，`/api/*` 是具体路由，

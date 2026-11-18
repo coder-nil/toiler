@@ -51,6 +51,8 @@ pub struct Inner {
     pub summary_relay: Arc<crate::reasoning_summary::SummaryRelay>,
     /// `apisets` 目录正在联网刷新（防并发重复拉取，见 [`AppState::spawn_apisets_refresh`]）。
     pub apisets_refreshing: std::sync::atomic::AtomicBool,
+    /// 手动刷新串行化；重复请求明确返回忙碌，不让旧请求覆盖较新的目录。
+    pub models_refresh_gate: tokio::sync::Mutex<()>,
 }
 
 /// 服务绑定的地址；`port == 0` 表示还没绑定。
@@ -101,6 +103,7 @@ impl AppState {
                 qoder_cn_token: uuid::Uuid::new_v4().simple().to_string(),
                 summary_relay: Arc::new(crate::reasoning_summary::SummaryRelay::default()),
                 apisets_refreshing: std::sync::atomic::AtomicBool::new(false),
+                models_refresh_gate: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -206,6 +209,68 @@ impl AppState {
         }
     }
 
+    /// 按 `models.json` 的当前内容重建目录，再对齐内置 provider。
+    ///
+    /// # 为什么 `PUT` / `DELETE /api/models-config` 必须调它
+    ///
+    /// 目录是**启动时一次性构建的快照**（[`crate::catalog::ModelCatalog::load`]），
+    /// 而 `/api/models` 的 `modelList` 直接读这份快照。设置页保存 `models.json`
+    /// 之后如果只写文件、不重建，用户刚加的 provider 与模型就**一个都不会出现在
+    /// 对话框的模型切换器里** —— 界面上看是「加了但没生效」，只有重启进程才会出现。
+    ///
+    /// 删除同理：被删掉的 provider 会继续留在 `modelList` 里，选了就报
+    /// `Model not found`（[`crate::agent_runtime::LiveAgent::set_model`] 从目录里
+    /// 查不到模型）。
+    ///
+    /// 重建后同步把新目录推给活会话（见 [`Self::sync_live_catalogs`]），否则
+    /// 已经在内存里的会话切换模型仍会报找不到。
+    ///
+    /// 返回重建是否成功；失败时保留旧目录（宁可显示旧清单，也不要清空成空列表）。
+    pub async fn reload_catalog_from_models_file(&self) -> anyhow::Result<()> {
+        let path = self.models_file().path().to_path_buf();
+        let raw = self.models_file().read();
+        // 沿用旧目录的默认项：重建前用户可能已经在界面上选过模型，
+        // `apply_default_hint` 会把它保住（`models.json` 里顺序变了也不会跳）。
+        let current = self.catalog();
+        let default_entry = current
+            .default_entry()
+            .map(|entry| (entry.provider.clone(), entry.id.clone()));
+        let mut next = crate::catalog::ModelCatalog::from_config(raw, Some(path))?;
+        next.apply_default_hint(default_entry);
+        self.replace_catalog(next);
+        // 目录换了之后内置 provider（`qoder-cn` / `apisets` / 远端缓存）要重新注入：
+        // 它们不在 `models.json` 里，`from_config` 建不出来。
+        self.attach_builtin_providers();
+        self.sync_live_catalogs().await;
+        Ok(())
+    }
+
+    /// 把当前目录推给所有活会话。
+    ///
+    /// [`LiveAgent`] 各自持有一份 `ModelCatalog` 副本（它比一次请求活得久，不能
+    /// 借用 `AppState`），所以设置页保存 `models.json` 后必须挨个对齐，否则：
+    ///
+    /// - 界面上的 `modelList` 已经有新模型（`/api/models` 读 `AppState` 的目录）；
+    /// - 但 `set_model` 走的是活会话自己那份旧目录，报 `Model not found`。
+    ///
+    /// 用户看到的是「选择器里有、一点就报错」。反过来删模型时也要推：旧目录里
+    /// 还留着已删的模型，切过去同样会失败。
+    ///
+    /// 用 [`Self::dialogue_catalog`] 而不是 [`Self::catalog`]：活会话的目录必须带
+    /// 摘要转发包装，否则推完之后切模型的会话就丢掉了推理摘要（两者的差异见
+    /// [`Self::dialogue_catalog`] 的注释）。
+    ///
+    /// 单个会话推失败不影响其它会话，也不让保存操作回滚：harness 已 `closed`
+    /// 意味着它正在 `shutdown`，那份目录副本已经没人用了。
+    pub async fn sync_live_catalogs(&self) {
+        let catalog = self.dialogue_catalog();
+        for agent in self.live().all() {
+            if let Err(error) = agent.replace_catalog(catalog.clone()).await {
+                tracing::warn!("同步活会话的模型目录失败（session={}）：{error}", agent.id);
+            }
+        }
+    }
+
     /// `qoder-cn` 本机转发端点的路径令牌。
     pub fn qoder_cn_token(&self) -> String {
         self.inner.qoder_cn_token.clone()
@@ -220,18 +285,37 @@ impl AppState {
         if port == 0 {
             return false;
         }
+        if self.models_define(crate::qoder_cn::PROVIDER_ID) {
+            return false;
+        }
         let current = self.catalog();
-        if current
-            .providers
+        let base = crate::qoder_cn::local_base_url(port, &self.qoder_cn_token());
+        let entries = crate::qoder_cn::catalog::entries(self.models_file().path(), self.auth());
+        let models = crate::qoder_cn::models_from_catalog(&base, &entries);
+        let installed: Vec<_> = current
+            .models
             .iter()
-            .any(|p| p.id() == crate::qoder_cn::PROVIDER_ID)
+            .filter(|model| model.provider == crate::qoder_cn::PROVIDER_ID)
+            .collect();
+        if installed.len() == models.len()
+            && installed.iter().zip(&models).all(|(old, new)| {
+                old.id == new.id
+                    && old.name == new.name
+                    && old.base_url == new.base_url
+                    && old.reasoning == new.reasoning
+                    && old.input == new.input
+                    && old.context_window == new.context_window
+                    && old.max_tokens == new.max_tokens
+                    && old.thinking_level_map == new.thinking_level_map
+            })
         {
             return false;
         }
-        let base = crate::qoder_cn::local_base_url(port, &self.qoder_cn_token());
-        // 只在 debug 级打出来：地址里含路径令牌（防局域网滥用），默认日志不落盘。
-        tracing::debug!("qoder-cn 本机转发端点：{base}");
-        let next = (*current).clone().with_qoder_cn(&base);
+        let default_entry = current
+            .default_entry()
+            .map(|entry| (entry.provider.clone(), entry.id.clone()));
+        let mut next = (*current).clone().with_qoder_cn_models(models);
+        next.apply_default_hint(default_entry);
         self.replace_catalog(next);
         true
     }
@@ -277,12 +361,74 @@ impl AppState {
         installed
     }
 
-    /// 把内置 provider 全部重新对齐一遍（`qoder-cn` + `apisets`）。
+    /// 把普通内置 API Key provider 的缓存目录注入运行时目录。
+    ///
+    /// 用户配置与远端模型取并集；同 id 的模型始终优先采用用户的元数据。
+    /// 缓存 URL/协议与当前配置不一致时不注入，避免代理切换后读到另一家的目录。
+    pub fn attach_remote_api_key_providers(&self) {
+        let root = self.models_file().read();
+        let current = self.catalog();
+        let default_entry = current
+            .default_entry()
+            .map(|entry| (entry.provider.clone(), entry.id.clone()));
+        let mut next = (*current).clone();
+        for builtin in crate::builtin_providers::all() {
+            if !builtin.api_key
+                || builtin.id == crate::apisets::PROVIDER_ID
+                || builtin.id == crate::qoder_cn::PROVIDER_ID
+            {
+                continue;
+            }
+            let config = crate::models_json::provider_config(&root, builtin.id);
+            let key = config
+                .and_then(|config| {
+                    crate::routes::models_config::resolve_api_key(self, builtin.id, config)
+                })
+                .or_else(|| self.auth().api_key(builtin.id));
+            let Some(cached) = crate::remote_models::read(self.models_file().path(), builtin.id)
+            else {
+                continue;
+            };
+            let base_url = config
+                .and_then(|value| value["baseUrl"].as_str())
+                .unwrap_or(&cached.base_url);
+            let api = config
+                .and_then(|value| value["api"].as_str())
+                .unwrap_or(&cached.api);
+            let mut defs = config
+                .and_then(|value| value["models"].as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut seen: std::collections::BTreeSet<String> = defs
+                .iter()
+                .filter_map(|value| value["id"].as_str().map(str::to_string))
+                .collect();
+            if key.is_some() && base_url == cached.base_url && api == cached.api {
+                defs.extend(cached.models.into_iter().filter(|value| {
+                    value["id"]
+                        .as_str()
+                        .is_some_and(|id| seen.insert(id.to_string()))
+                }));
+            }
+            next = next.with_remote_provider(
+                builtin.id,
+                api,
+                base_url,
+                key.as_deref().unwrap_or(""),
+                &defs,
+            );
+        }
+        next.apply_default_hint(default_entry);
+        self.replace_catalog(next);
+    }
+
+    /// 把内置 provider 全部重新对齐一遍（`qoder-cn` + `apisets` + 远端 API Key 目录）。
     ///
     /// 登录 / 退出 / 存或删 API Key 之后都必须调一次：目录是快照，凭据变了就要重算。
     pub fn attach_builtin_providers(&self) {
         self.attach_qoder_cn();
         self.attach_apisets();
+        self.attach_remote_api_key_providers();
     }
 
     /// 后台拉一次 apisets 目录（成功则落盘并重新注入目录）。
@@ -310,6 +456,7 @@ impl AppState {
         }
         let state = self.clone();
         handle.spawn(async move {
+            let _refresh_guard = state.inner.models_refresh_gate.lock().await;
             let models_json = state.inner.models_file.path().to_path_buf();
             match crate::apisets::refresh(&key, &models_json).await {
                 Ok(defs) => {

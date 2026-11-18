@@ -1,63 +1,34 @@
 //! 技能面板：`GET /api/skills`（列表 + 诊断 + 项目资源是否加载）。
 //!
-//! pi 的对应实现是 `app/api/skills/route.ts` + `lib/skills-service.ts`：
-//! 用 `DefaultResourceLoader` 扫 `settings.json` 的 `skillPaths`、package 自带
-//! 的技能，以及 `.agents/skills`。toiler 没有 package 系统，`settings.json`
-//! 里也没有 `skillPaths` 键，因此只扫 pi 在默认配置下真正会命中的那一对目录：
-//!
-//! | 目录 | `sourceInfo` | 前端分组 |
-//! |---|---|---|
-//! | `<项目根>/.agents/skills`（项目根 = 最近的 git 仓库根，否则 cwd 本身） | `{source:"project", scope:"project"}` | Project |
-//! | `~/.agents/skills` | `{source:"user", scope:"user"}` | Global |
-//! | `~/.pi/agent/skills`（pi 的 agent 目录） | 同上 | Global |
-//! | `~/.agents/toiler/skills`（toiler 的 agent 目录） | 同上 | Global |
-//!
-//! # 项目技能的两个前提
-//!
-//! 1. **只认项目根这一层**：约定位置是 `$project/.agents/skills`。项目根取
-//!    「从 cwd 向上最近的 git 仓库根」，不在 git 里就是 cwd 自己。所以子目录里
-//!    开会话（`$project/frontend`）也能看到项目根的技能，而仓库之外的父目录
-//!    不会被误认成项目。
-//! 2. **项目已信任**：未信任时 pi 根本不加载项目技能（`projectTrusted ?
-//!    collectAncestorAgentsSkillDirs(...) : []`），这里保持一致——否则一个
-//!    刚 clone 下来的仓库可以靠 `.agents/skills` 里的提示词影响 agent。
-//!
-//! 这两个条件也解释了为什么「不同项目会有不同的技能」，以及为什么刚建的
-//! 项目目录里技能不会马上出现（需要先在设置里信任它）。
+//! **扫描规则与加载逻辑全在 [`crate::skills`]**：目录约定、项目根、信任前提、
+//! 去重规则都写在那里，因为系统提示词的 `<skills>` 段（`crate::system_prompt`）
+//! 必须与这个面板看到同一份技能。这个模块只负责把它投影成 pi 的 JSON 形状。
 //!
 //! # 与 pi 的差异
 //!
 //! | 项 | pi | toiler |
 //! |---|---|---|
-//! | 技能来源 | `DefaultResourceLoader`：`skillPaths` + package 技能 + 上述两目录 | 只扫上述两目录（无 package / `skillPaths`） |
-//! | 同名冲突 | loader 按 `name` 去重，项目版本把用户版本顶掉 | 按 `filePath` 去重，**同名不同文件两份都返回**（项目在前） |
+//! | 技能来源 | `DefaultResourceLoader`：`skillPaths` + package 技能 + `.agents/skills` | 只扫 `crate::skills::dirs` 那几处（无 package / `skillPaths`） |
+//! | 同名冲突 | loader 按 `name` 去重，项目版本把用户版本顶掉 | 项目与用户**同名都留**（项目在前），用户目录之间按名字去重 |
 //! | 缓存 | `pi.sqlite` 的 `skill_cache`，`?cache=1` 可命中 | 不缓存；`cacheHit` 恒 `false`，前端未命中会照常走全量请求 |
 //! | 使用统计 | `skill_usage` 表补 `usageCount` / `lastUsedAt` | 不提供（前端只在排序/展示时读，缺失即不显示） |
 //! | 技能市场 | `/api/skills/search`、`/api/skills/install` 可用 | 501 + 中文说明（PLAN 已明确砍掉技能市场） |
 //! | 开关 | `PATCH /api/skills` 改 `disable-model-invocation` | 501（要改写用户目录里的 `SKILL.md`，暂不开放写） |
-//!
-//! 注意两处「静默」行为，排查问题时最容易被误导：
-//!
-//! - `SKILL.md` **缺 `description`** 时 `rpi` 直接丢弃、**不产生诊断**（与 pi 一致）。
-//!   技能写好了却不出现，先查 frontmatter。
-//! - 诊断只覆盖读取/解析失败；目录不存在不算错误（见 [`skill_dirs`] 直接跳过）。
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use rpi_harness::skills::{load_skills, SkillDiagnostic};
+use rpi_harness::skills::SkillDiagnostic;
 use rpi_harness::types::Skill;
-use rpi_tools::{ExecutionEnv, OsExecutionEnv};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::paths;
 use crate::security::Trusted;
+use crate::skills as discovery;
 use crate::state::AppState;
 
 /// `GET /api/skills?cwd=<绝对路径>`。
@@ -103,32 +74,20 @@ pub async fn list(
     // 前端拿同一个布尔值禁用「Project」作用域按钮，两边语义必须一致。
     let trusted = crate::trust::status(state.project_trust(), cwd).trusted;
 
-    let env: Arc<dyn ExecutionEnv> = Arc::new(OsExecutionEnv::with_cwd(cwd_path.clone()));
+    // 扫描规则在 `crate::skills`：系统提示词的 `<skills>` 段走同一份函数，
+    // 面板上看到的技能与模型看到的技能因此永远不会不一致。
+    let found = discovery::load(&cwd_path, trusted).await;
 
-    let mut seen_paths: HashSet<String> = HashSet::new();
-    // 用户级目录有两份副本很容易重名（`~/.agents/skills` 与 `~/.pi/agent/skills`
-    // 常常放着同一个技能），同名只留先扫到的那份；项目级不参与这个去重。
-    let mut seen_user_names: HashSet<String> = HashSet::new();
-    let mut skills: Vec<Value> = Vec::new();
-    let mut diagnostics: Vec<Value> = Vec::new();
-
-    for (dir, source, scope) in skill_dirs(&cwd_path, trusted) {
-        let dir = dir.to_string_lossy().to_string();
-        let loaded = load_skills(&env, std::slice::from_ref(&dir)).await;
-        for diagnostic in &loaded.diagnostics {
-            diagnostics.push(diagnostic_json(diagnostic, source));
-        }
-        for skill in loaded.skills {
-            if source == "user" && !seen_user_names.insert(skill.name.clone()) {
-                continue;
-            }
-            push_skill(
-                &mut skills,
-                &mut seen_paths,
-                skill_json(&skill, source, scope),
-            );
-        }
-    }
+    let skills: Vec<Value> = found
+        .skills
+        .iter()
+        .map(|loaded| skill_json(&loaded.skill, loaded.origin.source(), loaded.origin.scope()))
+        .collect();
+    let diagnostics: Vec<Value> = found
+        .warnings
+        .iter()
+        .map(|warning| diagnostic_json(&warning.diagnostic, warning.origin.source()))
+        .collect();
 
     // 前端用 `projectResourcesLoaded === false` 禁用「Project」作用域按钮：
     // 未信任的项目不该把它的技能当成可用资源（与 pi 的 getProjectTrustStatus 同义）。
@@ -159,93 +118,6 @@ fn not_implemented(message: &str) -> Response {
         Json(json!({ "error": message })),
     )
         .into_response()
-}
-
-/// 要扫的技能目录，**按优先级排序**（先出现的胜出），且只返回真实存在的目录。
-///
-/// 顺序 = 项目（从 cwd 向外，最近的最优先）→ 用户级三个目录。
-/// 不存在的目录直接跳过而不是交给 `load_skills`：后者会为它产出 `list_failed`
-/// 诊断，而「没装过项目技能」是常态，不该在界面上报 warning。
-fn skill_dirs(cwd: &Path, trusted: bool) -> Vec<(PathBuf, &'static str, &'static str)> {
-    let mut out = Vec::new();
-    let user_agents = paths::agents_home().join("skills");
-
-    if trusted {
-        // 只认**项目根**这一层：`$project/.agents/skills`。
-        // 项目根 = 从 cwd 向上最近的 git 仓库根；不在 git 里就是 cwd 自己。
-        // 与 pi 的差异：pi 的 `collectAncestorAgentsSkillDirs` 在找不到 git 根时
-        // 会一路扫到文件系统根，那样 `~/Development/.agents/skills` 这类「祖先共享
-        // 目录」也会被当成项目技能。toiler 只认项目根，行为更好预测。
-        if let Some(root) = project_root(cwd) {
-            let candidate = root.join(".agents").join("skills");
-            // `~/.agents/skills` 在下面按 user 加，别重复标成 project。
-            if candidate != user_agents {
-                push_dir(&mut out, candidate, "project", "project");
-            }
-        }
-    }
-
-    // 用户级：跨工具目录 + pi 的 agent 目录 + toiler 自己的 agent 目录。
-    // 两个 agent 目录都算，是为了让「刚从 pi 迁过来」和「只在 toiler 里建过」
-    // 的技能都能看到——pi 的 user skills 默认就在 `~/.pi/agent/skills`。
-    push_dir(&mut out, user_agents, "user", "user");
-    push_dir(
-        &mut out,
-        paths::legacy_pi_agent_dir().join("skills"),
-        "user",
-        "user",
-    );
-    push_dir(
-        &mut out,
-        paths::toiler_home().join("skills"),
-        "user",
-        "user",
-    );
-
-    out
-}
-
-fn push_dir(
-    out: &mut Vec<(PathBuf, &'static str, &'static str)>,
-    dir: PathBuf,
-    source: &'static str,
-    scope: &'static str,
-) {
-    if dir.is_dir() && !out.iter().any(|(existing, _, _)| *existing == dir) {
-        out.push((dir, source, scope));
-    }
-}
-
-/// 项目根：从 cwd 向上最近的 git 仓库根；不在任何 git 仓库里时就是 cwd 自己。
-///
-/// 「项目根」而不是「cwd」是刻意的：用户在子目录里开会话（`$project/frontend`）
-/// 时，`$project/.agents/skills` 仍然要生效。
-fn project_root(cwd: &Path) -> Option<PathBuf> {
-    let mut dir = Some(cwd.to_path_buf());
-    while let Some(current) = dir {
-        if current.join(".git").exists() {
-            return Some(current);
-        }
-        dir = current.parent().map(Path::to_path_buf);
-    }
-    Some(cwd.to_path_buf())
-}
-
-/// 合并项目技能与用户技能。
-///
-/// 去重规则一句话：**项目与用户之间合并（同名都留），用户目录之间按名字去重**。
-///
-/// - 与 pi 的差异：pi 的 loader 用 `name` 做 key，项目里放一份同名技能会把全局
-///   那份顶掉。toiler 两份都返回 —— 项目技能本来就是「给这个项目换一套行为」，
-///   界面上应该能同时看到、分别查看。
-/// - 用户级那三个目录之间仍按名字去重，否则同一份技能（`~/.agents/skills` 与
-///   `~/.pi/agent/skills` 里的副本）会在列表里出现两遍。
-/// - 同一个文件被扫到两次才按 `filePath` 去重。
-fn push_skill(out: &mut Vec<Value>, seen_paths: &mut HashSet<String>, skill: Value) {
-    let path = skill["filePath"].as_str().unwrap_or_default().to_string();
-    if seen_paths.insert(path) {
-        out.push(skill);
-    }
 }
 
 fn skill_json(skill: &Skill, source: &str, scope: &str) -> Value {
@@ -281,35 +153,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn same_name_from_two_sources_are_both_kept() {
-        let mut out: Vec<Value> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        push_skill(
-            &mut out,
-            &mut seen,
-            json!({ "name": "design-taste-frontend", "filePath": "/project/.agents/skills/x/SKILL.md" }),
+    fn skill_json_carries_every_field_the_panel_reads() {
+        // 前端 `SkillsConfig` 按这六个字段渲染；少一个整块不渲染或落到 Other 组。
+        let value = skill_json(
+            &Skill {
+                name: "demo".to_string(),
+                description: "说明".to_string(),
+                content: "正文".to_string(),
+                file_path: "/p/.agents/skills/demo/SKILL.md".to_string(),
+                disable_model_invocation: Some(true),
+            },
+            "project",
+            "project",
         );
-        push_skill(
-            &mut out,
-            &mut seen,
-            json!({ "name": "design-taste-frontend", "filePath": "/home/.agents/skills/x/SKILL.md" }),
-        );
-        assert_eq!(out.len(), 2, "同名不同文件要合并展示");
-
-        // 同一个文件被扫到两次只留一份
-        push_skill(
-            &mut out,
-            &mut seen,
-            json!({ "name": "design-taste-frontend", "filePath": "/project/.agents/skills/x/SKILL.md" }),
-        );
-        assert_eq!(out.len(), 2);
+        assert_eq!(value["name"], "demo");
+        assert_eq!(value["description"], "说明");
+        assert_eq!(value["baseDir"], "/p/.agents/skills/demo");
+        assert_eq!(value["disableModelInvocation"], true);
+        assert_eq!(value["sourceInfo"]["source"], "project");
+        assert_eq!(value["sourceInfo"]["scope"], "project");
     }
 
     #[test]
-    fn user_dirs_dedupe_by_name() {
-        // 用户级两个目录里同名 -> 只保留先扫到的那份（这里靠调用方维护 seen_user_names）
-        let mut seen_user_names: HashSet<String> = HashSet::new();
-        assert!(seen_user_names.insert("apple-design".to_string()));
-        assert!(!seen_user_names.insert("apple-design".to_string()));
+    fn diagnostics_are_warnings_carrying_the_origin() {
+        let value = diagnostic_json(
+            &SkillDiagnostic {
+                code: rpi_harness::skills::SkillDiagnosticCode::ParseFailed,
+                message: "坏掉的 frontmatter".to_string(),
+                path: "/p/SKILL.md".to_string(),
+            },
+            "user",
+        );
+        assert_eq!(value["type"], "warning");
+        assert_eq!(value["code"], "parse_failed");
+        assert_eq!(value["source"], "user");
     }
 }

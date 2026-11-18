@@ -19,7 +19,8 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use super::auth::{identity_from_credential, refresh_token};
-use super::constants::{catalog_entry, CatalogEntry, CHAT_PATH, GATEWAY, PROVIDER_ID};
+use super::catalog::CatalogModel;
+use super::constants::{CHAT_PATH, GATEWAY, PROVIDER_ID};
 use super::cosy::{HeaderOptions, Identity, Session};
 use super::request_body::{build_request_body, Conversation};
 
@@ -303,7 +304,7 @@ fn http_client() -> reqwest::Client {
 async fn send(
     identity: &Identity,
     model_key: &str,
-    catalog: &CatalogEntry,
+    catalog: &CatalogModel,
     openai_body: &Value,
 ) -> Result<reqwest::Response, String> {
     let session = Session::new(identity)?;
@@ -358,14 +359,16 @@ async fn read_upstream_error(response: reqwest::Response) -> String {
 pub async fn chat_stream(
     credentials: &CredentialSource,
     openai_body: Value,
+    catalog: &CatalogModel,
 ) -> Result<ChatOutcome, String> {
     let model_id = openai_body
         .get("model")
         .and_then(Value::as_str)
         .ok_or_else(|| "Qoder CN：请求体缺少 model".to_string())?
         .to_string();
-    let catalog =
-        catalog_entry(&model_id).ok_or_else(|| format!("Qoder CN：未知模型 {model_id}"))?;
+    if catalog.key != model_id {
+        return Err(format!("Qoder CN：模型目录与请求不匹配 {model_id}"));
+    }
 
     let mut identity = credentials.identity().await?;
     let mut response = send(&identity, &model_id, catalog, &openai_body).await?;

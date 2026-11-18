@@ -56,8 +56,10 @@ pub struct LiveAgent {
     thinking_level: Mutex<rpi_ai::ThinkingLevel>,
     /// 切模型时按 `provider/modelId` 查 `rpi_ai::Model`。
     ///
-    /// 活会话比一次请求活得久，不能临时从 `AppState` 借引用。
-    catalog: ModelCatalog,
+    /// 活会话比一次请求活得久，不能临时从 `AppState` 借引用；而设置页保存
+    /// `models.json` 后目录会变，所以存的是可替换的 `RwLock` 而非常量副本
+    /// （见 [`Self::replace_catalog`]）。
+    catalog: std::sync::RwLock<ModelCatalog>,
     /// 活会话表的变化通知（`insert` 之后才挂上）
     changes: Mutex<Option<broadcast::Sender<()>>>,
     /// `settings.json`：`set_steering_mode` / `set_follow_up_mode` 要落盘。
@@ -89,6 +91,10 @@ pub struct LiveAgent {
 
 impl LiveAgent {
     /// 打开已有会话文件并建 agent。
+    ///
+    /// `trusted` 是项目是否已被信任（`crate::trust::status(...).trusted`）：未信任时
+    /// 项目技能不参与系统提示词的 `<skills>` 段，与 `/api/skills` 的
+    /// `projectResourcesLoaded` 同一个布尔值。
     #[allow(clippy::too_many_arguments)]
     pub async fn start(
         id: &str,
@@ -97,10 +103,14 @@ impl LiveAgent {
         catalog: &ModelCatalog,
         preferred: Option<(String, String)>,
         settings: &SettingsFile,
+        trusted: bool,
     ) -> Result<Arc<Self>> {
         let storage = V3SessionStorage::load(path)
             .with_context(|| format!("加载会话 {} 失败", path.display()))?;
-        Self::start_with_storage(id, path, storage, cwd, catalog, preferred, settings).await
+        Self::start_with_storage(
+            id, path, storage, cwd, catalog, preferred, settings, trusted,
+        )
+        .await
     }
 
     /// 同上，但直接用现成的 `V3SessionStorage`（新建会话时省一次重读）。
@@ -113,6 +123,7 @@ impl LiveAgent {
         catalog: &ModelCatalog,
         preferred: Option<(String, String)>,
         settings: &SettingsFile,
+        trusted: bool,
     ) -> Result<Arc<Self>> {
         let session = Session::new(Arc::new(storage), None);
 
@@ -138,15 +149,33 @@ impl LiveAgent {
         tasks.restore(restore_tasks(path, None));
         let queue_modes = settings.queue_modes();
 
-        // 系统提示词：preamble / tools / rules / project_context / cwd + 语言指令。
+        // 系统提示词：preamble / tools / rules / skills / project_context / cwd + 语言指令。
         //
-        // AGENTS.md 在这里读一次：它是会话级常量，不必每轮重新发现。全局那一份
-        // 从 toiler 自己的 agent 目录取（对应 pi 的 `~/.pi/agent`）。
+        // AGENTS.md 与技能都在这里读一次：它们是会话级常量，不必每轮重新发现。
+        // 全局 AGENTS.md 从 toiler 自己的 agent 目录取（对应 pi 的 `~/.pi/agent`）。
         let prompt_inputs =
-            PromptInputs::load(cwd, &tool_names, &crate::paths::toiler_home()).await; // 默认英文：pi 的 `normalizeUiLocale` 对未知值也给 en。桌面前端打开会话后
-                                                                                      // 会发 `set_ui_locale`（它记得用户选的界面语言），这里随即换成中文文案。
+            PromptInputs::load(cwd, &tool_names, &crate::paths::toiler_home(), trusted).await; // 默认英文：pi 的 `normalizeUiLocale` 对未知值也给 en。桌面前端打开会话后
+                                                                                               // 会发 `set_ui_locale`（它记得用户选的界面语言），这里随即换成中文文案。
         let locale = Locale::En;
         let system_prompt = prompt_inputs.compose(locale);
+
+        // 技能同时装进 harness 的资源，否则输入框技能菜单发出的 `/skill:名称`
+        // 会被原样当成普通文本发给模型（rpi 只在自己 resources 里找技能）。
+        //
+        // 每个技能的 `disable_model_invocation` 都置 `true`：harness 会在基座提示词
+        // 后追加它自己那份**英文** `<available_skills>` 列表，而上面 `compose()` 已经
+        // 写过中文 `<skills>` 段了。rpi 的 `format_skills_for_system_prompt` 恰好按这个
+        // 标志过滤（`compose_prompt` 的注释与 `skills.rs` 的可见性过滤），所以这里
+        // 置 true 既能保留 `/skill:` 展开、又不会让提示词里出现两份技能清单。
+        let skills = prompt_inputs
+            .skills()
+            .iter()
+            .map(|loaded| {
+                let mut skill = loaded.skill.clone();
+                skill.disable_model_invocation = Some(true);
+                skill
+            })
+            .collect::<Vec<_>>();
 
         let history = std::fs::read_to_string(path).unwrap_or_default();
         let entries: Vec<Value> = history
@@ -170,6 +199,12 @@ impl LiveAgent {
             active_tool_names: tool_names,
             tools: tools.into_iter().map(|(_, tool)| tool).collect(),
             system_prompt: Some(system_prompt.clone()),
+            // `/skill:名称` 的展开靠这份资源（rpi 的 `expand_skill_input` 只查
+            // `resources.skills`）；`: None` 时命令会被当普通文本发出去。
+            resources: rpi_harness::types::AgentHarnessResources {
+                skills: Some(skills),
+                ..Default::default()
+            },
             session,
             allow_existing_session: true,
             // 装一层装饰器：把「流式连接被上游掐断」这类传输层中断标成 harness 认得的
@@ -190,6 +225,11 @@ impl LiveAgent {
         };
 
         let harness = Arc::new(AgentHarness::create(options).await?);
+        // 技能正文由 `expand_skill_input` 在发请求前读取，需要一份执行环境；
+        // 不给的话它只打一条 `skill_expansion` 警告，命令原样发给模型。
+        let env: std::sync::Arc<dyn rpi_tools::ExecutionEnv> =
+            std::sync::Arc::new(rpi_tools::OsExecutionEnv::with_cwd(PathBuf::from(cwd)));
+        harness.set_skill_execution_env(env);
         let lane = harness.lane("main");
 
         Ok(Arc::new(Self {
@@ -202,7 +242,7 @@ impl LiveAgent {
             running: Arc::new(AtomicBool::new(false)),
             model: Mutex::new(model),
             thinking_level: Mutex::new(thinking_level),
-            catalog: catalog.clone(),
+            catalog: std::sync::RwLock::new(catalog.clone()),
             changes: Mutex::new(None),
             settings: settings.clone(),
             prompt_inputs: Mutex::new(prompt_inputs),
@@ -232,6 +272,30 @@ impl LiveAgent {
 
     pub fn is_streaming(&self) -> bool {
         self.running.load(Ordering::Relaxed)
+    }
+
+    /// 换掉本会话持有的模型目录副本（设置页保存 `models.json` 后调）。
+    ///
+    /// 换两处东西：
+    /// 1. `self.catalog` —— `set_model` 靠它查模型元数据。
+    /// 2. harness 的 provider 注册表（`set_models`）—— 发请求时按
+    ///    `model.provider` 解析真实现；只换第一处的话，新 provider 的模型能选中
+    ///    但发不出去（`No provider registered for model provider …`）。
+    ///
+    /// 不动当前模型，也不动正在跑的轮次：它用的是已解析好的 `Model` 与已拿到的
+    /// provider，下一次请求才走新注册表。
+    ///
+    /// 用 `set_models` 而不是重建 harness：重建会把正在跑的轮次与已连上的 SSE 流
+    /// 一起拆掉（与 `set_model` 同一条约束）。
+    pub async fn replace_catalog(&self, catalog: ModelCatalog) -> Result<()> {
+        // provider 注册表必须重新包一层重试装饰器：目录里的 `providers` 是裸的
+        // （`ModelCatalog` 不管重试），直接装上去会让本会话丢掉传输层中断重试。
+        let providers = crate::retry_provider::wrap_all(&catalog.providers);
+        if let Ok(mut guard) = self.catalog.write() {
+            *guard = catalog;
+        }
+        self.harness.set_models(providers).await?;
+        Ok(())
     }
 
     /// `{"type":…}` 命令（pi 的 `session.send(command)`）。
@@ -397,6 +461,10 @@ impl LiveAgent {
     /// pi 的 `setModel` 会往会话文件追加一条 `model_change`，前端切完立刻
     /// `loadSession` 读回的 `context.model` 就是它。只改内存不落盘的话，界面
     /// 会在切换成功的下一秒弹回旧模型 —— 看起来像「切了但没生效」。
+    ///
+    /// 目录查本会话自己那份副本。设置页刚保存 `models.json` 时它可能还是旧的，
+    /// 所以 `PUT` / `DELETE /api/models-config` 必须跟一次
+    /// [`crate::state::AppState::sync_live_catalogs`]。
     async fn set_model(&self, command: &Value) -> Result<Value> {
         let provider = command
             .get("provider")
@@ -408,8 +476,9 @@ impl LiveAgent {
             .unwrap_or_default();
         let model = self
             .catalog
-            .model_for(provider, model_id)
-            .cloned()
+            .read()
+            .map(|catalog| catalog.model_for(provider, model_id).cloned())
+            .unwrap_or(None)
             .ok_or_else(|| anyhow::anyhow!("Model not found: {provider}/{model_id}"))?;
 
         let session = self.harness.session();
@@ -1362,6 +1431,15 @@ impl LiveSessions {
 
     pub fn get(&self, id: &str) -> Option<Arc<LiveAgent>> {
         self.map.lock().expect("live").get(id).cloned()
+    }
+
+    /// 当前所有活会话的快照（设置页保存 `models.json` 后要挨个对齐目录）。
+    ///
+    /// 先把 `Arc` 全收集出来再返回，**不在持锁时调 `replace_catalog`**：
+    /// 后者是 async（要 `harness.set_models`），持锁跨 await 会把整个活会话表
+    /// 卡住，连 `/api/agent/running/events` 都推不出去。
+    pub fn all(&self) -> Vec<Arc<LiveAgent>> {
+        self.map.lock().expect("live").values().cloned().collect()
     }
 
     pub fn insert(&self, agent: Arc<LiveAgent>) {

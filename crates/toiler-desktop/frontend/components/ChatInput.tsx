@@ -555,10 +555,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // 普通对话模式（π 图标）：没有工具，输入框的 ! shell 模式和工具预设都不适用。
   const chatModeActive = (chatMode ?? "work") === "chat";
   const [value, setValue] = useState(() => (draftKey ? getDraft(draftKey)?.value ?? "" : ""));
-  const [selectedSlashCommand, setSelectedSlashCommand] = useState<SelectedSlashCommand | null>(() => (
+  const [selectedSlashCommand, setSelectedSlashCommandState] = useState<SelectedSlashCommand | null>(() => (
     draftKey ? getDraft(draftKey)?.selectedCommand ?? null : null
   ));
-  const [selectedAtMentions, setSelectedAtMentions] = useState<SelectedAtMention[]>(() => (
+  const [selectedAtMentions, setSelectedAtMentionsState] = useState<SelectedAtMention[]>(() => (
     draftKey ? getDraft(draftKey)?.selectedMentions ?? [] : []
   ));
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
@@ -641,8 +641,25 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const pendingImageCountRef = useRef(0);
   valueRef.current = value;
   attachedImagesRef.current = attachedImages;
-  selectedSlashCommandRef.current = selectedSlashCommand;
-  selectedAtMentionsRef.current = selectedAtMentions;
+
+  // 命令 chip 有两个消费者：React 渲染，以及 rekeyDraft / restoreSubmission 这类
+  // 在 React flush 之前就要读到最新值的命令式路径。所以每次写入都要同时更新 ref
+  // 快照，且**不在渲染期回写**（渲染可能带着更早的 state 快照，会把刚清的 ref
+  // 覆盖回去）。只 setState 的话，新会话首条消息的
+  // promoteNewSession → rekeyDraft 会把刚发出去的 chip 当成残留草稿搬到新的
+  // draftKey 上，发送完又挂回输入框。
+  const setSelectedSlashCommand = useCallback((next: SelectedSlashCommand | null) => {
+    selectedSlashCommandRef.current = next;
+    setSelectedSlashCommandState(next);
+  }, []);
+
+  const setSelectedAtMentions = useCallback((update: React.SetStateAction<SelectedAtMention[]>) => {
+    const next = typeof update === "function"
+      ? update(selectedAtMentionsRef.current)
+      : update;
+    selectedAtMentionsRef.current = next;
+    setSelectedAtMentionsState(next);
+  }, []);
 
   useImperativeHandle(ref, () => ({
     insertIfEmpty(text: string) {

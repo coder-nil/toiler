@@ -135,6 +135,9 @@ pub fn cached_defs(models_json: &Path) -> Vec<Value> {
 
 /// 写缓存：只动 `apisets` 这一段，文件里 pi 写的其它 provider 原样保留。
 pub fn write_store(models_json: &Path, models: &[Value]) -> std::io::Result<()> {
+    let _guard = crate::remote_models::STORE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let path = store_path(models_json);
     let mut root = std::fs::read_to_string(&path)
         .ok()

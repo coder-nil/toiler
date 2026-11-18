@@ -330,21 +330,22 @@ impl ModelCatalog {
         Ok(catalog)
     }
 
-    /// 把内置 `qoder-cn` 目录注入一份副本（`base_url` 指向本机转发端点）。
+    /// 订阅目录刷新后替换旧快照，provider 仍保持匿名的本机转发链路。
     ///
-    /// `qoder-cn` 是订阅 provider：模型清单在 pi 侧是静态快照，不走 `models.json`。
-    /// 用户自己在 `models.json` 里写了同名 provider 的话，调用方不该再注入
-    /// （[`crate::state::AppState::attach_qoder_cn`] 会先查一遍）。
-    pub fn with_qoder_cn(mut self, base_url: &str) -> Self {
-        let provider_id = crate::qoder_cn::PROVIDER_ID;
-        if self.providers.iter().any(|p| p.id() == provider_id) {
-            return self;
-        }
-        let models = crate::qoder_cn::models(base_url);
+    /// 注入是**替换**而不是追加：刷新后模型清单会变，只 add 不 remove 会让同一个
+    /// id 在目录里出现两次。模型清单由调用方读好（静态快照或远端缓存）再传进来，
+    /// 这一层不联网。
+    pub fn with_qoder_cn_models(mut self, models: Vec<Model>) -> Self {
+        self = self.without_provider(crate::qoder_cn::PROVIDER_ID);
         self.entries.extend(models.iter().map(entry_for_model));
         self.models.extend(models.iter().cloned());
-        self.providers
-            .push(Arc::new(crate::qoder_cn::provider(base_url)));
+        self.providers.push(Arc::new(
+            OpenAiCompletionsProvider::with_models_without_auth(
+                crate::qoder_cn::PROVIDER_ID,
+                reqwest::Client::new(),
+                models,
+            ),
+        ));
         self
     }
 
@@ -368,7 +369,50 @@ impl ModelCatalog {
         self
     }
 
+    /// 把内置 API Key provider 的远端目录注入当前目录。
+    ///
+    /// 远端目录不写入用户的 `models.json`，但运行时仍必须变成真正的 rpi
+    /// `Model`，否则设置页虽能列出模型，对话启动时仍会报找不到模型。
+    pub fn with_remote_provider(
+        mut self,
+        provider_id: &str,
+        api: &str,
+        base_url: &str,
+        api_key: &str,
+        defs: &[serde_json::Value],
+    ) -> Self {
+        self = self.without_provider(provider_id);
+        let config = serde_json::json!({
+            "providers": {
+                provider_id: {
+                    "api": api,
+                    "baseUrl": base_url,
+                    "apiKey": api_key,
+                    "models": defs,
+                }
+            }
+        });
+        let Ok(extra) = ModelCatalog::from_config(config, None) else {
+            return self;
+        };
+        if extra.models.is_empty() || extra.providers.is_empty() {
+            return self;
+        }
+        self.entries.extend(extra.entries);
+        self.models.extend(extra.models);
+        self.providers
+            .extend(extra.providers.into_iter().map(|inner| {
+                Arc::new(crate::remote_models::NamedProvider {
+                    id: provider_id.to_string(),
+                    inner,
+                }) as Arc<dyn Provider>
+            }));
+        self
+    }
+
     /// 摘掉某个 provider 的 entries / models / providers 实例。
+    ///
+    /// 与 `with_apisets` 一样，刷新是替换而不是追加，否则同一个模型 id 会重复。
     pub fn without_provider(mut self, provider_id: &str) -> Self {
         self.entries.retain(|entry| entry.provider != provider_id);
         self.models
