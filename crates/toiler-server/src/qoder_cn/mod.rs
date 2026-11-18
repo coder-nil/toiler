@@ -25,14 +25,14 @@
 //!
 //! # 与 pi 的已知差异
 //!
-//! - **模型目录只有静态快照**：pi 登录后会再拉一次官方 `model/list`；toiler 用
-//!   [`constants::STATIC_CATALOG`]，官方改显示名/上下架后要跟着升版本（与内置
-//!   供应商表同一套维护方式）。
+//! - **模型目录可手动刷新**：优先使用当前账号的官方 `model/list` 缓存；
+//!   首次登录前或尚未刷新时用 [`constants::STATIC_CATALOG`] 离线兜底。
 //! - **只有登录/刷新走 openapi**，`user/plan`、`quota/usage` 这些用量接口没移植
 //!   （toiler 的界面不显示 Qoder 套餐额度）。
 
 pub mod auth;
 pub mod base64;
+pub mod catalog;
 pub mod constants;
 pub mod cosy;
 pub mod fingerprint;
@@ -64,7 +64,7 @@ pub fn local_base_url(port: u16, token: &str) -> String {
 /// `thinkingLevelMap` 必须给全：pi 对「目录没写档位」的推理模型把七个等级全部显式
 /// 映射为 `null`（即不在请求里带 effort），toiler 的
 /// [`crate::catalog::supported_thinking_levels`] 依赖同一语义决定下拉框。
-fn thinking_level_map(entry: &constants::CatalogEntry) -> Option<ThinkingLevelMap> {
+fn thinking_level_map(entry: &catalog::CatalogModel) -> Option<ThinkingLevelMap> {
     if !entry.reasoning {
         return None;
     }
@@ -95,7 +95,7 @@ fn thinking_level_map(entry: &constants::CatalogEntry) -> Option<ThinkingLevelMa
             ThinkingLevel::Xhigh => "xhigh",
             ThinkingLevel::Max => "max",
         };
-        let supported = entry.efforts.contains(&label);
+        let supported = entry.efforts.iter().any(|effort| effort == label);
         map.insert(level, supported.then(|| label.to_string()));
     }
     Some(map)
@@ -103,12 +103,21 @@ fn thinking_level_map(entry: &constants::CatalogEntry) -> Option<ThinkingLevelMa
 
 /// 把内置目录变成 rpi 的模型（`base_url` 指向本机转发端点）。
 pub fn models(base_url: &str) -> Vec<Model> {
-    constants::STATIC_CATALOG
+    let entries: Vec<_> = constants::STATIC_CATALOG
+        .iter()
+        .map(catalog::CatalogModel::from)
+        .collect();
+    models_from_catalog(base_url, &entries)
+}
+
+/// 缓存目录与静态目录走相同的能力和思考档位映射。
+pub fn models_from_catalog(base_url: &str, entries: &[catalog::CatalogModel]) -> Vec<Model> {
+    entries
         .iter()
         .map(|entry| {
             let mut model = Model::new(
-                entry.key,
-                entry.display_name,
+                entry.key.as_str(),
+                entry.display_name.as_str(),
                 Api::OpenaiCompletions,
                 PROVIDER_ID,
                 base_url,

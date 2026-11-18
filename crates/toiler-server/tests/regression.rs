@@ -4697,6 +4697,108 @@ async fn new_session_honours_tool_names_and_bash_rule() {
     std::fs::remove_dir_all(&project).ok();
 }
 
+/// 系统提示词的 `<skills>` 段：**名称 + 说明 + 绝对路径**都要在里面。
+///
+/// 这是曾经完全缺失的一节：`compose()` 只产出 tools / rules / project_context /
+/// cwd 四段，而 `AgentHarnessResources.skills` 也从未被填过，于是用户在技能面板
+/// 里看到一堆启用的技能，模型的系统提示词里却一个都不提 —— 它永远不知道该去哪里
+/// 读这些技能。两个消费方现在共用 `crate::skills` 的扫描结果，面板与提示词
+/// 不会再分叉。
+#[tokio::test]
+// 串行锁跨 await 持有是故意的（同其余改 `TOILER_AGENT_DIR` 的用例）。
+#[allow(clippy::await_holding_lock)]
+async fn system_prompt_lists_skills_with_name_description_and_path() {
+    let _env = env_guard();
+    let root = fixture_root("promptskills");
+    let agent_dir = fixture_root("promptskills-agent");
+    let project = fixture_root("promptskills-project");
+
+    // 名字取成本机不会存在的串，避免用户的 `~/.agents/skills` 混进断言。
+    let visible = project.join(".agents/skills/toiler-prompt-demo");
+    std::fs::create_dir_all(&visible).unwrap();
+    std::fs::write(
+        visible.join("SKILL.md"),
+        "---\nname: toiler-prompt-demo\ndescription: 演示提示词里的技能段\n---\n\n正文\n",
+    )
+    .unwrap();
+    let dormant = project.join(".agents/skills/toiler-prompt-dormant");
+    std::fs::create_dir_all(&dormant).unwrap();
+    std::fs::write(
+        dormant.join("SKILL.md"),
+        "---\nname: toiler-prompt-dormant\ndescription: 不该进提示词\ndisable-model-invocation: true\n---\n",
+    )
+    .unwrap();
+
+    // 项目技能只在项目被信任时加载（与 `/api/skills` 的 projectResourcesLoaded 同源）。
+    toiler_server::trust::TrustStore::at(agent_dir.join("trust.json"))
+        .set(project.to_str().unwrap(), Some(true))
+        .unwrap();
+
+    let cwd = project.to_string_lossy().to_string();
+    let dir = root.join(toiler_session::session_directory_name(&cwd));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(toiler_session::session_file_name(1794292904441, "sess-skills")),
+        format!(
+            "{{\"type\":\"session\",\"version\":3,\"id\":\"sess-skills\",\"timestamp\":\"2026-11-10T06:41:44.441Z\",\"cwd\":{}}}\n",
+            serde_json::to_string(&cwd).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let router = app_with_two_models(&root, &project, &agent_dir);
+    let zh = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-skills",
+        Some(r#"{"type":"set_ui_locale","locale":"zh-CN"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(zh.status, StatusCode::OK, "{}", zh.text());
+    let prompt = zh.json()["data"]["systemPrompt"]
+        .as_str()
+        .expect("set_ui_locale 必须返回 systemPrompt")
+        .to_string();
+
+    assert!(prompt.contains("<skills>"), "技能段缺失：{prompt}");
+    assert!(prompt.contains("toiler-prompt-demo"), "{prompt}");
+    assert!(
+        prompt.contains("演示提示词里的技能段"),
+        "技能说明要进提示词：{prompt}"
+    );
+    assert!(
+        prompt.contains(&format!(
+            "文件：{}/.agents/skills/toiler-prompt-demo/SKILL.md",
+            project.display()
+        )),
+        "要给绝对路径，模型才能 read：{prompt}"
+    );
+    // `disable-model-invocation: true` 的技能不进提示词（仍可 `/skill:` 显式调用）。
+    assert!(!prompt.contains("toiler-prompt-dormant"), "{prompt}");
+
+    // 切到英文：同一套结构，文案换成英文。
+    let en = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-skills",
+        Some(r#"{"type":"set_ui_locale","locale":"en"}"#),
+        &[],
+    )
+    .await;
+    let english = en.json()["data"]["systemPrompt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(english.contains("<skills>"), "{english}");
+    assert!(english.contains("toiler-prompt-demo"), "{english}");
+    assert!(english.contains("read its file in full"), "{english}");
+
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+    std::fs::remove_dir_all(&project).ok();
+}
+
 /// 系统提示词的**分节行形状**：前端「系统提示词」面板按行切分节
 /// （`lib/prompt-sections.ts` 的 `splitPromptSections`），前提是每个块的
 /// 开标签与闭标签各自独占整个一行。

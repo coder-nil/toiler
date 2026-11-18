@@ -51,6 +51,8 @@ pub struct Inner {
     pub summary_relay: Arc<crate::reasoning_summary::SummaryRelay>,
     /// `apisets` 目录正在联网刷新（防并发重复拉取，见 [`AppState::spawn_apisets_refresh`]）。
     pub apisets_refreshing: std::sync::atomic::AtomicBool,
+    /// 手动刷新串行化；重复请求明确返回忙碌，不让旧请求覆盖较新的目录。
+    pub models_refresh_gate: tokio::sync::Mutex<()>,
 }
 
 /// 服务绑定的地址；`port == 0` 表示还没绑定。
@@ -101,6 +103,7 @@ impl AppState {
                 qoder_cn_token: uuid::Uuid::new_v4().simple().to_string(),
                 summary_relay: Arc::new(crate::reasoning_summary::SummaryRelay::default()),
                 apisets_refreshing: std::sync::atomic::AtomicBool::new(false),
+                models_refresh_gate: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -220,18 +223,37 @@ impl AppState {
         if port == 0 {
             return false;
         }
+        if self.models_define(crate::qoder_cn::PROVIDER_ID) {
+            return false;
+        }
         let current = self.catalog();
-        if current
-            .providers
+        let base = crate::qoder_cn::local_base_url(port, &self.qoder_cn_token());
+        let entries = crate::qoder_cn::catalog::entries(self.models_file().path(), self.auth());
+        let models = crate::qoder_cn::models_from_catalog(&base, &entries);
+        let installed: Vec<_> = current
+            .models
             .iter()
-            .any(|p| p.id() == crate::qoder_cn::PROVIDER_ID)
+            .filter(|model| model.provider == crate::qoder_cn::PROVIDER_ID)
+            .collect();
+        if installed.len() == models.len()
+            && installed.iter().zip(&models).all(|(old, new)| {
+                old.id == new.id
+                    && old.name == new.name
+                    && old.base_url == new.base_url
+                    && old.reasoning == new.reasoning
+                    && old.input == new.input
+                    && old.context_window == new.context_window
+                    && old.max_tokens == new.max_tokens
+                    && old.thinking_level_map == new.thinking_level_map
+            })
         {
             return false;
         }
-        let base = crate::qoder_cn::local_base_url(port, &self.qoder_cn_token());
-        // 只在 debug 级打出来：地址里含路径令牌（防局域网滥用），默认日志不落盘。
-        tracing::debug!("qoder-cn 本机转发端点：{base}");
-        let next = (*current).clone().with_qoder_cn(&base);
+        let default_entry = current
+            .default_entry()
+            .map(|entry| (entry.provider.clone(), entry.id.clone()));
+        let mut next = (*current).clone().with_qoder_cn_models(models);
+        next.apply_default_hint(default_entry);
         self.replace_catalog(next);
         true
     }
@@ -277,12 +299,74 @@ impl AppState {
         installed
     }
 
-    /// 把内置 provider 全部重新对齐一遍（`qoder-cn` + `apisets`）。
+    /// 把普通内置 API Key provider 的缓存目录注入运行时目录。
+    ///
+    /// 用户配置与远端模型取并集；同 id 的模型始终优先采用用户的元数据。
+    /// 缓存 URL/协议与当前配置不一致时不注入，避免代理切换后读到另一家的目录。
+    pub fn attach_remote_api_key_providers(&self) {
+        let root = self.models_file().read();
+        let current = self.catalog();
+        let default_entry = current
+            .default_entry()
+            .map(|entry| (entry.provider.clone(), entry.id.clone()));
+        let mut next = (*current).clone();
+        for builtin in crate::builtin_providers::all() {
+            if !builtin.api_key
+                || builtin.id == crate::apisets::PROVIDER_ID
+                || builtin.id == crate::qoder_cn::PROVIDER_ID
+            {
+                continue;
+            }
+            let config = crate::models_json::provider_config(&root, builtin.id);
+            let key = config
+                .and_then(|config| {
+                    crate::routes::models_config::resolve_api_key(self, builtin.id, config)
+                })
+                .or_else(|| self.auth().api_key(builtin.id));
+            let Some(cached) = crate::remote_models::read(self.models_file().path(), builtin.id)
+            else {
+                continue;
+            };
+            let base_url = config
+                .and_then(|value| value["baseUrl"].as_str())
+                .unwrap_or(&cached.base_url);
+            let api = config
+                .and_then(|value| value["api"].as_str())
+                .unwrap_or(&cached.api);
+            let mut defs = config
+                .and_then(|value| value["models"].as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut seen: std::collections::BTreeSet<String> = defs
+                .iter()
+                .filter_map(|value| value["id"].as_str().map(str::to_string))
+                .collect();
+            if key.is_some() && base_url == cached.base_url && api == cached.api {
+                defs.extend(cached.models.into_iter().filter(|value| {
+                    value["id"]
+                        .as_str()
+                        .is_some_and(|id| seen.insert(id.to_string()))
+                }));
+            }
+            next = next.with_remote_provider(
+                builtin.id,
+                api,
+                base_url,
+                key.as_deref().unwrap_or(""),
+                &defs,
+            );
+        }
+        next.apply_default_hint(default_entry);
+        self.replace_catalog(next);
+    }
+
+    /// 把内置 provider 全部重新对齐一遍（`qoder-cn` + `apisets` + 远端 API Key 目录）。
     ///
     /// 登录 / 退出 / 存或删 API Key 之后都必须调一次：目录是快照，凭据变了就要重算。
     pub fn attach_builtin_providers(&self) {
         self.attach_qoder_cn();
         self.attach_apisets();
+        self.attach_remote_api_key_providers();
     }
 
     /// 后台拉一次 apisets 目录（成功则落盘并重新注入目录）。
@@ -310,6 +394,7 @@ impl AppState {
         }
         let state = self.clone();
         handle.spawn(async move {
+            let _refresh_guard = state.inner.models_refresh_gate.lock().await;
             let models_json = state.inner.models_file.path().to_path_buf();
             match crate::apisets::refresh(&key, &models_json).await {
                 Ok(defs) => {

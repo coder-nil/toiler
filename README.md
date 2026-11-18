@@ -350,16 +350,23 @@ curl -s "localhost:8787/api/auth/providers" | jq .
 计划砍掉）、除 `qoder-cn` 之外的 OAuth 登录（返回 501）。前端联调已在阶段 4 打通（见下）。
 
 `qoder-cn`（Qoder 国内版订阅）是完整移植：设备码登录、COSY 签名、请求体改写、
-SSE 信封解包、15 个内置模型 —— 见 `crates/toiler-server/src/qoder_cn/`。
+SSE 信封解包、远端模型目录刷新、15 个内置模型兜底 —— 见 `crates/toiler-server/src/qoder_cn/`。
 rpi 的 provider 不允许注入传输层，所以模型的 `baseUrl` 指向本进程的
 `/qoder-cn/<token>/v1/chat/completions`，由它完成改写（等价 pi 的 `withQoderCnFetch`）。
 
 供应商目录（pi 面板里那 44 家）已经补齐：写死在
 `crates/toiler-server/src/builtin_providers.rs`（pi SDK 目录 42 家 + pi-desktop
 自注册的 `apisets` / `qoder-cn`），由 `/api/auth/providers`（10 家订阅）
-与 `/api/auth/all-providers`（42 家 API Key）输出。但**内置模型目录仍没带过来**：
-除 `qoder-cn`（静态快照）与 `apisets`（远端目录，见下）之外的 40 家，填了 API Key
-之后模型 id 还得自己写进 `models.json`。
+与 `/api/auth/all-providers`（42 家 API Key）输出。**API Key 详情页提供「刷新模型列表」**：
+服务端用已保存的凭据请求供应商 `/models`，结果放入 `models-store.json` 并注入运行时目录，
+不会覆盖用户的 `models.json` 或 `enabledModels` 白名单。刷新失败保留旧目录；成功后
+新模型可在设置中勾选。普通供应商只在手动刷新时联网，重启复用缓存。
+订阅供应商也共用同一位置的刷新图标；已实现的 Qoder CN 用 OAuth 凭据走 COSY 签名的
+官方 `model/list`，按账号缓存并更新对话转发层。其它尚未实现订阅目录的供应商会明确提示，
+不会把订阅令牌误当 API Key。
+要求供应商提供兼容模型列表接口，且模型协议是当前支持的 `openai-completions`、
+`openai-responses` 或 `anthropic-messages`；其它协议或缺少 Base URL 时明确报错，
+仍可通过自定义 Provider 导入模型。
 
 `apisets`（设置页里显示为 **Coding**，`https://coding.apisets.com`）的模型清单**不在
 静态表里**，而是运行时拉上游 `GET /v1/models` 并缓存在 `<configs>/models-store.json`

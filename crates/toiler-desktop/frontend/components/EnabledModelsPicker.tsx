@@ -23,6 +23,8 @@ interface EnabledModelsPickerProps {
   reloadKey?: string | number;
   /** 勾选变化并保存成功后触发，用于刷新对话框的模型选择列表。 */
   onChanged?: () => void;
+  /** 紧跟在已选数量后的操作入口（例如远端目录刷新）。 */
+  countAction?: React.ReactNode;
 }
 
 /**
@@ -32,7 +34,7 @@ interface EnabledModelsPickerProps {
  * CLI 的 `--models` 作用域）会立即收窄到勾选的模型。整组勾选会简写成
  * `provider/*`，全部勾选则清空设置（回到“全部可见”的默认状态）。
  */
-export function EnabledModelsPicker({ providerId, disabled = false, reloadKey, onChanged }: EnabledModelsPickerProps) {
+export function EnabledModelsPicker({ providerId, disabled = false, reloadKey, onChanged, countAction }: EnabledModelsPickerProps) {
   const { t } = useI18n();
   const [state, setState] = useState<PickerState>({ phase: "loading" });
   const [query, setQuery] = useState("");
@@ -158,13 +160,14 @@ export function EnabledModelsPicker({ providerId, disabled = false, reloadKey, o
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
           <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>{t("models.visibleTitle")}</span>
           {models.length > 0 && (
             <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
               {t("models.visibleSelectedCount", { selected: selectedCount, total: models.length })}
             </span>
           )}
+          {countAction}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           {saving && <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{t("models.visibleSaving")}</span>}

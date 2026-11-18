@@ -82,10 +82,22 @@ pub async fn chat_completions(
         }
     };
 
+    let model_id = openai_body
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let Some(catalog) = super::catalog::find(state.models_file().path(), state.auth(), model_id)
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": { "message": format!("Qoder CN：未知模型 {model_id}") } })),
+        )
+            .into_response();
+    };
     let credentials = CredentialSource {
         store: state.auth().clone(),
     };
-    match chat_stream(&credentials, openai_body).await {
+    match chat_stream(&credentials, openai_body, &catalog).await {
         Ok(outcome) => {
             let stream = outcome
                 .stream

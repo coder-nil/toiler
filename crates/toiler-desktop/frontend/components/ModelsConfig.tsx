@@ -5,6 +5,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
 import { SelectPicker } from "./SelectPicker";
 import { EnabledModelsPicker } from "./EnabledModelsPicker";
+import { ProviderModelsPicker } from "./ProviderModelsPicker";
 import type { ModelCatalogPreset, ModelCatalogRecommendation } from "@/lib/model-catalog";
 import type { DiscoveredModel } from "@/lib/model-discovery";
 import { copyText } from "@/lib/clipboard";
@@ -500,7 +501,6 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
       </Field>
 
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-        {discoveryState.phase !== "success" && (
           <button
             onClick={handleDiscoverModels}
             disabled={!provider.baseUrl?.trim() || discoveryState.phase === "loading"}
@@ -510,9 +510,8 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
               cursor: !provider.baseUrl?.trim() || discoveryState.phase === "loading" ? "not-allowed" : "pointer", fontSize: 11,
             }}
           >
-            {discoveryState.phase === "loading" ? t("models.discoveryFetching") : t("models.discoveryFetch")}
+            {discoveryState.phase === "loading" ? t("models.discoveryFetching") : discoveryState.phase === "success" ? t("models.refreshProviderModels") : t("models.discoveryFetch")}
           </button>
-        )}
 
         {discoveryState.phase === "error" && (
           <div style={{ padding: "7px 9px", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 5, color: "#ef4444", fontSize: 11, lineHeight: 1.4 }}>
@@ -1503,6 +1502,7 @@ function BuiltinModelDetail({
 
 function OAuthDetail({ provider, onRefresh, onModelsChanged }: { provider: OAuthProvider; onRefresh: () => void; onModelsChanged?: () => void }) {
   const [loginState, setLoginState] = useState<OAuthLoginState>({ phase: "idle" });
+  const [loginTick, setLoginTick] = useState(0);
   // 打开登录链接的兜底提示：桌面端/浏览器都可能打不开，必须告诉用户「链接已经给你了」。
   const [openHint, setOpenHint] = useState<string | null>(null);
   const { t } = useI18n();
@@ -1568,7 +1568,9 @@ function OAuthDetail({ provider, onRefresh, onModelsChanged }: { provider: OAuth
       } else if (data.type === "success") {
         es.close();
         setLoginState({ phase: "success" });
+        setLoginTick((tick) => tick + 1);
         onRefresh();
+        onModelsChanged?.();
       } else if (data.type === "error") {
         es.close();
         setLoginState({ phase: "error", message: data.message! });
@@ -1581,13 +1583,14 @@ function OAuthDetail({ provider, onRefresh, onModelsChanged }: { provider: OAuth
       es.close();
       setLoginState((prev) => prev.phase === "success" ? prev : { phase: "error", message: "Connection lost" });
     };
-  }, [provider.id, onRefresh]);
+  }, [provider.id, onRefresh, onModelsChanged]);
 
   const handleLogout = useCallback(async () => {
     await fetch(`/api/auth/logout/${encodeURIComponent(provider.id)}`, { method: "POST" });
     setLoginState({ phase: "idle" });
     onRefresh();
-  }, [provider.id, onRefresh]);
+    onModelsChanged?.();
+  }, [provider.id, onRefresh, onModelsChanged]);
 
   const submitCode = useCallback(async (token: string, code: string) => {
     if (!code.trim()) return;
@@ -1795,9 +1798,7 @@ function OAuthDetail({ provider, onRefresh, onModelsChanged }: { provider: OAuth
         )}
       </div>
 
-      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
-        <EnabledModelsPicker providerId={provider.id} onChanged={onModelsChanged} />
-      </div>
+      <ProviderModelsPicker providerId={provider.id} configured={provider.loggedIn} busy={isWorking} reloadKey={loginTick} onChanged={onModelsChanged} onRefresh={onRefresh} />
     </div>
   );
 }
@@ -1814,6 +1815,7 @@ function ApiKeyDetail({ provider, onRefresh, onModelsChanged }: { provider: ApiK
   const [maskedKey, setMaskedKey] = useState<string | null>(null);
   /** 用户是否已经动过输入框；未动时输入框展示掩码。 */
   const [dirty, setDirty] = useState(false);
+  const [modelRefreshTick, setModelRefreshTick] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const { t } = useI18n();
 
@@ -1860,6 +1862,8 @@ function ApiKeyDetail({ provider, onRefresh, onModelsChanged }: { provider: ApiK
         setSavedOk(true);
         setDirty(false);
         loadMaskedKey();
+        setModelRefreshTick((tick) => tick + 1);
+        onModelsChanged?.();
         setTimeout(() => setSavedOk(false), 2000);
         onRefresh();
       }
@@ -1868,7 +1872,7 @@ function ApiKeyDetail({ provider, onRefresh, onModelsChanged }: { provider: ApiK
     } finally {
       setSaving(false);
     }
-  }, [apiKey, maskedKey, provider.id, onRefresh, loadMaskedKey]);
+  }, [apiKey, maskedKey, provider.id, onRefresh, loadMaskedKey, onModelsChanged]);
 
   const handleRemove = useCallback(async () => {
     setRemoving(true);
@@ -1969,9 +1973,7 @@ function ApiKeyDetail({ provider, onRefresh, onModelsChanged }: { provider: ApiK
 
       {error && <p style={{ margin: 0, fontSize: 12, color: "#f87171" }}>{error}</p>}
 
-      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
-        <EnabledModelsPicker providerId={provider.id} onChanged={onModelsChanged} />
-      </div>
+      <ProviderModelsPicker providerId={provider.id} configured={provider.configured} busy={saving || removing} reloadKey={modelRefreshTick} onChanged={onModelsChanged} onRefresh={onRefresh} />
     </div>
   );
 }

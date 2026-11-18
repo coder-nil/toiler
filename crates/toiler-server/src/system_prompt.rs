@@ -13,7 +13,7 @@
 //! 顺序来自 `@earendil-works/pi-coding-agent` 的 `buildSystemPromptSections()`：
 //!
 //! ```text
-//! preamble → <tools> → <rules> → <project_context> → <cwd>
+//! preamble → <tools> → <rules> → <skills> → <project_context> → <cwd>
 //! ```
 //!
 //! `preamble` 是裸文本，其余各节包一层同名标签，节与节之间用空行连接
@@ -26,7 +26,7 @@
 //! | 项 | pi | 这里 |
 //! |---|---|---|
 //! | `<docs>` 段 | 指向 pi 安装包里的 README/docs/examples | 省略：toiler 不带 pi 的文档树，写进去就是模型读不到的路径 |
-//! | `<skills>` 段 | `buildSystemPromptSections` 写入 | 交给 rpi harness 在组装时追加（见 `AgentHarness::compose_prompt`）；toiler 目前不把技能装进 `AgentHarnessResources`，所以这一节通常为空 |
+//! | `<skills>` 段 | `buildSystemPromptSections` 写入，英文 `<available_skills>` 列表 | 中文 `<skills>` 段由 [`PromptInputs::compose`] 自己生成（名称 + 说明 + 绝对路径）；同时把技能装进 `AgentHarnessResources::skills`，让 `/skill:名称` 能展开。为了不让 harness 再追加一份英文列表，资源里每个技能的 `disable_model_invocation` 都置 `true`（见 `agent_runtime`） |
 //! | `<project_context>` | 默认内联全文，由 pi-desktop 的 `digestProjectContext` 压成路径 | 直接生成「路径 + 读取指引」；没有 `read` 工具时退回全文（一条读不到的指引比多花 token 更糟） |
 //! | 语言 | pi-desktop 用 `before_agent_start` 扩展整句替换 + 追加语言指令 | 组装时按 `Locale` 直接选中文/英文文案，并把语言指令追加在末尾 |
 //! | 普通对话模式 | 整段换成一段闲聊提示词（`lib/chat-mode-prompt.ts`） | **完全不带系统提示词**：`compose` 返回空串，`rpi_agent` 的 `agent_loop` 把空串转成 `None`，请求里就不发 system 消息 |
@@ -36,6 +36,8 @@ use std::sync::Arc;
 
 use rpi_harness::context_files::{load_project_context_files, ContextFile};
 use rpi_tools::{ExecutionEnv, OsExecutionEnv};
+
+use crate::skills::LoadedSkill;
 
 /// 界面语言。取值与 pi-desktop 的 `UiLocale` 一致：只认 `zh-CN`，其余都算 `en`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +68,11 @@ pub struct PromptInputs {
     cwd: String,
     tool_names: Vec<String>,
     context_files: Vec<ContextFile>,
+    /// 已发现的技能（来自 `crate::skills::load`）。
+    ///
+    /// 留着原件而不是只留列表文本：换界面语言要重新组装整段提示词，
+    /// 技能的说明与路径都在这里。
+    skills: Vec<LoadedSkill>,
     /// 普通对话模式（输入框左侧 π 图标）：不带任何系统提示词。
     ///
     /// 与「工具预设全关」不是一回事 —— 那个只是清空工具集，preamble、行为准则
@@ -74,20 +81,30 @@ pub struct PromptInputs {
 }
 
 impl PromptInputs {
-    /// 发现 `AGENTS.md` 一族项目指令文件。
+    /// 发现 `AGENTS.md` 一族项目指令文件与技能。
     ///
     /// `agent_dir` 是 toiler 自己的 agent 目录（`~/.agents/toiler`），对应 pi 的
     /// `~/.pi/agent`：那里的 `AGENTS.md` 是用户级常驻指令，排在项目文件之前。
     /// 读不到就当作没有 —— 没有 AGENTS.md 的项目不该因此开不了会话。
-    pub async fn load(cwd: &str, tool_names: &[String], agent_dir: &Path) -> Self {
+    ///
+    /// `trusted` 是项目是否已被信任：未信任时项目技能不参与，与 `/api/skills`
+    /// 的 `projectResourcesLoaded` 同一个布尔值，两边不能各算一份。
+    pub async fn load(cwd: &str, tool_names: &[String], agent_dir: &Path, trusted: bool) -> Self {
         let env: Arc<dyn ExecutionEnv> = Arc::new(OsExecutionEnv::with_cwd(PathBuf::from(cwd)));
         let context_files = load_project_context_files(&env, Path::new(cwd), agent_dir).await;
+        let skills = crate::skills::load(Path::new(cwd), trusted).await.skills;
         Self {
             cwd: cwd.to_string(),
             tool_names: tool_names.to_vec(),
             context_files,
+            skills,
             chat_mode: false,
         }
+    }
+
+    /// 已发现的技能（`agent_runtime` 要把它们装进 `AgentHarnessResources`）。
+    pub fn skills(&self) -> &[LoadedSkill] {
+        &self.skills
     }
 
     /// 当前启用的工具名（与 `<tools>` 段、harness 的 active 集合一致）。
@@ -126,6 +143,9 @@ impl PromptInputs {
         }
         if let Some(rules) = self.rules_section(locale) {
             sections.push(("rules", rules));
+        }
+        if let Some(skills) = self.skills_section(locale) {
+            sections.push(("skills", skills));
         }
         if let Some(context) = self.project_context_section(locale) {
             sections.push(("project_context", context));
@@ -216,6 +236,56 @@ impl PromptInputs {
                 .collect::<Vec<_>>()
                 .join("\n"),
         )
+    }
+
+    /// `<skills>`：可用技能的名称 + 说明 + 绝对路径。
+    ///
+    /// 两条过滤条件与 pi 的 `skills.ts` 一致：
+    ///
+    /// - **没有 `read` 工具时整段不发**（`activeToolNames.includes("read")`）。技能
+    ///   正文只能靠 `read` 展开，发布清单却读不到，不如不发。
+    /// - **`disable-model-invocation: true` 的技能不列**：它们在面板里仍可见、
+    ///   仍可用 `/skill:名称` 显式调用，只是不该被模型自作主张地拿起来。
+    ///
+    /// 与 pi 的差异：pi（以及 rpi 的 `format_skills_for_system_prompt`）用英文的
+    /// `<available_skills>` 列表；这里按界面语言自己拼，与 `<tools>` / `<rules>`
+    /// 的中文风格一致。完全相同时就不必再套一层英文标签。
+    fn skills_section(&self, locale: Locale) -> Option<String> {
+        if !self.tool_names.iter().any(|tool| tool == "read") {
+            return None;
+        }
+        let visible: Vec<&LoadedSkill> = self
+            .skills
+            .iter()
+            .filter(|loaded| !loaded.skill.disable_model_invocation.unwrap_or(false))
+            .collect();
+        if visible.is_empty() {
+            return None;
+        }
+
+        let lead = if locale.zh() {
+            "以下技能针对特定任务提供专门的操作说明。当任务与某个技能的说明相符时，\
+             先用 read 工具完整读取它的文件，再按里面的步骤执行。\
+             技能文件里的相对路径以该技能所在目录（SKILL.md 的父目录）为基准。"
+        } else {
+            "The following skills provide specialized instructions for specific tasks. \
+             When a task matches a skill's description, read its file in full with the read \
+             tool first and then follow its steps. Relative paths inside a skill file resolve \
+             against the skill's own directory (the parent of SKILL.md)."
+        };
+
+        let list = visible
+            .iter()
+            .map(|loaded| {
+                format!(
+                    "- {}: {}\n  文件：{}",
+                    loaded.skill.name, loaded.skill.description, loaded.skill.file_path
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Some(format!("{lead}\n\n{list}"))
     }
 
     /// `<project_context>`：有 `read` 时压成路径列表，否则内联全文。
@@ -489,18 +559,37 @@ mod tests {
             cwd: "/tmp/demo".to_string(),
             tool_names,
             context_files,
+            skills: Vec::new(),
             chat_mode: false,
+        }
+    }
+
+    /// 造一条已发现技能，路径固定以便断言。
+    fn skill(name: &str, description: &str, disabled: bool) -> LoadedSkill {
+        LoadedSkill {
+            skill: rpi_harness::types::Skill {
+                name: name.to_string(),
+                description: description.to_string(),
+                content: "正文".to_string(),
+                file_path: format!("/tmp/demo/.agents/skills/{name}/SKILL.md"),
+                disable_model_invocation: disabled.then_some(true),
+            },
+            origin: crate::skills::Origin::Project,
         }
     }
 
     #[test]
     fn sections_follow_pi_order_and_wrap_non_preamble_parts() {
-        let prompt = inputs(standard_tools(), Vec::new()).compose(Locale::En);
+        let mut prompt_inputs = inputs(standard_tools(), Vec::new());
+        prompt_inputs.skills = vec![skill("demo-skill", "演示用技能", false)];
+        let prompt = prompt_inputs.compose(Locale::En);
         assert!(prompt.starts_with("You are an expert coding assistant"));
         let tools = prompt.find("<tools>").expect("tools 段");
         let rules = prompt.find("<rules>").expect("rules 段");
+        let skills = prompt.find("<skills>").expect("skills 段");
         let cwd = prompt.find("<cwd>").expect("cwd 段");
-        assert!(tools < rules && rules < cwd);
+        // skills 排在 rules 之后、project_context / cwd 之前（与 pi 的分节顺序一致）。
+        assert!(tools < rules && rules < skills && skills < cwd);
         assert!(prompt.contains("- read: Read file contents"));
         assert!(prompt.contains("- edit: Make precise file edits"));
         assert!(prompt.contains("<cwd>\n/tmp/demo\n</cwd>"));
@@ -508,6 +597,49 @@ mod tests {
         assert!(
             prompt.ends_with("Switch languages only when the user explicitly asks you to do so.")
         );
+    }
+
+    /// 技能的三个字段（名称 / 说明 / 路径）必须都在提示词里。
+    ///
+    /// 这三项就是这次修的那个缺口：提示词里完全没有技能段时，模型既不知道
+    /// 有这些技能，也不知道该去哪里读。
+    #[test]
+    fn skills_section_lists_name_description_and_path() {
+        let mut prompt_inputs = inputs(standard_tools(), Vec::new());
+        prompt_inputs.skills = vec![skill("k8s-deploy", "把服务部署到 K8s 集群", false)];
+
+        let zh = prompt_inputs.compose(Locale::ZhCn);
+        assert!(zh.contains("<skills>"), "{zh}");
+        assert!(zh.contains("k8s-deploy"), "{zh}");
+        assert!(zh.contains("把服务部署到 K8s 集群"), "{zh}");
+        assert!(
+            zh.contains("文件：/tmp/demo/.agents/skills/k8s-deploy/SKILL.md"),
+            "技能路径必须给绝对路径：{zh}"
+        );
+        assert!(zh.contains("先用 read 工具完整读取"), "{zh}");
+
+        let en = prompt_inputs.compose(Locale::En);
+        assert!(en.contains("<skills>"), "{en}");
+        assert!(en.contains("read its file in full"), "{en}");
+    }
+
+    /// `disable-model-invocation: true` 的技能不进提示词（面板里仍可见、仍可 `/skill:`）。
+    #[test]
+    fn dormant_skills_are_hidden_from_the_prompt() {
+        let mut prompt_inputs = inputs(standard_tools(), Vec::new());
+        prompt_inputs.skills = vec![skill("dormant", "不该出现", true)];
+        let prompt = prompt_inputs.compose(Locale::ZhCn);
+        assert!(!prompt.contains("<skills>"), "全被禁用时整段不发：{prompt}");
+        assert!(!prompt.contains("dormant"), "{prompt}");
+    }
+
+    /// 没有 `read` 工具时整段不发：技能正文根本读不到，列出来反而是误导。
+    #[test]
+    fn skills_section_requires_the_read_tool() {
+        let mut prompt_inputs = inputs(vec!["bash".into()], Vec::new());
+        prompt_inputs.skills = vec![skill("demo-skill", "演示用技能", false)];
+        let prompt = prompt_inputs.compose(Locale::ZhCn);
+        assert!(!prompt.contains("<skills>"), "{prompt}");
     }
 
     #[test]

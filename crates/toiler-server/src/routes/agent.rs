@@ -453,7 +453,19 @@ async fn ensure_agent_with_model(
     // 选什么都回到默认模型（用户报的「不管选什么都会被重置」就是这条）；
     // 而在没指定时仍要看 `enabledModels` 可见范围，见 `default_model_ref`。
     let preferred = requested.or_else(|| state.default_model_ref());
-    let started = LiveAgent::start(id, &path, &cwd, &catalog, preferred, state.settings()).await;
+    // 项目是否已信任：决定项目技能要不要参与系统提示词的 `<skills>` 段与
+    // `/skill:` 展开，与 `/api/skills` 的 `projectResourcesLoaded` 同一语义。
+    let trusted = crate::trust::status(state.project_trust(), &cwd).trusted;
+    let started = LiveAgent::start(
+        id,
+        &path,
+        &cwd,
+        &catalog,
+        preferred,
+        state.settings(),
+        trusted,
+    )
+    .await;
     state.live().clear_starting(id);
     match started {
         Ok(agent) => {

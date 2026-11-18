@@ -150,6 +150,10 @@ pub fn router(state: AppState) -> Router {
             post(crate::routes::models_config::discover),
         )
         .route(
+            "/api/models-config/refresh",
+            post(crate::routes::models_config::refresh),
+        )
+        .route(
             "/api/models-config/test",
             post(crate::routes::models_config::test),
         )

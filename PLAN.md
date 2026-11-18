@@ -288,14 +288,17 @@ data 都凑不出来，`enabledModels` 里的 `apisets/*` 模式也就全部落�
 - [x] `AppState::attach_apisets` / `attach_builtin_providers` / `spawn_apisets_refresh` /
       `warm_apisets_catalog`：登录、存删 API Key、启动预热、设置页看到空列表时自动刷新
       （并发去重；用户自己在 `models.json` 写同名 provider 时不插手——与 `qoder-cn` 同规则）
+- [x] Qoder CN 订阅模型手动刷新：OAuth 凭据走 COSY 签名 `model/list`，按账号缓存，
+      动态模型同步到 qoder 转发层；其他未实现 OAuth 供应商返回明确的未实现提示
 - [x] 卡片上的「N models」也数 catalog（`/api/auth/all-providers`），不再是 0
 
 **验收**：新增 4 条回归用例（缓存注入 + 白名单不再报假警告 + 卡片计数 + 删 key 后
 模型下架 / 无 key 不联网 / 旧 etag 作废 / `models.json` 覆盖优先）；`cargo test` 全绿、
 `cargo clippy --all-targets` 0 warning。
 
-**边界**：`deepseek` / `openrouter` 在 pi 侧也各有一条 `refreshModels`（走 models.dev
-目录），toiler 仍只读 `models.json`——那两家属于「内置模型目录」这个大缺口，不在本次范围。
+**后续补齐**：API Key 详情现提供手动「刷新模型列表」，`deepseek` / `openrouter` 等
+兼容供应商直接请求其 `/models`（不接 models.dev），缓存与用户 `models.json` 分离。
+仅支持当前 rpi 已实现的三种模型协议；详见 README 与契约的模型刷新扩展。
 
 ## 明确不做的
 

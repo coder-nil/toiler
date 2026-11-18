@@ -126,7 +126,10 @@ fn model_count(
 ) -> usize {
     let mut ids: BTreeSet<String> = BTreeSet::new();
     if let Some(provider) = builtin {
-        ids.extend(provider.models.iter().map(|model| (*model).to_string()));
+        // 已刷新过的目录以运行时快照为准，不再把旧静态表里的下架模型计入卡片。
+        if crate::remote_models::read(state.models_file().path(), id).is_none() {
+            ids.extend(provider.models.iter().map(|model| (*model).to_string()));
+        }
     }
     if let Some(list) = provider_config(models, id)
         .and_then(|config| config.get("models"))

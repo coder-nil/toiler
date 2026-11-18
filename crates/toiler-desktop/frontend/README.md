@@ -12,8 +12,10 @@ Rust 服务提供，agent 执行使用 crates.io 的 `rpi`。
 - `lib/api-types.ts`、`session-stats.ts`、`agent-event-wire.ts` 等定义本服务的
   响应类型，不从旧 SDK 反推类型；修改时应核对 Rust 接口与 `docs/contracts/`。
 - `lib/desktop-access.ts`、`mobile-pair.ts`、`model-catalog.ts`、
-  `model-discovery.ts`、`plugin-catalog.ts`、`session-search.ts` 仅保留界面消费的类型，
+  `plugin-catalog.ts`、`session-search.ts` 仅保留界面消费的类型，
   不执行配置读写、网卡探测、会话搜索或供应商请求。
+- `lib/model-discovery.ts` 保留模型发现类型与对本地 `/api/models-config/refresh` 的
+  浏览器请求封装，不直接请求供应商；API Key 解析、上游请求与目录缓存均由 Rust 负责。
 - 手机组件及其辅助模块仍保留；`app/m/page.tsx` 已挂载 `MobileRemoteView`，
   `/m?session=…&cwd=…` 以静态页运行，不需要 Next 服务端。
   `lib/mobile-events.ts` 对齐 Rust 的 `agent_end`，与快照、流式消息和 ask_user 共同使用。

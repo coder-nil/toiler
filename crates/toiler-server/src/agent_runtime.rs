@@ -89,6 +89,10 @@ pub struct LiveAgent {
 
 impl LiveAgent {
     /// 打开已有会话文件并建 agent。
+    ///
+    /// `trusted` 是项目是否已被信任（`crate::trust::status(...).trusted`）：未信任时
+    /// 项目技能不参与系统提示词的 `<skills>` 段，与 `/api/skills` 的
+    /// `projectResourcesLoaded` 同一个布尔值。
     #[allow(clippy::too_many_arguments)]
     pub async fn start(
         id: &str,
@@ -97,10 +101,14 @@ impl LiveAgent {
         catalog: &ModelCatalog,
         preferred: Option<(String, String)>,
         settings: &SettingsFile,
+        trusted: bool,
     ) -> Result<Arc<Self>> {
         let storage = V3SessionStorage::load(path)
             .with_context(|| format!("加载会话 {} 失败", path.display()))?;
-        Self::start_with_storage(id, path, storage, cwd, catalog, preferred, settings).await
+        Self::start_with_storage(
+            id, path, storage, cwd, catalog, preferred, settings, trusted,
+        )
+        .await
     }
 
     /// 同上，但直接用现成的 `V3SessionStorage`（新建会话时省一次重读）。
@@ -113,6 +121,7 @@ impl LiveAgent {
         catalog: &ModelCatalog,
         preferred: Option<(String, String)>,
         settings: &SettingsFile,
+        trusted: bool,
     ) -> Result<Arc<Self>> {
         let session = Session::new(Arc::new(storage), None);
 
@@ -138,15 +147,33 @@ impl LiveAgent {
         tasks.restore(restore_tasks(path, None));
         let queue_modes = settings.queue_modes();
 
-        // 系统提示词：preamble / tools / rules / project_context / cwd + 语言指令。
+        // 系统提示词：preamble / tools / rules / skills / project_context / cwd + 语言指令。
         //
-        // AGENTS.md 在这里读一次：它是会话级常量，不必每轮重新发现。全局那一份
-        // 从 toiler 自己的 agent 目录取（对应 pi 的 `~/.pi/agent`）。
+        // AGENTS.md 与技能都在这里读一次：它们是会话级常量，不必每轮重新发现。
+        // 全局 AGENTS.md 从 toiler 自己的 agent 目录取（对应 pi 的 `~/.pi/agent`）。
         let prompt_inputs =
-            PromptInputs::load(cwd, &tool_names, &crate::paths::toiler_home()).await; // 默认英文：pi 的 `normalizeUiLocale` 对未知值也给 en。桌面前端打开会话后
-                                                                                      // 会发 `set_ui_locale`（它记得用户选的界面语言），这里随即换成中文文案。
+            PromptInputs::load(cwd, &tool_names, &crate::paths::toiler_home(), trusted).await; // 默认英文：pi 的 `normalizeUiLocale` 对未知值也给 en。桌面前端打开会话后
+                                                                                               // 会发 `set_ui_locale`（它记得用户选的界面语言），这里随即换成中文文案。
         let locale = Locale::En;
         let system_prompt = prompt_inputs.compose(locale);
+
+        // 技能同时装进 harness 的资源，否则输入框技能菜单发出的 `/skill:名称`
+        // 会被原样当成普通文本发给模型（rpi 只在自己 resources 里找技能）。
+        //
+        // 每个技能的 `disable_model_invocation` 都置 `true`：harness 会在基座提示词
+        // 后追加它自己那份**英文** `<available_skills>` 列表，而上面 `compose()` 已经
+        // 写过中文 `<skills>` 段了。rpi 的 `format_skills_for_system_prompt` 恰好按这个
+        // 标志过滤（`compose_prompt` 的注释与 `skills.rs` 的可见性过滤），所以这里
+        // 置 true 既能保留 `/skill:` 展开、又不会让提示词里出现两份技能清单。
+        let skills = prompt_inputs
+            .skills()
+            .iter()
+            .map(|loaded| {
+                let mut skill = loaded.skill.clone();
+                skill.disable_model_invocation = Some(true);
+                skill
+            })
+            .collect::<Vec<_>>();
 
         let history = std::fs::read_to_string(path).unwrap_or_default();
         let entries: Vec<Value> = history
@@ -170,6 +197,12 @@ impl LiveAgent {
             active_tool_names: tool_names,
             tools: tools.into_iter().map(|(_, tool)| tool).collect(),
             system_prompt: Some(system_prompt.clone()),
+            // `/skill:名称` 的展开靠这份资源（rpi 的 `expand_skill_input` 只查
+            // `resources.skills`）；`: None` 时命令会被当普通文本发出去。
+            resources: rpi_harness::types::AgentHarnessResources {
+                skills: Some(skills),
+                ..Default::default()
+            },
             session,
             allow_existing_session: true,
             // 装一层装饰器：把「流式连接被上游掐断」这类传输层中断标成 harness 认得的
@@ -190,6 +223,11 @@ impl LiveAgent {
         };
 
         let harness = Arc::new(AgentHarness::create(options).await?);
+        // 技能正文由 `expand_skill_input` 在发请求前读取，需要一份执行环境；
+        // 不给的话它只打一条 `skill_expansion` 警告，命令原样发给模型。
+        let env: std::sync::Arc<dyn rpi_tools::ExecutionEnv> =
+            std::sync::Arc::new(rpi_tools::OsExecutionEnv::with_cwd(PathBuf::from(cwd)));
+        harness.set_skill_execution_env(env);
         let lane = harness.lane("main");
 
         Ok(Arc::new(Self {

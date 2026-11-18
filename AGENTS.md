@@ -54,6 +54,8 @@ tools/
 | `paths.rs` | 目录约定 + 允许访问的根目录（词法 + realpath 两层判定） |
 | `security.rs` | Host 白名单 + Origin 同源校验（**不是** Basic Auth） |
 | `session_view.rs` | 会话投影：tree / 分页 / `totalActiveMs` |
+| `skills.rs` | 技能发现：目录约定 + 信任前提 + 去重规则。**技能面板（`/api/skills`）与系统提示词的 `<skills>` 段共用这一份**，改扫描规则只改这里 |
+| `system_prompt.rs` | 系统提示词的**唯一**文案来源：preamble → `<tools>` → `<rules>` → `<skills>` → `<project_context>` → `<cwd>` + 语言指令 |
 | `agent_runtime.rs` | 活会话（`LiveAgent`）、事件广播、SSE（含 `RetryNotice`：重试提示的成对帧） |
 | `retry_provider.rs` | Provider 装饰器：把传输层中断（连接被重置）标成 harness 认得的可重试错误（见差异 24） |
 | `gitsvc.rs` | git：status / diff / worktree / 20 个白名单动作 |

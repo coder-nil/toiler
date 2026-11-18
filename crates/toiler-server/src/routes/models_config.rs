@@ -8,6 +8,7 @@
 //! | `GET    /api/models-config/enabled?provider=` | 某 provider 的模型 + 是否可见 |
 //! | `PUT    /api/models-config/enabled` | `{provider, modelIds}` → 写 `enabledModels` |
 //! | `POST   /api/models-config/discover` | 打上游 `/models`，把模型列出来 |
+//! | `POST   /api/models-config/refresh` | 刷新内置 API Key 供应商目录并更新缓存 |
 //! | `POST   /api/models-config/test` | 拿新配的模型跑一句话，验证能不能通 |
 //! | `GET    /api/models-config/catalog` | **已砍掉**（models.dev 目录），返回空表 |
 //!
@@ -296,11 +297,193 @@ pub async fn discover(
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .unwrap_or("openai-completions");
-    let Ok(endpoint) = discovery_endpoint(&base_url, api) else {
-        return bad_request("Base URL is invalid");
-    };
+    match fetch_discovered_models(&state, &provider_name, provider, &base_url, api).await {
+        Ok((models, endpoint)) => {
+            Json(json!({ "models": models, "endpoint": endpoint })).into_response()
+        }
+        Err((status, payload)) => (status, Json(payload)).into_response(),
+    }
+}
 
-    let api_key = resolve_api_key(&state, &provider_name, provider);
+/// `POST /api/models-config/refresh` —— 刷新内置供应商的远端目录。
+///
+/// 前端只传 provider id；按已保存的凭据类型分发到 API Key 或订阅专用链路。
+/// 订阅令牌绝不能套用 API Key 的 /models 请求。
+pub async fn refresh(
+    State(state): State<AppState>,
+    _trusted: Trusted,
+    Json(body): Json<Value>,
+) -> Response {
+    let provider_name = body
+        .get("providerName")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if provider_name.is_empty() {
+        return bad_request("providerName is required");
+    }
+    let Some(builtin) = crate::builtin_providers::find(&provider_name) else {
+        return bad_request("Only built-in API Key providers can be refreshed");
+    };
+    if !builtin.api_key && builtin.oauth.is_none() {
+        return bad_request("该供应商不支持模型刷新");
+    }
+    let Ok(_refresh_guard) = state.inner.models_refresh_gate.try_lock() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "模型列表正在刷新，请稍后重试" })),
+        )
+            .into_response();
+    };
+    if provider_name == crate::qoder_cn::PROVIDER_ID {
+        if state.auth().credential_type(&provider_name).as_deref() != Some("oauth") {
+            return bad_request("Qoder CN 未登录：请先完成订阅登录，再刷新模型列表");
+        }
+        if provider_config(&state.models_file().read(), &provider_name).is_some() {
+            return bad_request("此供应商已有自定义配置，请使用自定义 Provider 的导入模型功能");
+        }
+        let credentials = crate::qoder_cn::transport::CredentialSource {
+            store: state.auth().clone(),
+        };
+        return match crate::qoder_cn::catalog::refresh(&credentials, state.models_file().path())
+            .await
+        {
+            Ok(models) => {
+                state.attach_qoder_cn();
+                state.sessions().invalidate();
+                let definitions: Vec<_> = models.iter().map(|model| model.definition()).collect();
+                Json(json!({ "models": definitions, "endpoint": format!("{}{}", crate::qoder_cn::constants::GATEWAY, crate::qoder_cn::catalog::MODEL_LIST_PATH), "refreshed": true })).into_response()
+            }
+            Err(error) => {
+                (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))).into_response()
+            }
+        };
+    }
+    if state.auth().credential_type(&provider_name).as_deref() == Some("oauth") || !builtin.api_key
+    {
+        return (StatusCode::NOT_IMPLEMENTED, Json(json!({ "error": format!("尚未实现 {} 的订阅模型刷新；不会将订阅凭据用作 API Key", builtin.name) }))).into_response();
+    }
+    if provider_name == crate::apisets::PROVIDER_ID {
+        if provider_config(&state.models_file().read(), &provider_name).is_some() {
+            return bad_request("此供应商已有自定义配置，请使用自定义 Provider 的导入模型功能");
+        }
+        let Some(key) = state.auth().api_key(&provider_name) else {
+            return bad_request("请先保存 API Key，再刷新模型列表");
+        };
+        if state
+            .inner
+            .apisets_refreshing
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "Coding 模型目录正在后台刷新，请稍后重试" })),
+            )
+                .into_response();
+        }
+        return match crate::apisets::refresh(&key, state.models_file().path()).await {
+            Ok(models) => {
+                state.attach_apisets();
+                state.sessions().invalidate();
+                Json(json!({ "models": models, "endpoint": format!("{}/v1/models", crate::apisets::BASE_URL), "refreshed": true })).into_response()
+            }
+            Err(error) => (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("{error:#}") })),
+            )
+                .into_response(),
+        };
+    }
+
+    let root = state.models_file().read();
+    let override_config = provider_config(&root, &provider_name);
+    let base_url = override_config
+        .and_then(|config| config.get("baseUrl"))
+        .and_then(Value::as_str)
+        .filter(|url| !url.trim().is_empty())
+        .or(builtin.base_url.map(|url| match provider_name.as_str() {
+            "fireworks" => "https://api.fireworks.ai/inference/v1",
+            "mistral" => "https://api.mistral.ai/v1",
+            "vercel-ai-gateway" => "https://ai-gateway.vercel.sh/v1",
+            _ => url,
+        }))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if base_url.is_empty() {
+        return bad_request("该供应商没有可用的 Base URL，请在自定义 Provider 中配置");
+    }
+    let api = override_config
+        .and_then(|config| config.get("api"))
+        .and_then(Value::as_str)
+        .filter(|api| !api.trim().is_empty())
+        .unwrap_or_else(|| builtin_discovery_api(&provider_name));
+    if !matches!(
+        api,
+        "openai-completions" | "openai-responses" | "anthropic-messages"
+    ) {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({ "error": format!("当前尚不支持 {api} 协议，无法将模型加入对话列表") })),
+        )
+            .into_response();
+    }
+    let provider = override_config.cloned().unwrap_or_else(|| json!({}));
+    if resolve_api_key(&state, &provider_name, &provider).is_none() {
+        return bad_request("请先保存 API Key，再刷新模型列表");
+    }
+
+    let (models, endpoint) =
+        match fetch_discovered_models(&state, &provider_name, &provider, &base_url, api).await {
+            Ok(result) => result,
+            Err((status, payload)) => return (status, Json(payload)).into_response(),
+        };
+    if let Err(error) = crate::remote_models::write(
+        state.models_file().path(),
+        &provider_name,
+        api,
+        &base_url,
+        &models,
+    ) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("写模型缓存失败：{error}") })),
+        )
+            .into_response();
+    }
+    state.attach_builtin_providers();
+    state.sessions().invalidate();
+    Json(json!({ "models": models, "endpoint": endpoint, "refreshed": true })).into_response()
+}
+
+/// 内置供应商的默认模型列表协议。个别供应商允许在 models.json 里覆盖 `api`，
+/// 这里仅作为没有用户覆盖时的合理默认值。
+fn builtin_discovery_api(provider: &str) -> &'static str {
+    match provider {
+        "anthropic" | "minimax" | "minimax-cn" => "anthropic-messages",
+        "google" | "google-vertex" => "google-generative-ai",
+        "amazon-bedrock" => "bedrock-converse-stream",
+        "azure" | "azure-openai-responses" => "azure-openai-responses",
+        "github-copilot" => "github-copilot",
+        _ => "openai-completions",
+    }
+}
+
+async fn fetch_discovered_models(
+    state: &AppState,
+    provider_name: &str,
+    provider: &Value,
+    base_url: &str,
+    api: &str,
+) -> Result<(Vec<Value>, String), (StatusCode, Value)> {
+    let Ok(endpoint) = discovery_endpoint(base_url, api) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "Base URL is invalid" }),
+        ));
+    };
+    let api_key = resolve_api_key(state, provider_name, provider);
     let mut request = reqwest::Client::new()
         .get(endpoint.clone())
         .timeout(std::time::Duration::from_secs(20));
@@ -313,17 +496,21 @@ pub async fn discover(
             _ => request.header("authorization", format!("Bearer {key}")),
         };
     }
-    let response = match request.send().await {
-        Ok(response) => response,
-        Err(e) => {
-            let status = if e.is_timeout() { 504 } else { 500 };
-            return (
-                StatusCode::from_u16(status).unwrap(),
-                Json(json!({ "error": e.to_string() })),
-            )
-                .into_response();
+    if let Some(headers) = provider.get("headers").and_then(Value::as_object) {
+        for (name, value) in headers {
+            if let Some(value) = value.as_str() {
+                request = request.header(name, value);
+            }
         }
-    };
+    }
+    let response = request.send().await.map_err(|error| {
+        let status = if error.is_timeout() {
+            StatusCode::GATEWAY_TIMEOUT
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        (status, json!({ "error": error.to_string() }))
+    })?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -332,28 +519,25 @@ pub async fn discover(
         } else {
             text.chars().take(500).collect()
         };
-        return (
+        return Err((
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": message, "status": status.as_u16() })),
-        )
-            .into_response();
+            json!({ "error": message, "status": status.as_u16() }),
+        ));
     }
-    let Ok(value) = serde_json::from_str::<Value>(&text) else {
-        return (
+    let value = serde_json::from_str::<Value>(&text).map_err(|_| {
+        (
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "Upstream model list was not valid JSON" })),
+            json!({ "error": "Upstream model list was not valid JSON" }),
         )
-            .into_response();
-    };
+    })?;
     let models = parse_upstream_models(&value);
     if models.is_empty() {
-        return (
+        return Err((
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "No models found in the upstream response" })),
-        )
-            .into_response();
+            json!({ "error": "No models found in the upstream response" }),
+        ));
     }
-    Json(json!({ "models": models, "endpoint": endpoint })).into_response()
+    Ok((models, endpoint))
 }
 
 /// `POST /api/models-config/test` —— 用给定的 provider/model 跑一句 `Reply with OK only.`。
@@ -510,25 +694,20 @@ fn available_models(state: &AppState, provider: &str) -> Vec<ModelRef> {
         // 命令型凭据要跑子进程才知道有没有，先当作可用
     }
     let from_config = provider_model_ids(&root, provider);
-    if !from_config.is_empty() {
-        return from_config
-            .into_iter()
-            .map(|id| ModelRef {
-                provider: provider.to_string(),
-                id,
-            })
-            .collect();
-    }
-    // `qoder-cn` 这类**内置目录** provider 不在 `models.json` 里，模型清单来自
-    // catalog（pi 的 SDK 目录同源）。订阅详情的「模型勾选」区靠这条分支才有内容。
-    state
-        .catalog()
-        .entries
-        .iter()
-        .filter(|entry| entry.provider == provider)
-        .map(|entry| ModelRef {
+    let mut known: std::collections::BTreeSet<String> = from_config.into_iter().collect();
+    known.extend(
+        state
+            .catalog()
+            .entries
+            .iter()
+            .filter(|entry| entry.provider == provider)
+            .map(|entry| entry.id.clone()),
+    );
+    known
+        .into_iter()
+        .map(|id| ModelRef {
             provider: provider.to_string(),
-            id: entry.id.clone(),
+            id,
         })
         .collect()
 }
@@ -539,12 +718,6 @@ fn available_models(state: &AppState, provider: &str) -> Vec<ModelRef> {
 /// `GLM 5.3`），不查目录的话设置面板只能拿 id 顶替，和对话里那个模型下拉对不上。
 fn model_name(state: &AppState, root: &Value, provider: &str, id: &str) -> String {
     if let Some(name) = models_json_name(root, provider, id) {
-        return name;
-    }
-    if let Some(name) = crate::qoder_cn::constants::catalog_entry(id)
-        .filter(|_| provider == crate::qoder_cn::PROVIDER_ID)
-        .map(|entry| entry.display_name.to_string())
-    {
         return name;
     }
     state
