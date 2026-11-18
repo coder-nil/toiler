@@ -50,7 +50,7 @@ pub fn update(
     window: &tauri::WebviewWindow,
     dark: Option<bool>,
     diagnostics: bool,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let _main = MainThreadMarker::new().ok_or("原生材质只能在主线程更新")?;
     let raw = window.ns_window().map_err(|error| error.to_string())?;
     // SAFETY: 指针来自同一窗口的 ns_window，且上面已确认当前是主线程。
@@ -74,7 +74,9 @@ pub fn update(
     effect.setMaterial(NSVisualEffectMaterial::Sidebar);
     // 后方视频或其他窗口变化时，即便 Toiler 失焦也保留系统材质合成。
     effect.setState(NSVisualEffectState::Active);
-    effect.setHidden(false);
+    let reduce_transparency =
+        NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency();
+    effect.setHidden(reduce_transparency);
     if let Some(dark) = dark {
         let name = if dark {
             ns_string!("NSAppearanceNameDarkAqua")
@@ -93,8 +95,6 @@ pub fn update(
                     .is_some_and(|id| id.to_string() == EFFECT_ID)
             })
             .count();
-        let reduce_transparency =
-            NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency();
         tracing::info!(
             "实时标题栏材质：数量={count}，区域={:?}，模式={:?}，材质={:?}，状态={:?}，alpha={}，已关联窗口={}，窗口不透明={}，页面深色={dark:?}，实际主题={}，降低透明度={reduce_transparency}",
             effect.frame(), effect.blendingMode(), effect.material(), effect.state(), effect.alphaValue(),
@@ -106,7 +106,7 @@ pub fn update(
             );
         }
     }
-    Ok(())
+    Ok(!reduce_transparency)
 }
 
 #[cfg(test)]

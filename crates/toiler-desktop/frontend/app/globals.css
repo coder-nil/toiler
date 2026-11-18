@@ -1174,15 +1174,15 @@ body {
   flex-direction: column;
 }
 
-/* 顶部只留透明窗口，由下方具名 NSVisualEffectView 实时模糊窗口后方。
-   不叠加 PNG、截图或高不透明度底色，避免把实时材质遮成一条实色带。
-   高度与 panel-layout.ts / Rust 的 TITLEBAR_HEIGHT 一致；正文仍为实色。 */
-html.pi-overlay-chrome,
-html.pi-overlay-chrome body {
+/* 仅在原生层确认材质成功后留透明窗口：macOS 使用 Vibrancy，Windows 使用
+   Acrylic。能力类与 macOS 红绿灯避让类分开；失败、旧系统及 Linux 默认实色。
+   高度与 panel-layout.ts / Rust 的 TITLEBAR_HEIGHT 一致，正文仍为实色。 */
+html.toiler-native-titlebar,
+html.toiler-native-titlebar body {
   background: transparent;
 }
 
-.pi-overlay-chrome .app-workspace {
+.toiler-native-titlebar .app-workspace {
   --native-titlebar-height: calc(42px + env(safe-area-inset-top));
   --titlebar-surface: transparent;
   --workspace-surface: linear-gradient(to bottom,
@@ -1194,6 +1194,12 @@ html.pi-overlay-chrome body {
   --file-panel-surface: linear-gradient(to bottom,
     transparent var(--native-titlebar-height),
     var(--bg) var(--native-titlebar-height));
+}
+
+/* Windows 控制按钮位于 body 下，不在工作台内；成功启用材质时也要透出，
+   否则标题栏最右侧会留下 138px 的实色块。按钮悬停和焦点样式不受影响。 */
+.toiler-native-titlebar .toiler-window-controls {
+  background: transparent;
 }
 
 /* 滚动条：桌面窗口里把样式交给系统。WKWebView 一旦侦测到 ::-webkit-scrollbar

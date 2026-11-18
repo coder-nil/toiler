@@ -24,7 +24,10 @@ mod native_titlebar;
 mod seasonal_icon;
 pub mod server;
 mod terminal;
+mod titlebar;
 mod tunnel;
+#[cfg(target_os = "windows")]
+mod windows_titlebar;
 
 use mobile::MobileAccess;
 use server::DesktopServer;
@@ -57,21 +60,22 @@ fn hide_startup_overlay() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn sync_titlebar_appearance(window: tauri::WebviewWindow, dark: bool) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let target = window.clone();
-        window
-            .run_on_main_thread(move || {
-                if let Err(error) = native_titlebar::update(&target, Some(dark), true) {
-                    tracing::warn!("同步实时标题栏材质失败：{error}");
-                }
-            })
-            .map_err(|error| error.to_string())?;
+async fn sync_titlebar_appearance(
+    window: tauri::WebviewWindow,
+    dark: bool,
+) -> Result<titlebar::TitlebarEffect, String> {
+    if window.label() != "main" {
+        return Err("标题栏材质仅允许主窗口使用".into());
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = (window, dark);
-    Ok(())
+    // 等待原生层的真实结果再让页面决定是否透明，不把“已排队”当作“已生效”。
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let target = window.clone();
+    window
+        .run_on_main_thread(move || {
+            let _ = sender.send(titlebar::apply(&target, dark));
+        })
+        .map_err(|error| error.to_string())?;
+    receiver.await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -274,7 +278,7 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
         // 不依赖 React 布局：导航到独立导出页后仍要保留关闭/还原入口。
         script.push_str(include_str!("../frontend/public/window-controls.js"));
     }
-    if overlay_titlebar {
+    if overlay_titlebar || custom_titlebar {
         script.push_str(include_str!("../frontend/public/native-titlebar.js"));
     }
     if let Some(guard) = context_menu_guard_script() {
@@ -302,9 +306,10 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
     }
 
     // Windows 使用页内顶栏与窗口控制按钮，避免再叠一层系统标题栏。
+    // WebView 允许透明，但前端默认实色，收到 Acrylic 成功确认后才露出标题带。
     #[cfg(target_os = "windows")]
     {
-        builder = builder.decorations(false);
+        builder = builder.decorations(false).transparent(true);
     }
 
     let window = builder
@@ -312,7 +317,9 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
         .map_err(|error| format!("创建窗口失败：{error}"))?;
     #[cfg(target_os = "macos")]
     {
-        native_titlebar::update(&window, None, true)?;
+        if let Err(error) = native_titlebar::update(&window, None, true) {
+            tracing::warn!("初始化原生标题栏材质失败，保留实色：{error}");
+        }
         let target = window.clone();
         window.on_window_event(move |event| {
             if matches!(
