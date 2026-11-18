@@ -242,6 +242,7 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
          window.__PI_WEB_DESKTOP__ = true;\
          window.__TOILER_DESKTOP__ = true;\
          window.__TOILER_OVERLAY_TITLEBAR__ = {overlay_titlebar};\
+         if ({overlay_titlebar} && document.documentElement) document.documentElement.classList.add('pi-overlay-chrome');\
          window.__TOILER_CUSTOM_TITLEBAR__ = {custom_titlebar};\
          window.addEventListener('pi-app-ready', function () {{\
            if (window.__TAURI_INTERNALS__) {{\
@@ -269,9 +270,20 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
     #[cfg(target_os = "macos")]
     {
         // 红绿灯位置在 place_traffic_lights 里算（不走 wry 的 inset）。
+        // WebView 必须透明才能看见系统的 behind-window 材质；前端只在
+        // 42px 标题带留透明窗口，内容区继续绘制实色背景，避免整页透出桌面。
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true);
+            .hidden_title(true)
+            .transparent(true)
+            .effects(
+                tauri::window::EffectsBuilder::new()
+                    // 透明底色由原生窗口提供，磨砂必须保留完整合成强度；
+                    // 不再用降低材质层 alpha 的方式制造“透明”。
+                    .effect(tauri::window::Effect::UnderWindowBackground)
+                    .state(tauri::window::EffectState::Active)
+                    .build(),
+            );
     }
 
     // Windows 使用页内顶栏与窗口控制按钮，避免再叠一层系统标题栏。
@@ -280,10 +292,51 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
         builder = builder.decorations(false);
     }
 
-    builder
+    let window = builder
         .build()
-        .map(|_| ())
-        .map_err(|error| format!("创建窗口失败：{error}"))
+        .map_err(|error| format!("创建窗口失败：{error}"))?;
+    #[cfg(target_os = "macos")]
+    if let Err(error) = tune_titlebar_material(&window) {
+        tracing::warn!("调整标题栏磨砂透明度失败：{error}");
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+    Ok(())
+}
+
+/// NSVisualEffectView 必须保持 alpha=1，降低整个视图的 alpha 会让清晰的
+/// 桌面背景参与混合，甚至使 AppKit 的背景模糊合成失效。透明感应由材质决定。
+#[cfg(target_os = "macos")]
+fn tune_titlebar_material(window: &tauri::WebviewWindow) -> Result<(), String> {
+    use objc2_app_kit::{
+        NSColor, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
+        NSVisualEffectView, NSWindow,
+    };
+
+    fn tune(view: &NSView) -> usize {
+        if let Some(effect) = view.downcast_ref::<NSVisualEffectView>() {
+            effect.setAlphaValue(1.0);
+            effect.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+            effect.setState(NSVisualEffectState::Active);
+            effect.setMaterial(NSVisualEffectMaterial::UnderWindowBackground);
+            return 1;
+        }
+        view.subviews().iter().map(|child| tune(&child)).sum()
+    }
+
+    let raw = window.ns_window().map_err(|error| error.to_string())?;
+    // SAFETY: 建窗回调运行于主线程，指针由同一窗口的 ns_window 提供。
+    let native: &NSWindow = unsafe { &*(raw as *mut NSWindow) };
+    native.setOpaque(false);
+    native.setBackgroundColor(Some(&NSColor::clearColor()));
+    native.setTitlebarAppearsTransparent(true);
+    let content = native.contentView().ok_or("窗口没有 contentView")?;
+    let count = tune(&content);
+    if count == 0 {
+        return Err("未找到原生磨砂层，不能调整透明度".to_string());
+    }
+    tracing::info!("已清空原生窗口底色，启用 {count} 个完整强度的窗口后方磨砂层");
+    Ok(())
 }
 
 fn shutdown(app: &tauri::AppHandle) {
