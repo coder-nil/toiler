@@ -47,7 +47,7 @@ pub async fn get(
     // Git 会应用 .gitignore；非仓库或 git 不可用时退回有限扫描。
     let listing = tokio::time::timeout(
         Duration::from_secs(10),
-        tokio::process::Command::new("git")
+        tokio::process::Command::from(crate::gitsvc::git_command())
             .arg("-C")
             .arg(&cwd)
             .args([

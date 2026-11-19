@@ -28,7 +28,12 @@ export function RevealFileButton({ filePath, sourceSessionId, className, style }
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ filePath, sessionId: sourceSessionId }),
           });
-          if (!response.ok) throw new Error("Reveal failed");
+          if (response.ok) return;
+          // 服务端会给出具体原因（远端被拒、路径不在允许根、目标不存在、打不开
+          // 文件管理器…）。只弹一句「无法打开」会让用户以为是按钮坏了，所以把
+          // 服务端文案带出来；解析失败才退回通用文案。
+          const data = await response.json().catch(() => null) as { error?: string } | null;
+          window.alert(data?.error ?? t("files.revealFailed"));
         } catch {
           window.alert(t("files.revealFailed"));
         } finally {

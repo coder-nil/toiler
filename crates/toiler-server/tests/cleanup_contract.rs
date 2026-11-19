@@ -60,14 +60,14 @@ async fn call(app: Router, method: &str, uri: &str, origin: Option<&str>) -> (St
 
 #[tokio::test]
 async fn retained_pi_calls_return_explicit_unsupported_not_404() {
-    // useAgentSession 创建/完成 checkpoint；SkillsConfig 检查/更新/卸载技能；RevealFileButton。
+    // useAgentSession 创建/完成 checkpoint；SkillsConfig 检查/更新/卸载技能。
+    // （`POST /api/files/reveal` 已经实现，契约在 `reveal_contract.rs`。）
     let fixture = Fixture::new();
     for path in [
         "/api/checkpoints",
         "/api/skills/check",
         "/api/skills/update",
         "/api/skills/remove",
-        "/api/files/reveal",
     ] {
         let (status, body) = call(fixture.app(), "POST", path, None).await;
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{path}");

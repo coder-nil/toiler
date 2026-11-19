@@ -25,6 +25,15 @@ const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const CLIENT_HEAD_TIMEOUT: Duration = Duration::from_secs(20);
 const COPY_BUFFER_SIZE: usize = 32 * 1024;
 
+/// 转发时追加的「这个请求来自手机或公网隧道」标记头。
+///
+/// 这是服务端区分「桌面窗口」与「远端客户端」的**唯一**可用凭据：本代理会把
+/// `Host` / `Origin` 改写成回环地址，改完之后两者逐字节相同。服务端那边读它
+/// 的地方是 `routes/reveal.rs`（打开本机文件管理器不允许远端触发）。
+///
+/// 必须与 `toiler_server::routes::reveal::REMOTE_CLIENT_HEADER` 保持一致。
+const REMOTE_CLIENT_HEADER: &str = "x-toiler-remote-client";
+
 /// 配置文件内容（与 lib/desktop-access.ts 共享同一份 JSON）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LanAccessConfig {
@@ -222,6 +231,9 @@ pub fn is_public_asset_request(head: &str) -> bool {
 /// 改写请求头：目标是让回环上的 Next 视其为本机请求。
 ///
 /// * `Host` / `Origin` → 回环地址（否则 origin 校验会拒绝手机来的 POST）；
+/// * 追加 [`REMOTE_CLIENT_HEADER`]：这是服务端**唯一**能区分「手机/隧道」与
+///   「桌面窗口」的凭据（上面那次改写让两者的 Host/Origin 完全一样）。客户端
+///   自带的同名头一律丢掉，不能用它换到放行；
 /// * 丢掉 `X-Forwarded-Proto` / `X-Forwarded-Host`：Cloudflare 会写入公网方案的转发头，
 ///   而它们会让上面那次改写失效 —— 见下方分支里的注释；
 /// * `Connection` → close（代理按「一请求一连接」转发，不做连接复用），
@@ -237,6 +249,8 @@ pub fn rewrite_request_head(head: &str, target_port: u16) -> String {
             // 头结束。注意 `split` 会在结尾额外产生空串，这里必须 break ——
             // 多补一个 CRLF 会让上游一直等“下一个请求”，于是一个响应都不回。
             if position > 0 {
+                // 标记必须在空行之前补上，否则它会落到 body 里。
+                out.push_str(&format!("{REMOTE_CLIENT_HEADER}: 1\r\n"));
                 out.push_str(if upgrading {
                     "Connection: Upgrade\r\n\r\n"
                 } else {
@@ -273,11 +287,14 @@ pub fn rewrite_request_head(head: &str, target_port: u16) -> String {
             // "Untrusted API request"，而 GET / SSE 不带 Origin 所以看起来正常。
             // 本代理已经把请求伪装成回环请求，这些描述公网的转发头必须一起丢掉。
             continue;
-        } else if name.eq_ignore_ascii_case("connection")
-            || name.eq_ignore_ascii_case("keep-alive")
+        } else if name.eq_ignore_ascii_case(REMOTE_CLIENT_HEADER)
             || name.eq_ignore_ascii_case("proxy-connection")
+            || name.eq_ignore_ascii_case("keep-alive")
         {
-            // 由上面统一补上 `Connection: close`。
+            // 客户端自带的远端标记不能透传：它是服务端判「谁在打」的唯一凭据。
+            continue;
+        } else if name.eq_ignore_ascii_case("connection") {
+            // 由上面统一补上 `Connection: close`（升级握手补 Upgrade）。
             continue;
         } else {
             out.push_str(line);
@@ -893,6 +910,36 @@ mod tests {
         // 保留其余头，避免破坏请求语义。
         assert!(rewritten.contains("Content-Type: application/json\r\n"));
         assert!(!rewritten.contains("Proxy-Connection"));
+    }
+
+    #[test]
+    fn marks_proxied_requests_as_remote_and_strips_client_supplied_marks() {
+        // 服务端靠这个头区分「桌面窗口」与「手机/隧道」：Host/Origin 已被改写成
+        // 回环地址，两者逐字相同（`routes/reveal.rs` 用它在手机上拒绝打开文件管理器）。
+        let plain = rewrite_request_head(HEAD, 48000);
+        assert_eq!(
+            plain.matches("x-toiler-remote-client: 1").count(),
+            1,
+            "{plain:?}"
+        );
+        // 必须在空行之前，否则会落到 body 里。
+        let (head_part, _) = plain.split_once("\r\n\r\n").expect("有头结束标记");
+        assert!(head_part.contains("x-toiler-remote-client: 1"), "{plain:?}");
+
+        // 客户端自己带一个反过来的值（想冒充本机）不能被透传。
+        let spoofed = "POST /api/files/reveal HTTP/1.1\r\nHost: 192.168.1.20:30141\r\nOrigin: http://192.168.1.20:30141\r\nX-Toiler-Remote-Client: 0\r\n\r\n";
+        let rewritten = rewrite_request_head(spoofed, 48000);
+        let lower = rewritten.to_ascii_lowercase();
+        assert_eq!(
+            lower.matches("x-toiler-remote-client:").count(),
+            1,
+            "{rewritten:?}"
+        );
+        assert!(lower.contains("x-toiler-remote-client: 1"), "{rewritten:?}");
+        assert!(
+            !lower.contains("x-toiler-remote-client: 0"),
+            "{rewritten:?}"
+        );
     }
 
     #[test]

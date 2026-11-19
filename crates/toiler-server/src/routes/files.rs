@@ -178,7 +178,11 @@ fn valid_windows_segment(segment: &str) -> bool {
 ///
 /// 判定要求两边都是边界：前面不是路径字符，后面也不是（后面跟 `:` 时要求再跟数字，
 /// 避开 `a.rs:12:5` 这种行列号误判）。这样 `/a/b.rs` 不会命中 `/a/b.rs.bak`。
-fn referenced_by_session(state: &AppState, session_id: Option<&str>, target: &Path) -> bool {
+pub(crate) fn referenced_by_session(
+    state: &AppState,
+    session_id: Option<&str>,
+    target: &Path,
+) -> bool {
     let Some(session_id) = session_id.filter(|id| is_valid_session_id(id)) else {
         return false;
     };

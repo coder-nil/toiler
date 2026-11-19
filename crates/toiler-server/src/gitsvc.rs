@@ -77,6 +77,21 @@ pub fn run_git_with_env(
     run_git_inner(cwd, args, timeout, extra_env, true)
 }
 
+pub(crate) fn git_command() -> Command {
+    // 桌面发布版没有控制台，后台刷新启动 Git 时也不能让 Windows 新建控制台。
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut command = Command::new("git");
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+    }
+    #[cfg(not(windows))]
+    Command::new("git")
+}
+
 fn run_git_inner(
     cwd: &Path,
     args: &[&str],
@@ -84,7 +99,7 @@ fn run_git_inner(
     extra_env: &[(&str, String)],
     trim: bool,
 ) -> Result<String, GitError> {
-    let mut command = Command::new("git");
+    let mut command = git_command();
     command
         .arg("-C")
         .arg(cwd)
@@ -1683,7 +1698,7 @@ fn remember_credential(url: Option<&str>, username: Option<&str>, secret: &str) 
         stdin.push_str(&format!("username={username}\n"));
     }
     stdin.push_str(&format!("password={secret}\n\n"));
-    let Ok(mut child) = Command::new("git")
+    let Ok(mut child) = git_command()
         .args(["credential", "approve"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())

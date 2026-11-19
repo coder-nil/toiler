@@ -530,8 +530,13 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
   **不伪造 checkpoint id**；前端发送消息仍保留尽力而为的调用，不影响正常对话。
 - `POST /api/skills/check|update|remove`：`501 {error:"…中文说明…"}`。
   Toiler 没有技能包安装元数据，不执行上游 `npx skills`，仍只加载本地技能。
-- `POST /api/files/reveal`：`501 {error:"…中文说明…"}`，不再误入通配上传路由。
-  `/api` 同时暴露给手机与隧道，暂不提供远端触发本机文件管理器的能力。
+- `POST /api/files/reveal`：请求 `{filePath, sessionId?}`，成功 `{ok:true}`。
+  判定顺序与 pi 一致：绝对路径 → 允许根词法包含或会话引用过该路径 → 目标存在
+  → 非引用授权时再过 realpath 包含 → 交给系统文件管理器
+  （macOS `open -R` / 目录 `open`，Windows `explorer /select,`，Linux `xdg-open` 父目录），
+  10 秒超时。**与 pi 的差异**：手机与公网隧道一律 403 —— 两者都经 `lan_proxy`，
+  该代理会追加 `x-toiler-remote-client` 标记头（客户端自带的同名头会被丢掉），
+  否则远端能随意弹本机文件管理器窗口。
 
 以上接口均做 Host/Origin 校验。501 代表明确未实现，不代表功能已经补齐。
 手机页 `/m` 则是实际静态页面：支持会话快照、流式对话、运行中引导、停止、新建任务、
@@ -544,7 +549,7 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
 | `GET /api/app-update` | ✅ | 本项目 GitHub Releases 检查，12 小时缓存；上游失败 502 |
 | `GET /api/file-index` | ✅ | `@文件` 补全：files/truncated 或 matches；允许根 + realpath 校验 |
 | `GET/POST /api/checkpoints` | ❌ | 501 + 中文原因，不执行文件快照或回滚 |
-| `POST /api/files/reveal` | ❌ | 501 + 中文原因，不触发服务端文件管理器 |
+| `POST /api/files/reveal` | ✅ | 打开系统文件管理器（`open -R` / `explorer /select,` / `xdg-open`），10 秒超时；允许根 + realpath 校验；手机与隧道 403（`x-toiler-remote-client` 标记头） |
 | `GET /api/sessions` | ✅ | 字段全对齐（含 `sessionsUpdatedAt`、30s 缓存、`?force=1`） |
 | `GET /api/sessions/{id}` | ✅ | `info`/`tree`/`context`/`paging`/`totalActiveMs` 全对齐 |
 | `PATCH /api/sessions/{id}` | ✅ | 追加 `session_info` 条目（pi 的做法） |

@@ -1460,7 +1460,23 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         </div>
 
         {/* CWD picker */}
-        <div ref={dropdownRef} style={{ position: "relative", display: "flex", gap: 0 }}>
+        {/* 选择框整体是一块圆角矩形：白底 + 10px 圆角 + --shadow-pill（内描边 +
+            顶光 + 羽化外影，定义见 globals.css）。悬停不改底色（之前 hover 换
+            --bg-selected 会让选择框“跳色”）。白底写 var(--bg) 而不是 #fff：
+            深色主题下 #fff 会让 --text 变成白字压白底，而 --bg 在两套主题里
+            都跟文字保持对比。 */}
+        <div
+          ref={dropdownRef}
+          style={{
+            position: "relative",
+            display: "flex",
+            alignItems: "center",
+            gap: 0,
+            background: "var(--bg)",
+            borderRadius: "var(--radius-selector)",
+            boxShadow: "var(--shadow-pill)",
+          }}
+        >
           <button
             onClick={() => setDropdownOpen((v) => !v)}
             title={selectedProject?.root ?? selectedCwd ?? ""}
@@ -1468,23 +1484,16 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               flex: 1,
               display: "flex",
               alignItems: "center",
-              padding: "6px 10px",
+              padding: "6px 6px 6px 12px",
               height: 32,
               boxSizing: "border-box",
-              background: selectedCwd ? "var(--bg-hover)" : "transparent",
+              background: "transparent",
               border: "none",
-              borderRadius: "var(--radius-sm) 0 0 var(--radius-sm)",
+              borderRadius: "var(--radius-selector) 0 0 var(--radius-selector)",
               cursor: "pointer",
               fontSize: 12,
               color: "var(--text)",
               textAlign: "left",
-              transition: "border-color 0.15s, background 0.15s",
-            }}
-            onMouseEnter={(event) => {
-              event.currentTarget.style.background = "var(--bg-selected)";
-            }}
-            onMouseLeave={(event) => {
-              event.currentTarget.style.background = selectedCwd ? "var(--bg-hover)" : "transparent";
             }}
           >
             {selectedCwd ? (
@@ -1574,19 +1583,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               flexShrink: 0,
               padding: 0,
               border: "none",
-              borderRadius: "0 6px 6px 0",
-              background: "var(--bg-hover)",
+              borderRadius: "0 var(--radius-selector) var(--radius-selector) 0",
+              background: "transparent",
               color: "var(--text-muted)",
               cursor: "pointer",
-              transition: "color 0.12s, background 0.12s",
-            }}
-            onMouseEnter={(event) => {
-              event.currentTarget.style.color = "var(--accent)";
-              event.currentTarget.style.background = "var(--bg-selected)";
-            }}
-            onMouseLeave={(event) => {
-              event.currentTarget.style.color = "var(--text-muted)";
-              event.currentTarget.style.background = "var(--bg-hover)";
             }}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1772,7 +1772,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             : worktreeState.remoteBranches;
           return (
             <div ref={wtDropdownRef} style={{ position: "relative", marginTop: 6 }}>
-              <div style={{ position: "relative" }}>
+              {/* 与上方的项目目录选择框同一套样式：白底 + 10px 圆角 + --shadow-pill。
+                  overflow: hidden 让右侧图标按钮的悬停底色被圆角裁齐；
+                  下拉用 AnimatedDropdown 且在外层，不受这里的裁剪影响。 */}
+              <div style={{ position: "relative", display: "flex", alignItems: "center", background: "var(--bg)", borderRadius: "var(--radius-selector)", boxShadow: "var(--shadow-pill)", overflow: "hidden" }}>
               <button
                 onClick={() => setWtDropdownOpen((v) => !v)}
                  title={currentWorktree ? t("sidebar.switchWorktreeTitle", { path: currentWorktree.path }) : t("sidebar.switchWorktree")}
@@ -1783,10 +1786,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   display: "flex",
                   alignItems: "center",
                   gap: 6,
-                  padding: showBranchGitButton ? "0 100px 0 10px" : "0 72px 0 10px",
-                  background: "var(--bg-hover)",
+                  padding: showBranchGitButton ? "0 100px 0 12px" : "0 72px 0 12px",
+                  background: "transparent",
                   border: "none",
-                  borderRadius: 7,
+                  borderRadius: "calc(var(--radius-selector) - 2px)",
                   cursor: "pointer",
                   fontSize: 11,
                   lineHeight: 1.35,
@@ -1836,12 +1839,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                     padding: 0,
                     background: "transparent",
                     border: "none",
-                    borderRadius: 5,
+                    borderRadius: "calc(var(--radius-selector) - 2px)",
                     color: "var(--text-muted)",
                     cursor: wtBusy || worktreeLoadingCwd === selectedCwd || !selectedCwd ? "not-allowed" : "pointer",
                     opacity: wtBusy || worktreeLoadingCwd === selectedCwd || !selectedCwd ? 0.55 : 1,
                   }}
-                  onMouseEnter={(event) => { if (!event.currentTarget.disabled) event.currentTarget.style.background = "var(--bg-selected)"; }}
+                  onMouseEnter={(event) => { if (!event.currentTarget.disabled) event.currentTarget.style.background = "var(--bg-hover)"; }}
                   onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; }}
                 >
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{icon}</svg>
@@ -1868,7 +1871,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   padding: 0,
                   background: gitPanelOpen ? "var(--bg-selected)" : "transparent",
                   border: "none",
-                  borderRadius: 5,
+                  borderRadius: "calc(var(--radius-selector) - 2px)",
                   color: gitPanelOpen ? "var(--text)" : "var(--text-muted)",
                   cursor: "pointer",
                 }}

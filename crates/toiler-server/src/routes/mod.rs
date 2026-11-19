@@ -14,6 +14,7 @@ pub mod mobile;
 pub mod models_config;
 pub mod plugins;
 pub mod projects;
+pub mod reveal;
 pub mod search;
 pub mod sessions;
 pub mod sessions_extra;
@@ -76,7 +77,8 @@ pub fn router(state: AppState) -> Router {
         )
         // ---- files ----
         .route("/api/file-index", get(file_index::get))
-        .route("/api/files/reveal", post(unsupported::reveal))
+        // 在系统文件管理器里显示：桌面窗口可用，手机与隧道被代理标记头挡住
+        .route("/api/files/reveal", post(reveal::reveal))
         // 路径为空时落到默认 cwd（前端文件面板首屏会请求根路径）
         .route(
             "/api/files",
