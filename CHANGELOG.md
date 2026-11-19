@@ -8,6 +8,22 @@ Toiler 的版本变更记录。界面的「关于」对话框读的是
 Next 应用来的），保留在原位置作为来源记录。`1.0.0` 是 Toiler 自己的第一个版本，
 基线为 pi-desktop `1.5.0-alpha.22`（契约与前端产物的来源版本）。
 
+## [1.0.9] - 2026-11-19
+
+### Added
+
+- feat(chat): 移除 auto 推理档位，统一下拉菜单选中样式（`c3bf33e47bcb`）：- 删除「默认推理(auto)」：rpi 无此档位、运行时等价于 off，缺省档位改为 medium；- 后端将旧客户端/旧配置中的 auto 映射为 medium，不再写回 settings.json；- 只支持 off 的非推理模型不再渲染推理级别入口；- 新增 --bg-hover-soft，下拉项改为圆角胶囊 hover + Check 图标选中态；- 同步更新前端/后端测试与 contracts 文档
+- feat(markdown): 代码块头部增加语言图标与按钮图标（`ce9103d53974`）：- 新增 `MarkdownCodeLang` 组件，桌面与手机端共用语言标签；- 抽出 `lib/file-icon-names.ts` 与 `lib/language-icons.ts`，围栏语言复用 Catppuccin 图标；- mermaid 预览与源码按钮、复制按钮增加 lucide 图标并随状态切换；- 代码块头部图标保留原色，抵消文件树统一去色的遮罩规则；- 调整行内代码与悬停底色样式，新增头部结构与映射断言测试
+
+### Changed
+
+- style(desktop): 思考与工具调用摘要改用左侧实线，去掉整圈边框（`3c7413b084f9`）：- 思考块只保留 2px solid var(--text-muted) 左边线，不再套整圈边框；- 工具调用摘要左边线按 isError 切换 --danger / --live，底色透明度提升到 0.15；- 结果区与 diff 区的分隔线统一改用 var(--border)，去掉半透明色；- 新增 process-summary-outline 测试，校验左边线颜色与不透明度约定
+- 应用、npm、Tauri 和 Cargo 版本号统一为 `1.0.9`。
+
+### Fixed
+
+- fix(desktop): 侧栏改用独立的 --sidebar-bg 底色（`13e2f557a5b7`）：- 侧栏不再与顶部条共用 --bg-chrome，新增 --sidebar-bg（浅色 #fcfcfc，深色同顶部条）；- 原生标题带渐变改为引用 --sidebar-bg，桌面窗口与浏览器侧栏色统一；- 同步更新 titlebar-material 测试断言
+
 ## [1.0.8] - 2026-11-19
 
 ### Added
