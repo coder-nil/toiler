@@ -5403,6 +5403,56 @@ async fn edit_from_here_hides_target_and_everything_after_it() {
     std::fs::remove_dir_all(&agent_dir).ok();
 }
 
+/// 重启后续聊：输入框读到的历史模型也必须用于初始化实际会话，不能被全局偏好覆盖。
+#[tokio::test]
+async fn resumed_session_uses_the_model_shown_in_the_composer() {
+    let root = fixture_root("resume-model");
+    let agent_dir = fixture_root("resume-model-agent");
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        r#"{"defaultProvider":"first","defaultModel":"model-a"}"#,
+    )
+    .unwrap();
+    let router = app_with_two_models(&root, Path::new("/tmp/demo"), &agent_dir);
+    let path = write_session(
+        &root,
+        &[
+            r#"{"type":"model_change","id":"m1","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","provider":"second","modelId":"model-b"}"#,
+            r#"{"type":"message","id":"a1","parentId":"m1","timestamp":"2026-11-10T06:41:46.000Z","message":{"role":"assistant","content":[{"type":"text","text":"在"}],"api":"openai-completions","provider":"first","model":"model-a","stopReason":"stop","timestamp":1794292906000}}"#,
+        ],
+    );
+    let before = std::fs::read(&path).unwrap();
+    let session = get(router.clone(), "/api/sessions/sess-a").await.json();
+    let state = call(
+        router.clone(),
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"get_state"}"#),
+        &[],
+    )
+    .await
+    .json();
+    assert_eq!(
+        session["context"]["model"],
+        json!({"provider":"second","modelId":"model-b"})
+    );
+    assert_eq!(
+        state["data"]["model"]["provider"],
+        session["context"]["model"]["provider"]
+    );
+    assert_eq!(
+        state["data"]["model"]["id"],
+        session["context"]["model"]["modelId"]
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(
+        get(router, "/api/models").await.json()["defaultModel"],
+        json!({"provider":"first","modelId":"model-a"})
+    );
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
+}
+
 /// 会话文件里**没有** `model_change` 条目时，`context.model` 仍要回显模型。
 ///
 /// pi 早期会话（以及个别新建路径）只把模型记在每条 assistant 消息的
@@ -5423,7 +5473,7 @@ async fn context_model_falls_back_to_assistant_message() {
     );
     let router = app_with_two_models(&root, Path::new("/tmp/demo"), &agent_dir);
 
-    let session = get(router, "/api/sessions/sess-a").await.json();
+    let session = get(router, "/api/sessions/sess-a?leafId=a1").await.json();
     assert_eq!(
         session["context"]["model"]["provider"], "local",
         "没有 model_change 时要用 assistant 消息兜底：{session}"
@@ -5432,6 +5482,38 @@ async fn context_model_falls_back_to_assistant_message() {
         session["context"]["model"]["modelId"], "deepseek-flash",
         "{session}"
     );
+}
+
+/// 旧模型已不在目录时，输入框显示下一轮实际会用的模型，但旧回复的标签不变。
+#[tokio::test]
+async fn unavailable_history_model_falls_back_consistently() {
+    let root = fixture_root("model-unavailable");
+    let agent_dir = fixture_root("model-unavailable-agent");
+    write_session(
+        &root,
+        &[
+            r#"{"type":"message","id":"a1","parentId":null,"timestamp":"2026-11-10T06:41:46.000Z","message":{"role":"assistant","content":[{"type":"text","text":"在"}],"api":"openai-completions","provider":"removed","model":"removed-model","stopReason":"stop","timestamp":1794292906000}}"#,
+        ],
+    );
+    let router = app_with_two_models(&root, Path::new("/tmp/demo"), &agent_dir);
+    let session = get(router.clone(), "/api/sessions/sess-a").await.json();
+    assert_eq!(
+        session["context"]["model"],
+        json!({"provider":"first","modelId":"model-a"})
+    );
+    assert_eq!(session["context"]["messages"][0]["model"], "removed-model");
+    let state = call(
+        router,
+        "POST",
+        "/api/agent/sess-a",
+        Some(r#"{"type":"get_state"}"#),
+        &[],
+    )
+    .await
+    .json();
+    assert_eq!(state["data"]["model"]["id"], "model-a");
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
 }
 
 /// `/api/models` 的 `defaultModel` 必须真的出现在 `modelList` 里。
@@ -5738,6 +5820,33 @@ async fn new_sessions_remember_the_last_selected_model() {
     std::fs::remove_dir_all(&root).ok();
     std::fs::remove_dir_all(&agent_dir).ok();
     std::fs::remove_dir_all(&project).ok();
+}
+
+/// 草稿选择的模型已被移除时，不能静默创建会话用其他模型代答。
+#[tokio::test]
+async fn new_session_rejects_an_unavailable_explicit_model() {
+    let root = fixture_root("newmodel-unavailable");
+    let agent_dir = fixture_root("newmodel-unavailable-agent");
+    let router = app_with_two_models(&root, &root, &agent_dir);
+    let body = json!({"cwd":root,"type":"prompt","message":"你好","provider":"removed","modelId":"missing"});
+    let reply = call(
+        router.clone(),
+        "POST",
+        "/api/agent/new",
+        Some(&body.to_string()),
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.text());
+    assert_eq!(reply.json()["code"], "prompt_rejected");
+    assert_eq!(reply.json()["accepted"], false);
+    assert_eq!(
+        get(router, "/api/sessions").await.json()["sessions"],
+        json!([])
+    );
+    assert!(!agent_dir.join("settings.json").exists());
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&agent_dir).ok();
 }
 
 /// `provider` / `modelId` 必须成对出现，只给一个要 400。

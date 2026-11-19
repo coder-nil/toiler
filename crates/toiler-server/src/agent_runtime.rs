@@ -127,16 +127,17 @@ impl LiveAgent {
     ) -> Result<Arc<Self>> {
         let session = Session::new(Arc::new(storage), None);
 
-        // 优先用「设置里选的默认模型」，其次退回 catalog 的默认。
-        //
-        // 早先只用了 `catalog.default_model()`（models.json 里第一个可用项），
-        // 于是用户在任何界面选过的默认模型都不生效 —— 续聊会用错模型。
-        let model = preferred
-            .as_ref()
-            .and_then(|(provider, id)| catalog.model_for(provider, id))
-            .or_else(|| catalog.default_model())
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("models.json 里没有可用模型"))?;
+        // 调用方已按会话历史与全局偏好解析；目录变化时不能用别的模型静默替换。
+        let model = if let Some((provider, id)) = preferred {
+            catalog
+                .model_for(&provider, &id)
+                .ok_or_else(|| anyhow::anyhow!("Model not found: {provider}/{id}"))?
+        } else {
+            catalog
+                .default_model()
+                .ok_or_else(|| anyhow::anyhow!("models.json 里没有可用模型"))?
+        }
+        .clone();
         let (events, _rx) = broadcast::channel(EVENT_BUFFER);
         let tap = Arc::new(EventTap::new(events.clone()));
 
@@ -654,6 +655,11 @@ impl LiveAgent {
             "steering": steering,
             "followUp": follow_up,
         }));
+    }
+
+    pub(crate) fn model_ref(&self) -> (String, String) {
+        let model = self.model.lock().expect("model");
+        (model.provider.clone(), model.id.clone())
     }
 
     /// `get_state` 形状。`/api/agent/[id]`、`/api/agent/new` 都用它。

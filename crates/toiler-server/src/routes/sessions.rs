@@ -71,6 +71,18 @@ pub async fn detail(
 
     // context：pi 的 `buildContextEntries` 投影（沿分支到叶子）。
     let view = session_view::context_view(&session.entries, params.leaf_id.as_deref());
+    // 默认详情喂给输入框，报告下一轮会用的模型；指定历史叶子时保留历史投影。
+    let model = if params.leaf_id.is_none() {
+        state
+            .live()
+            .get(&id)
+            .map(|agent| agent.model_ref())
+            .or_else(|| state.session_model_ref(Some(&view.model)))
+            .map(|(provider, id)| json!({ "provider": provider, "modelId": id }))
+            .unwrap_or(view.model)
+    } else {
+        view.model
+    };
     let leaf_id = params
         .leaf_id
         .clone()
@@ -118,7 +130,7 @@ pub async fn detail(
             "messages": paged_messages,
             "entryIds": paged_ids,
             "thinkingLevel": view.thinking_level,
-            "model": view.model,
+            "model": model,
         },
         "paging": {
             "hasEarlier": page.has_earlier(),

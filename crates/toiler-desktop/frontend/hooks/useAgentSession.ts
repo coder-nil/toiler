@@ -1527,7 +1527,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         return;
       }
     }
-    if (agentRunningRef.current || bashRunningRef.current) {
+    // 输入框会先显示切换目标；服务端确认前不能把这条消息交给旧模型。
+    if (agentRunningRef.current || bashRunningRef.current || modelSwitchPendingRef.current) {
       restoreSubmission(message, images, composerDraftKey);
       return;
     }

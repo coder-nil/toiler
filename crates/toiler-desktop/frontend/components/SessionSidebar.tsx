@@ -1460,11 +1460,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         </div>
 
         {/* CWD picker */}
-        {/* 选择框整体是一块圆角矩形：白底 + 10px 圆角 + --shadow-pill（内描边 +
-            顶光 + 羽化外影，定义见 globals.css）。悬停不改底色（之前 hover 换
-            --bg-selected 会让选择框“跳色”）。白底写 var(--bg) 而不是 #fff：
-            深色主题下 #fff 会让 --text 变成白字压白底，而 --bg 在两套主题里
-            都跟文字保持对比。 */}
+        {/* 选择框：白底 + 10px 圆角 + 1px 边框，和下面搜索框同一套平面语言。
+            不再用阴影：侧栏是 #fcfcfc 的浅灰面，白底一加羽化影就“浮”起来，
+            而这一栏里其它控件（搜索框、新建/刷新、标题行按钮）全是平面的，
+            只有它带阴影会显得像别的系统里搬过来的。
+            白底写 var(--bg) 而不是 #fff：深色主题下 #fff 会让 --text 变成
+            白字压白底，而 --bg 在两套主题里都跟文字保持对比。 */}
         <div
           ref={dropdownRef}
           style={{
@@ -1472,9 +1473,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             display: "flex",
             alignItems: "center",
             gap: 0,
+            height: 32,
+            boxSizing: "border-box",
             background: "var(--bg)",
+            border: "1px solid var(--border)",
             borderRadius: "var(--radius-selector)",
-            boxShadow: "var(--shadow-pill)",
           }}
         >
           <button
@@ -1484,8 +1487,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               flex: 1,
               display: "flex",
               alignItems: "center",
-              padding: "6px 6px 6px 12px",
-              height: 32,
+              padding: "0 6px 0 11px",
+              height: "100%",
               boxSizing: "border-box",
               background: "transparent",
               border: "none",
@@ -1575,13 +1578,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             title={t("sidebar.customPath")}
             aria-label={t("sidebar.customPath")}
             style={{
-              width: 32,
-              height: 32,
+              width: 30,
+              height: "100%",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               flexShrink: 0,
               padding: 0,
+              margin: "0 1px 0 0",
               border: "none",
               borderRadius: "0 var(--radius-selector) var(--radius-selector) 0",
               background: "transparent",
@@ -1772,16 +1776,16 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             : worktreeState.remoteBranches;
           return (
             <div ref={wtDropdownRef} style={{ position: "relative", marginTop: 6 }}>
-              {/* 与上方的项目目录选择框同一套样式：白底 + 10px 圆角 + --shadow-pill。
-                  overflow: hidden 让右侧图标按钮的悬停底色被圆角裁齐；
-                  下拉用 AnimatedDropdown 且在外层，不受这里的裁剪影响。 */}
-              <div style={{ position: "relative", display: "flex", alignItems: "center", background: "var(--bg)", borderRadius: "var(--radius-selector)", boxShadow: "var(--shadow-pill)", overflow: "hidden" }}>
+              {/* 与上方的项目目录选择框同一套样式：白底 + 10px 圆角 + 1px 边框。
+                  高度定在外层并用 border-box，内部按钮跟 height:100%，
+                  这样加了一道边框后总高仍是 29px，不会把下面内容预下去。 */}
+              <div style={{ position: "relative", display: "flex", alignItems: "center", height: 29, boxSizing: "border-box", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-selector)", overflow: "hidden" }}>
               <button
                 onClick={() => setWtDropdownOpen((v) => !v)}
                  title={currentWorktree ? t("sidebar.switchWorktreeTitle", { path: currentWorktree.path }) : t("sidebar.switchWorktree")}
                 style={{
                   width: "100%",
-                  height: 29,
+                  height: "100%",
                   boxSizing: "border-box",
                   display: "flex",
                   alignItems: "center",
@@ -1832,7 +1836,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                     top: 0,
                     right,
                     width: 28,
-                    height: 29,
+                    height: "100%",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -1864,7 +1868,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   top: 0,
                   right: 0,
                   width: 28,
-                  height: 29,
+                  height: "100%",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",

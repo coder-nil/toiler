@@ -118,7 +118,12 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 用户成功执行 `set_model`，或通过 `/api/agent/new` 显式指定模型后，会把
 `settings.json` 的 `defaultProvider` / `defaultModel` 更新为最近选择，供后续新会话
 使用并在重启后保留；打开历史会话不更新偏好。尚未创建会话的草稿选择由浏览器记住，
-只在模型仍处于可见列表时恢复，并作为显式模型传给建会话请求。
+只在模型仍处于可见列表时恢复，并作为显式模型传给建会话请求。显式模型已不在目录时，
+`/api/agent/new` 返回 `400`，不建会话，也不换用默认模型代答。
+
+续聊优先恢复会话当前分支最后一次有效的 `model_change`，没有时使用最后一条助手消息的
+模型标记。历史模型不在运行目录时才用默认模型；不带 `leafId` 的 `/api/sessions/{id}`
+以同一规则返回 `context.model`（活会话直接返回正在使用的模型），旧消息的模型标记不变。
 
 `set_thinking_level`（`{"type":"set_thinking_level","level":"high"}`）会实际更新 lane，
 向 v3 文件追加 `thinking_level_change`，返回 `{thinkingLevel}`（当前模型实际生效的级别）。

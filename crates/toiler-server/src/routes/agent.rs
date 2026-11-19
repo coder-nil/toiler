@@ -252,6 +252,17 @@ pub async fn new_session(
         }
     };
 
+    if let Some((provider, model_id)) = &requested_model {
+        if state.catalog().model_for(provider, model_id).is_none() {
+            let mut body = json!({ "error": format!("Model not found: {provider}/{model_id}") });
+            if is_prompt {
+                body["code"] = json!("prompt_rejected");
+                body["accepted"] = json!(false);
+            }
+            return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+        }
+    }
+
     let repo = toiler_session::V3SessionRepo::new(state.sessions().root());
     let created_at = now_ms();
     let id = uuid::Uuid::now_v7().to_string();
@@ -434,9 +445,11 @@ async fn ensure_agent_with_model(
     let Some(path) = state.sessions().path_of(id) else {
         return Err(AgentError::NotFound);
     };
-    let cwd = crate::sessions_store::read_session(&path)
+    let session = crate::sessions_store::read_session(&path).ok();
+    let cwd = session
+        .as_ref()
         .map(|s| crate::paths::simplified(&s.header.cwd))
-        .unwrap_or_else(|_| state.default_cwd().to_string_lossy().to_string());
+        .unwrap_or_else(|| state.default_cwd().to_string_lossy().to_string());
 
     if !state.live().guard_starting(id) {
         // 另一个请求正在建：等它建好
@@ -448,13 +461,14 @@ async fn ensure_agent_with_model(
         }
     }
 
+    // 显式新会话选择优先；续聊则与输入框一样，先恢复历史模型再看默认偏好。
+    let preferred = requested.or_else(|| {
+        let historical = session
+            .as_ref()
+            .and_then(|s| crate::session_view::context_model(&s.entries));
+        state.session_model_ref(historical.as_ref())
+    });
     let catalog = state.dialogue_catalog();
-    // 用户在新会话里选过的模型 > `settings.json` 的默认模型 > catalog 默认项。
-    //
-    // 中间这一层不能省：`preferred` 是自己指定模型时**必须**尽先，否则选择器里
-    // 选什么都回到默认模型（用户报的「不管选什么都会被重置」就是这条）；
-    // 而在没指定时仍要看 `enabledModels` 可见范围，见 `default_model_ref`。
-    let preferred = requested.or_else(|| state.default_model_ref());
     // 项目是否已信任：决定项目技能要不要参与系统提示词的 `<skills>` 段与
     // `/skill:` 展开，与 `/api/skills` 的 `projectResourcesLoaded` 同一语义。
     let trusted = crate::trust::status(state.project_trust(), &cwd).trusted;

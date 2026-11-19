@@ -979,33 +979,15 @@ pub fn defer_media_blocks(message: &Value) -> Value {
 /// 构建 context（消息 + entryIds + 当前模型 / 思考等级）。
 pub fn context_view(entries: &[Value], leaf_id: Option<&str>) -> ContextView {
     let branch = branch_entries(entries, leaf_id);
-    let mut view = ContextView::default();
-    // 分支上没有 `model_change` 时的兜底：最后一条 assistant 消息自带的
-    // `provider` / `model`。
-    //
-    // pi 早期版本（以及个别新建路径）不写 `model_change` 条目，只把模型记在
-    // 每条 assistant 消息里。只认 `model_change` 的话这类会话的 `context.model`
-    // 恒为 null，前端输入框的模型按钮就退化成文案「选择模型」——用户看到的是
-    // 「模型名偶尔丢失」。这与 `boot.rs::last_used_model` 的回退顺序一致。
-    let mut assistant_model: Option<Value> = None;
+    let mut view = ContextView {
+        model: model_for_branch(&branch).unwrap_or(Value::Null),
+        ..ContextView::default()
+    };
     for entry in &branch {
-        match entry.get("type").and_then(Value::as_str) {
-            Some("model_change") => {
-                let provider = entry.get("provider").cloned().unwrap_or(Value::Null);
-                let model_id = entry.get("modelId").cloned().unwrap_or(Value::Null);
-                view.model = json!({ "provider": provider, "modelId": model_id });
+        if entry.get("type").and_then(Value::as_str) == Some("thinking_level_change") {
+            if let Some(level) = entry.get("thinkingLevel") {
+                view.thinking_level = level.clone();
             }
-            Some("thinking_level_change") => {
-                if let Some(level) = entry.get("thinkingLevel") {
-                    view.thinking_level = level.clone();
-                }
-            }
-            Some("message") => {
-                if let Some(found) = assistant_message_model(entry) {
-                    assistant_model = Some(found);
-                }
-            }
-            _ => {}
         }
         if let Some(message) = context_entry_message(entry) {
             if let Some(id) = entry.get("id").and_then(Value::as_str) {
@@ -1014,12 +996,33 @@ pub fn context_view(entries: &[Value], leaf_id: Option<&str>) -> ContextView {
             view.messages.push(message);
         }
     }
-    if view.model.is_null() {
-        if let Some(found) = assistant_model {
-            view.model = found;
-        }
-    }
     view
+}
+
+/// 恢复会话只需要模型元数据，不必复制整段对话（可能含大图）。
+pub(crate) fn context_model(entries: &[Value]) -> Option<Value> {
+    model_for_branch(&branch_entries(entries, None))
+}
+
+fn model_for_branch(branch: &[&Value]) -> Option<Value> {
+    // 显式选择优先。早期会话没有 model_change，才从最后一条助手消息恢复。
+    branch
+        .iter()
+        .rev()
+        .find_map(|entry| {
+            if entry.get("type")?.as_str()? != "model_change" {
+                return None;
+            }
+            let provider = entry.get("provider")?.as_str().filter(|s| !s.is_empty())?;
+            let model_id = entry.get("modelId")?.as_str().filter(|s| !s.is_empty())?;
+            Some(json!({ "provider": provider, "modelId": model_id }))
+        })
+        .or_else(|| {
+            branch
+                .iter()
+                .rev()
+                .find_map(|entry| assistant_message_model(entry))
+        })
 }
 
 /// 从一条 assistant 消息里取 `{provider, modelId}`（v3 原文的字段是 `model`，

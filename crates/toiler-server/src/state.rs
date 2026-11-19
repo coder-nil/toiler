@@ -606,6 +606,27 @@ impl AppState {
             .map(|m| (m.provider, m.id))
     }
 
+    /// 已有会话的模型优先于全局偏好。选择器与运行时共用这条规则，避免恢复时分家。
+    pub(crate) fn session_model_ref(
+        &self,
+        history: Option<&serde_json::Value>,
+    ) -> Option<(String, String)> {
+        let catalog = self.catalog();
+        history
+            .and_then(|history| {
+                let provider = history.get("provider")?.as_str()?;
+                let id = history.get("modelId")?.as_str()?;
+                catalog.model_for(provider, id)?;
+                Some((provider.to_string(), id.to_string()))
+            })
+            .or_else(|| self.default_model_ref())
+            .or_else(|| {
+                catalog
+                    .default_model()
+                    .map(|m| (m.provider.clone(), m.id.clone()))
+            })
+    }
+
     /// 把「会话里出现的 cwd / projectRoot + 默认 cwd + 已存项目」灌进允许根。
     ///
     /// 对应 pi 的 `80547.o()`：每次判定前重建一次集合（pi 有 5 秒缓存，
