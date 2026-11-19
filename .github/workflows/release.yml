@@ -128,6 +128,34 @@ jobs:
         # 所以下面的 upload-artifact glob 都带这一层。
         run: npx --yes @tauri-apps/cli@^2 build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
+      - name: macOS 验签
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 签名必须发生在 tauri build 内部（DMG 里的 app 在打包时就已经装好），
+          # 所以这里只验不改。具体见下方「signingIdentity」与 docs/macos-release.md。
+          APP="target/${{ matrix.target }}/release/bundle/macos/Toiler.app"
+          if [ ! -d "$APP" ]; then
+            echo "::error::未找到 app bundle：$APP"
+            exit 1
+          fi
+          codesign --verify --verbose=4 "$APP"
+          echo "--- 签名详情 ---"
+          codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature|flags|Info.plist|Sealed" || true
+          # 没有 Sealed Resources 说明只有 rustc 的 linker-signed 二进制签名，
+          # bundle 级签名缺失——此时 codesign --verify 已先报错。
+          if ! codesign -dv "$APP" 2>&1 | grep -q "Sealed Resources version=2"; then
+            echo "::error::bundle 签名未封存资源，签名无效"
+            exit 1
+          fi
+          if codesign -dv "$APP" 2>&1 | grep -q "Authority=Developer ID Application"; then
+            echo "✓ 已用 Developer ID 签名"
+          else
+            echo "::warning::当前为 ad-hoc 签名，产物会触发 Gatekeeper，需用户手动放行"
+            echo "详见 docs/macos-release.md"
+          fi
+
       - name: 移除 MSI 文件名的默认语言后缀
         if: runner.os == 'Windows'
         shell: bash
@@ -190,8 +218,11 @@ jobs:
           body: |
             ## 安装说明
 
-            - **macOS**：安装包未做代码签名/公证，首次打开请右键 →「打开」，
+            - **macOS**：安装包未做代码签名/公证，首次打开会被 Gatekeeper 拦截。
+              请到 **系统设置 → 隐私与安全性 → 底部点「仍要打开」**；
               或执行 `xattr -dr com.apple.quarantine /Applications/Toiler.app`。
+              （旧版 macOS 的「右键 →「打开」」已被 Apple 移除，不再可用。）
+              签名与公证的现状与规划见仓库 `docs/macos-release.md`。
             - **Windows**：提供 NSIS（`.exe`）和 MSI（`.msi`）两种安装包，当前均未签名。
               发布前会在 Windows CI 上执行 Defender 扫描，但不保证所有终端都不拦截。
               若被隔离/删除，请查看 Windows 安全中心「保护历史记录」的威胁名称，

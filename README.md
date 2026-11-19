@@ -97,6 +97,19 @@ npm exec --yes --package=node@22.23.5 -- node scripts/build.mjs
 需要与 `tools/bump-version.py` 兼容的项目结构。
 详见 [版本升级说明](./docs/version-upgrade.md)。
 
+### macOS 安装与签名现状
+
+DMG 安装包当前**未做代码签名与公证**，首次打开会被 Gatekeeper 拦截。
+用户侧只有一种可靠做法：**系统设置 → 隐私与安全性 → 底部「仍要打开」**，
+或执行 `xattr -dr com.apple.quarantine /Applications/Toiler.app`。
+
+> 旧文档里的「右键 →「打开」」在新版 macOS 上已失效，Apple 移除了这个绕过入口。
+
+`spctl` 只认 **Apple 公证** 或 **用户在系统设置里手动放行**；自制的 ad-hoc
+签名（`codesign -s -`）能通过签名自检，但 Gatekeeper 照样拒绝，不能省掉这一步。
+彻底的解法是接入 Apple Developer Program 证书 + 公证，改动清单、坑点与验收标准见
+[macOS 发布：签名与公证规划](./docs/macos-release.md)。
+
 ### Windows 安装与拦截排查
 
 Release 提供 NSIS（`.exe`）和 MSI（`.msi`）安装包，发布前在 Windows CI 上扫描
