@@ -197,7 +197,9 @@ test("透明 CSS 只由原生成功能力类开启，Windows 控制区不留实�
   assert.match(css, /html\.toiler-native-titlebar,\s*html\.toiler-native-titlebar body\s*\{\s*background: transparent;/);
   assert.match(css, /\.toiler-native-titlebar \.toiler-window-controls\s*\{\s*background: transparent;/);
   assert.doesNotMatch(css, /html\.pi-overlay-chrome body\s*\{\s*background: transparent;/);
-  for (const [surface, color] of [["workspace", "bg"], ["sidebar", "bg-chrome"], ["file-panel", "bg"], ["git-panel", "bg"]]) {
+  /* 侧栏有自己的一档浅色底（--sidebar-bg），渐变必须引它而不是 --bg-chrome，
+     否则桌面窗口的侧栏会比浏览器里深一档。 */
+  for (const [surface, color] of [["workspace", "bg"], ["sidebar", "sidebar-bg"], ["file-panel", "bg"], ["git-panel", "bg"]]) {
     assert.ok(block.includes(`--${surface}-surface: linear-gradient(to bottom,\n    transparent var(--native-titlebar-height),\n    var(--${color}) var(--native-titlebar-height))`));
   }
   const layout = await read("../lib/panel-layout.ts");

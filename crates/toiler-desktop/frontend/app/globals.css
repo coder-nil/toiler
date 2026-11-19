@@ -679,6 +679,14 @@ html.dark .chat-jump-to-latest[data-visible="true"]:hover {
      （4.5:1），因为它承载时间戳与消息数这类真实信息。 */
   --bg: #ffffff;
   --bg-chrome: #f7f7f7;
+  /* 侧栏单独一档，不再与顶部条共用 --bg-chrome：它夹在内容面（--bg
+     #ffffff）与外壳面（--bg-chrome #f7f7f7）之间、取贴近内容面的一侧，
+     让会话列表读起来更像正文的一部分。顶部条仍用 --bg-chrome。
+     两层分工：--sidebar-bg 是纯色（主题相关）；--sidebar-surface 是“表面”，
+     平时等于这个纯色，原生材质的标题带下被换写成渐变。渐变里必须引用
+     --sidebar-bg 而不是 --bg-chrome，否则桌面窗口的侧栏会跟浏览器差一档。 */
+  --sidebar-bg: #fcfcfc;
+  --sidebar-surface: var(--sidebar-bg);
   --bg-panel: #f1f1f1;
   --bg-hover: #ebebeb;
   /* 下拉条目悬停用的“轻悬停”：比 --bg-hover 更靠近 --bg，胶囊底在白弹层上
@@ -726,6 +734,10 @@ html.dark .chat-jump-to-latest[data-visible="true"]:hover {
 html.dark {
   --bg: #212121;
   --bg-chrome: #171717;
+  /* 深色下侧栏与顶部条保持同色：这里是覆盖 :root 的 #fcfcfc，别删，
+     删掉后深色侧栏会继承成近白色块。--sidebar-surface 不用重定义，
+     它继承自 :root 的 var(--sidebar-bg)，会跟着这里一起变。 */
+  --sidebar-bg: var(--bg-chrome);
   --bg-panel: #2a2a2a;
   --bg-hover: #313131;
   --bg-hover-soft: #2a2a2a;
@@ -1194,9 +1206,11 @@ html.toiler-native-titlebar body {
   --workspace-surface: linear-gradient(to bottom,
     transparent var(--native-titlebar-height),
     var(--bg) var(--native-titlebar-height));
+  /* 侧栏实色段引 --sidebar-bg（而不是 --bg-chrome）：侧栏有自己的一档
+     浅色底，桌面窗口与浏览器必须一致。 */
   --sidebar-surface: linear-gradient(to bottom,
     transparent var(--native-titlebar-height),
-    var(--bg-chrome) var(--native-titlebar-height));
+    var(--sidebar-bg) var(--native-titlebar-height));
   --file-panel-surface: linear-gradient(to bottom,
     transparent var(--native-titlebar-height),
     var(--bg) var(--native-titlebar-height));
