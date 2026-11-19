@@ -27,3 +27,11 @@
 <pre>TOILER_FRONTEND_DIR=/path/to/frontend cargo build -p toiler-desktop --release</pre>
 <p class="hint">产物需包含 <code>index.html</code>（pi 的 Next 静态导出形状：
 <code>index.html</code> / <code>index.txt</code> / <code>_next/</code> / <code>icons/</code>）。</p>
+<script>
+  /* 内置占位页没有 React 工作区，静态内容就绪后也要让桌面壳显示窗口。 */
+  if (window.__TOILER_DESKTOP__) {
+    document.addEventListener("DOMContentLoaded", function () {
+      window.dispatchEvent(new Event("pi-app-ready"));
+    }, { once: true });
+  }
+</script>

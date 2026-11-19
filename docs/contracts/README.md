@@ -711,9 +711,11 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
    所以把模型的 `baseUrl` 指到本进程，由它做 COSY 签名 + 请求体改写 + SSE 信封解包
    （等价于 pi 的 `withQoderCnFetch`）。路径令牌是进程启动时的随机串，且只收
    loopback 对端 —— 这条端点会带着账号凭据刷上游额度。
-   与 pi 的差异：模型目录默认使用静态快照；设置页刷新时，已登录的 Qoder CN 会用
-   OAuth 凭据和 COSY 签名请求官方 `model/list`，目录缓存绑定当前账号并同步到本机
-   转发层；其它未实现 OAuth 目录链路的订阅会返回明确提示。
+   与 pi 的差异：仅在保存了 Qoder CN OAuth 凭据后加载内置模型目录，退出后从可选模型中移除；
+   `models.json` 中同名的自定义配置仍优先，未登录时也能在订阅区找到 Qoder CN 登录入口。
+   已登录时没有当前账号的远端目录则使用静态快照；设置页刷新会用 OAuth 凭据和 COSY 签名请求
+   官方 `model/list`，目录缓存绑定当前账号并同步到本机转发层。其它未实现 OAuth 目录链路的
+   订阅会返回明确提示。
 9. **`/api/auth/api-key/{provider}` 的 `displayName`** 取 `models.json` 的 `name`，缺省用 id
    （pi 取 models.dev 的展示名）。
 10. **git 凭据**：与 pi 同格式 —— AES-256-GCM 加密存进 `git-credentials.json`

@@ -285,7 +285,7 @@ pub async fn delete_api_key(
     _trusted: Trusted,
     Path(provider): Path<String>,
 ) -> Response {
-    remove_credential(&state, &provider, "api_key", "not an API key")
+    remove_credential(&state, &provider, "api_key", "not an API key").await
 }
 
 /// `POST /api/auth/logout/{provider}`
@@ -294,19 +294,26 @@ pub async fn logout(
     _trusted: Trusted,
     Path(provider): Path<String>,
 ) -> Response {
-    remove_credential(&state, &provider, "oauth", "not OAuth")
+    remove_credential(&state, &provider, "oauth", "not OAuth").await
 }
 
 /// 删凭据的公共部分。
 ///
 /// 类型不匹配 → 409，措辞取**实际存着的类型**（`api_key` → "an API key"，
 /// `oauth` → "OAuth"），与 pi 一致。
-fn remove_credential(state: &AppState, provider: &str, expect: &str, expected: &str) -> Response {
+async fn remove_credential(
+    state: &AppState,
+    provider: &str,
+    expect: &str,
+    expected: &str,
+) -> Response {
     match state.auth().remove(provider, expect) {
         Ok(RemoveResult::Removed) | Ok(RemoveResult::NotFound) => {
-            // 凭据没了 → 内置目录要重算：`apisets` 失去 key 后它的模型就不该再挂在
-            // 目录里（否则对话的模型下拉会列出一个发不出去的模型）。
+            // 凭据没了 → 内置目录要重算，否则模型下拉会列出发不出去的模型。
             state.attach_builtin_providers();
+            if provider == crate::qoder_cn::PROVIDER_ID {
+                state.sync_live_catalogs().await;
+            }
             state.sessions().invalidate();
             Json(json!({ "success": true })).into_response()
         }
@@ -387,9 +394,9 @@ async fn qoder_cn_login_stream(state: AppState) -> Response {
                 });
                 match state.auth().set(crate::qoder_cn::PROVIDER_ID, credential) {
                     Ok(()) => {
-                        // 模型目录要跟着刷新：端口在 bind 时才知道，登录可能发生在
-                        // 任何时刻，这里补一次注入（幂等）。
+                        // 登录前活会话里还没有内置 Qoder CN，刷新选择器前也要同步目录。
                         state.attach_builtin_providers();
+                        state.sync_live_catalogs().await;
                         state.sessions().invalidate();
                         yield Ok(Event::default().data(json!({ "type": "success" }).to_string()));
                     }

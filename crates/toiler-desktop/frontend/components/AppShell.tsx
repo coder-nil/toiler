@@ -960,12 +960,20 @@ export function AppShell() {
       || initialWorkspaceRestoreDone;
     if (!sidebarInitialLoadDone || !initialSessionRestored || !cwdRestoreDone || !workspaceRestoreDone) return;
 
+    const markReady = () => {
+      document.documentElement.dataset.piAppReady = "true";
+      window.dispatchEvent(new Event("pi-app-ready"));
+    };
+    // 此时工作区的首屏已提交到 DOM。隐藏的桌面 WebView 可能暂停绘制帧，
+    // 必须先通知原生层显示窗口，不能等窗口可见后才有机会发出通知。
+    if (isDesktopShell()) {
+      markReady();
+      return;
+    }
+
     let secondFrame = 0;
     const firstFrame = requestAnimationFrame(() => {
-      secondFrame = requestAnimationFrame(() => {
-        document.documentElement.dataset.piAppReady = "true";
-        window.dispatchEvent(new Event("pi-app-ready"));
-      });
+      secondFrame = requestAnimationFrame(markReady);
     });
     return () => {
       cancelAnimationFrame(firstFrame);

@@ -276,26 +276,35 @@ impl AppState {
         self.inner.qoder_cn_token.clone()
     }
 
-    /// 把内置 `qoder-cn` 模型注入目录（幂等）。
+    /// 对齐内置 `qoder-cn` 模型目录（幂等，返回目录是否变更）。
     ///
     /// 必须在 `bind` 之后调用：模型的 `baseUrl` 要指向本进程的监听端口。
+    /// 内置快照仅用作订阅登录后的目录兜底；退出后要摘掉旧模型，避免仍可选中。
     /// 用户自己在 `models.json` 里写了 `qoder-cn` 时以用户的为准（不覆盖）。
     pub fn attach_qoder_cn(&self) -> bool {
         let port = self.server_port();
-        if port == 0 {
-            return false;
-        }
-        if self.models_define(crate::qoder_cn::PROVIDER_ID) {
+        let provider_id = crate::qoder_cn::PROVIDER_ID;
+        if port == 0 || self.models_define(provider_id) {
             return false;
         }
         let current = self.catalog();
-        let base = crate::qoder_cn::local_base_url(port, &self.qoder_cn_token());
-        let entries = crate::qoder_cn::catalog::entries(self.models_file().path(), self.auth());
-        let models = crate::qoder_cn::models_from_catalog(&base, &entries);
+        let has_oauth = self
+            .auth()
+            .read()
+            .get(provider_id)
+            .and_then(crate::qoder_cn::auth::identity_from_credential)
+            .is_some();
+        let models = if has_oauth {
+            let base = crate::qoder_cn::local_base_url(port, &self.qoder_cn_token());
+            let entries = crate::qoder_cn::catalog::entries(self.models_file().path(), self.auth());
+            crate::qoder_cn::models_from_catalog(&base, &entries)
+        } else {
+            Vec::new()
+        };
         let installed: Vec<_> = current
             .models
             .iter()
-            .filter(|model| model.provider == crate::qoder_cn::PROVIDER_ID)
+            .filter(|model| model.provider == provider_id)
             .collect();
         if installed.len() == models.len()
             && installed.iter().zip(&models).all(|(old, new)| {
@@ -314,7 +323,11 @@ impl AppState {
         let default_entry = current
             .default_entry()
             .map(|entry| (entry.provider.clone(), entry.id.clone()));
-        let mut next = (*current).clone().with_qoder_cn_models(models);
+        let mut next = if models.is_empty() {
+            (*current).clone().without_provider(provider_id)
+        } else {
+            (*current).clone().with_qoder_cn_models(models)
+        };
         next.apply_default_hint(default_entry);
         self.replace_catalog(next);
         true

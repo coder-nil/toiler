@@ -12,6 +12,7 @@
 //! 手机访问（局域网反向代理 + Cloudflare 隧道）原样保留，见 [`mobile`]。
 
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -52,11 +53,50 @@ fn safe_external_url(raw: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
-#[tauri::command]
-fn hide_startup_overlay() -> Result<(), String> {
-    // toiler 没有原生启动遮罩（不需要等 node 起来），保留这个命令是为了让
-    // pi 前端的 `pi-app-ready` 回调不至于报错。
+const STARTUP_WINDOW_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// 就绪信号和超时兜底可能先后到达，只允许其中一个首次显示窗口。
+#[derive(Default)]
+struct StartupWindow(AtomicBool);
+
+impl StartupWindow {
+    fn show_once<E>(&self, show: impl FnOnce() -> Result<(), E>) -> Result<bool, E> {
+        if self.0.swap(true, Ordering::Relaxed) {
+            return Ok(false);
+        }
+        if let Err(error) = show() {
+            self.0.store(false, Ordering::Relaxed);
+            return Err(error);
+        }
+        Ok(true)
+    }
+}
+
+fn show_main_window(window: &tauri::WebviewWindow, timed_out: bool) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("仅允许显示主窗口".into());
+    }
+    let shown = window
+        .state::<StartupWindow>()
+        .show_once(|| window.show())
+        .map_err(|error| format!("显示主窗口失败：{error}"))?;
+    if shown {
+        if timed_out {
+            tracing::warn!("等待工作区首屏就绪超时，先显示主窗口");
+        }
+        if let Err(error) = window.set_focus() {
+            tracing::warn!("聚焦主窗口失败：{error}");
+        }
+        #[cfg(target_os = "macos")]
+        schedule_traffic_lights(window.app_handle());
+    }
     Ok(())
+}
+
+#[tauri::command]
+fn hide_startup_overlay(window: tauri::WebviewWindow) -> Result<(), String> {
+    // 沿用 pi 的就绪回调；Toiler 直接延后显示窗口，不单独创建启动遮罩。
+    show_main_window(&window, false)
 }
 
 #[tauri::command]
@@ -179,7 +219,7 @@ fn place_traffic_lights(
     Ok(report)
 }
 
-/// 建窗之后再摆一次：AppKit 会在窗口上屏时重排标题栏，建窗那一下设的会被盖掉。
+/// 首次显示后再摆一次：AppKit 会在窗口上屏时重排标题栏，建窗那一下设的会被盖掉。
 /// 两次都写日志，方便在 `/tmp/toiler-desktop.log` 里对票。
 #[cfg(target_os = "macos")]
 fn schedule_traffic_lights(app: &tauri::AppHandle) {
@@ -270,7 +310,9 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
          window.__TOILER_CUSTOM_TITLEBAR__ = {custom_titlebar};\
          window.addEventListener('pi-app-ready', function () {{\
            if (window.__TAURI_INTERNALS__) {{\
-             window.__TAURI_INTERNALS__.invoke('hide_startup_overlay').catch(function () {{}});\
+             window.__TAURI_INTERNALS__.invoke('hide_startup_overlay').catch(function (error) {{\
+               console.warn('显示主窗口失败', error);\
+             }});\
            }}\
          }}, {{ once: true }});"
     );
@@ -289,6 +331,8 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
         .title("Toiler")
         .inner_size(1280.0, 820.0)
         .min_inner_size(720.0, 520.0)
+        // 不让原生标题栏抢在 WebView 的工作区首屏之前上屏。
+        .visible(false)
         .initialization_script(script);
 
     // macOS：把系统标题栏换成覆盖式，红绿灯浮在内容上。
@@ -315,6 +359,10 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
     let window = builder
         .build()
         .map_err(|error| format!("创建窗口失败：{error}"))?;
+    #[cfg(target_os = "windows")]
+    if let Err(error) = windows_titlebar::install_custom_caption(&window) {
+        tracing::warn!("初始化 Windows 自绘标题栏失败：{error}");
+    }
     #[cfg(target_os = "macos")]
     {
         if let Err(error) = native_titlebar::update(&window, None, true) {
@@ -335,8 +383,18 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
             }
         });
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = window;
+    // 外部前端可能没有就绪事件，页面脚本也可能出错；不能让窗口一直不可见。
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(STARTUP_WINDOW_TIMEOUT).await;
+        let target = window.clone();
+        if let Err(error) = window.run_on_main_thread(move || {
+            if let Err(error) = show_main_window(&target, true) {
+                tracing::error!("{error}");
+            }
+        }) {
+            tracing::warn!("无法执行主窗口显示兜底：{error}");
+        }
+    });
     Ok(())
 }
 
@@ -388,6 +446,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .manage(ServerState(Mutex::new(None)))
+        .manage(StartupWindow::default())
         .manage(MobileAccess::default())
         .manage(terminal::TerminalState::default())
         .manage(seasonal_icon::SeasonalIconState::default())
@@ -441,8 +500,6 @@ pub fn run() {
 
             mobile::start(&handle, port);
             spawn_signal_watcher(handle.clone());
-            #[cfg(target_os = "macos")]
-            schedule_traffic_lights(&handle);
             tracing::info!("toiler 桌面窗口已创建（端口 {port}）");
             Ok(())
         })
@@ -595,6 +652,24 @@ mod tests {
         );
         // 脚本会被原样注入，`//` 注释在压平后是灾难（与导出页同一条铁律）。
         assert!(!script.contains("//"), "注入脚本里不能有 // 注释：{script}");
+    }
+
+    #[test]
+    fn startup_window_only_shows_once() {
+        let startup = StartupWindow::default();
+        assert_eq!(startup.show_once(|| Ok::<_, ()>(())), Ok(true));
+        // 超时兜底或迟到的前端就绪信号都不能再次显示窗口（例如用户已经最小化）。
+        assert_eq!(
+            startup.show_once::<()>(|| panic!("不能再次显示")),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn startup_window_can_retry_after_show_failure() {
+        let startup = StartupWindow::default();
+        assert_eq!(startup.show_once(|| Err("显示失败")), Err("显示失败"));
+        assert_eq!(startup.show_once(|| Ok::<_, ()>(())), Ok(true));
     }
 
     #[test]

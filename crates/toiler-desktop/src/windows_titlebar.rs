@@ -6,7 +6,9 @@ use std::mem::size_of;
 use std::ptr::null_mut;
 
 use windows_sys::Win32::{
-    Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, HWND},
+    Foundation::{
+        ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, HWND, LPARAM, LRESULT, WPARAM,
+    },
     Graphics::Dwm::{
         DwmExtendFrameIntoClientArea, DwmIsCompositionEnabled, DwmSetWindowAttribute, DWMSBT_NONE,
         DWMSBT_TRANSIENTWINDOW, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
@@ -15,9 +17,75 @@ use windows_sys::Win32::{
     UI::{
         Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
         Controls::MARGINS,
-        WindowsAndMessaging::{SystemParametersInfoW, SPI_GETHIGHCONTRAST},
+        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+        WindowsAndMessaging::{
+            GetWindowLongW, SetWindowLongW, SetWindowPos, SystemParametersInfoW, GWL_STYLE,
+            SPI_GETHIGHCONTRAST, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+            SWP_NOSIZE, SWP_NOZORDER, WM_NCDESTROY, WM_STYLECHANGING, WS_CAPTION,
+        },
     },
 };
+
+const CUSTOM_CAPTION_SUBCLASS: usize = 1;
+
+fn without_caption(style: u32) -> u32 {
+    style & !WS_CAPTION
+}
+
+unsafe extern "system" fn custom_caption_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    id: usize,
+    _data: usize,
+) -> LRESULT {
+    // SAFETY: 仅处理 Win32 样式消息携带的有效 STYLESTRUCT；不保存指针，其他消息照常传递。
+    unsafe {
+        if message == WM_STYLECHANGING && wparam as i32 == GWL_STYLE && lparam != 0 {
+            let styles = &mut *(lparam as *mut STYLESTRUCT);
+            styles.styleNew = without_caption(styles.styleNew);
+        } else if message == WM_NCDESTROY {
+            RemoveWindowSubclass(hwnd, Some(custom_caption_proc), id);
+        }
+        DefSubclassProc(hwnd, message, wparam, lparam)
+    }
+}
+
+/// 必须在窗口线程调用。Tao 的无边框模式只改客户区，仍保留 WS_CAPTION；
+/// 扩展 DWM 背景时可能画出系统按钮。Tao 在显示、最大化等操作时会重新写样式，
+/// 所以不能只在建窗时清一次。保留其它样式，避免影响边缘缩放和系统菜单。
+pub fn install_custom_caption(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?.0 as HWND;
+    // SAFETY: hwnd 由 Tauri 提供；窗口在当前线程创建；回调不持有借用或外部状态。
+    unsafe {
+        if SetWindowSubclass(hwnd, Some(custom_caption_proc), CUSTOM_CAPTION_SUBCLASS, 0) == 0 {
+            return Err("无法安装窗口标题栏样式回调".into());
+        }
+        let old = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        let new = without_caption(old);
+        if old != new {
+            // 旧样式有 WS_CAPTION，非零；SetWindowLongW 返回零即失败。
+            if SetWindowLongW(hwnd, GWL_STYLE, new as i32) == 0
+                || SetWindowPos(
+                    hwnd,
+                    null_mut(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+                ) == 0
+            {
+                return Err(format!(
+                    "刷新自绘标题栏样式失败：{}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 fn check(result: i32, api: &str) -> Result<(), String> {
     if result < 0 {
@@ -91,6 +159,11 @@ fn high_contrast_enabled() -> Result<bool, String> {
 
 pub fn update(window: &tauri::WebviewWindow, dark: bool) -> Result<bool, String> {
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0 as HWND;
+    // SAFETY: 读取 Tauri 窗口的当前样式，不改变窗口状态。
+    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+    if style == 0 || style != without_caption(style) {
+        return Err("无法确认系统标题栏已移除，不扩展 DWM 背景".into());
+    }
     let mut composition = 0;
     // SAFETY: 输出 BOOL 指针有效，不修改用户设置。
     check(
@@ -142,5 +215,29 @@ pub fn clear(window: &tauri::WebviewWindow) {
     let result = unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) };
     if result < 0 {
         tracing::debug!("恢复 DWM 客户区失败：0x{:08X}", result as u32);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        WS_MAXIMIZE, WS_MAXIMIZEBOX, WS_MINIMIZE, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
+        WS_VISIBLE,
+    };
+
+    #[test]
+    fn tao_style_updates_keep_window_features_without_system_caption() {
+        let features = WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+        for state in [
+            0,
+            WS_VISIBLE,
+            WS_VISIBLE | WS_MAXIMIZE,
+            WS_VISIBLE | WS_MINIMIZE,
+        ] {
+            let expected = features | state;
+            assert_eq!(without_caption(expected | WS_CAPTION), expected);
+            assert_eq!(without_caption(expected), expected);
+        }
     }
 }

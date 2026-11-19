@@ -2487,16 +2487,40 @@ async fn qoder_cn_relay_requires_the_token_and_a_login() {
 }
 
 #[tokio::test]
-async fn qoder_cn_models_come_from_the_builtin_catalog() {
-    // 对应设置页「模型」下拉与模型设置列表：`qoder-cn` 的 15 个模型来自内置静态
-    // 目录（pi 的 `QODER_CN_STATIC_CATALOG`），`baseUrl` 指向本机转发端点。
+async fn qoder_cn_models_are_visible_only_while_subscribed() {
+    // 对应对话模型下拉与设置页的模型列表：未登录不应有内置模型，登录后才使用静态兜底。
     let root = fixture_root("qoder-models");
-    let agent = root.join("agent");
-    std::fs::create_dir_all(&agent).unwrap();
-    let state = state_with_agent_dir(&root, &root, &agent);
+    let state = state_with_agent_dir(&root, &root, &root);
+    let router = routes::router(state.clone());
+    let settings_url = "/api/models-config/enabled?provider=qoder-cn";
+
+    state.attach_builtin_providers();
+    let body = get(router.clone(), "/api/models").await.json();
+    assert_eq!(body["modelList"], json!([]), "{body}");
+    assert_eq!(body["models"], json!({}), "{body}");
+    assert_eq!(body["defaultModel"], Value::Null, "{body}");
+    let body = get(router.clone(), settings_url).await.json();
+    assert_eq!(body["models"], json!([]), "{body}");
+
+    // 模拟登录成功落盘，不调用真实订阅接口。
+    state
+        .auth()
+        .set(
+            "qoder-cn",
+            json!({"type": "oauth", "access": "test-access"}),
+        )
+        .unwrap();
     let token = state.qoder_cn_token();
     assert!(state.attach_qoder_cn(), "第一次注入应生效");
     assert!(!state.attach_qoder_cn(), "重复注入应幂等");
+    let body = get(router.clone(), "/api/models").await.json();
+    assert_eq!(
+        body["modelList"].as_array().map(Vec::len),
+        Some(15),
+        "{body}"
+    );
+    let body = get(router.clone(), settings_url).await.json();
+    assert_eq!(body["models"].as_array().map(Vec::len), Some(15), "{body}");
 
     let catalog = state.catalog();
     let qoder: Vec<&toiler_server::catalog::ModelEntry> = catalog
@@ -2516,6 +2540,58 @@ async fn qoder_cn_models_come_from_the_builtin_catalog() {
         model.base_url,
         format!("http://127.0.0.1:30141/qoder-cn/{token}")
     );
+
+    let reply = call(
+        router.clone(),
+        "POST",
+        "/api/auth/logout/qoder-cn",
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    let body = get(router.clone(), "/api/models").await.json();
+    assert_eq!(body["modelList"], json!([]), "{body}");
+    assert_eq!(body["defaultModel"], Value::Null, "{body}");
+    let body = get(router, settings_url).await.json();
+    assert_eq!(body["models"], json!([]), "{body}");
+    assert!(!state
+        .catalog()
+        .providers
+        .iter()
+        .any(|p| p.id() == "qoder-cn"));
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn qoder_cn_custom_models_do_not_require_a_subscription() {
+    // 用户从设置页导入同名的自定义供应商时，不应被内置订阅的登录条件隐藏。
+    let root = fixture_root("qoder-custom-models");
+    let state = state_with_agent_dir(&root, &root, &root);
+    state
+        .models_file()
+        .write(&json!({"providers": {"qoder-cn": {
+            "api": "openai-completions",
+            "baseUrl": "https://example.invalid/v1",
+            "apiKey": "test-key",
+            "models": [{"id": "custom-model"}]
+        }}}))
+        .unwrap();
+    state.reload_catalog_from_models_file().await.unwrap();
+
+    let router = routes::router(state);
+    let body = get(router.clone(), "/api/models").await.json();
+    assert_eq!(
+        body["modelList"].as_array().map(Vec::len),
+        Some(1),
+        "{body}"
+    );
+    assert_eq!(body["modelList"][0]["id"], "custom-model", "{body}");
+    let body = get(router, "/api/models-config/enabled?provider=qoder-cn")
+        .await
+        .json();
+    assert_eq!(body["models"].as_array().map(Vec::len), Some(1), "{body}");
+    assert_eq!(body["models"][0]["id"], "custom-model", "{body}");
     std::fs::remove_dir_all(&root).ok();
 }
 
