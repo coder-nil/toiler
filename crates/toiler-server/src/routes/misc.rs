@@ -103,7 +103,8 @@ pub async fn models(State(state): State<AppState>, _trusted: Trusted) -> Respons
     }
 
     // `enabledModels` 里写成 `provider/id:level` 的模式会把新会话的思考等级
-    // 直接钉死（见 pi 的 `resolveModelScope`）。只收非 auto 的等级。
+    // 直接钉死（见 pi 的 `resolveModelScope`）。`ModelPattern::parse` 只认真实的
+    // 思考档位（`off…max`），不再有 `auto` 这种伪档位。
     let mut thinking_level_pins = serde_json::Map::new();
     for raw in patterns.as_deref().unwrap_or_default() {
         let Some(pattern) = ModelPattern::parse(raw) else {
@@ -112,9 +113,6 @@ pub async fn models(State(state): State<AppState>, _trusted: Trusted) -> Respons
         let Some(level) = pattern.thinking.as_deref() else {
             continue;
         };
-        if level == "auto" {
-            continue;
-        }
         for model in &visible {
             if settings::pattern_matches(&pattern, model) {
                 thinking_level_pins.insert(

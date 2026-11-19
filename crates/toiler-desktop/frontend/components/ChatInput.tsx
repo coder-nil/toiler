@@ -7,13 +7,14 @@ import type {TextContent, UserMessage} from "@/lib/types";
 import {type ChatDraftCommand, type ChatDraftCommandKind, type ChatDraftImage, type ChatDraftMention, clearDraft, getDraft, mergeRestoredSubmissionDraft, mergeRestoredSubmissionText, rekeyDraft as rekeyStoredDraft, setDraft,} from "@/lib/draft-store";
 import {isBase64ImageWithinLimits, MAX_ATTACHED_IMAGE_BYTES, MAX_ATTACHED_IMAGES,} from "@/lib/image-attachments";
 import {type AtQueryMatch, buildAtInsertText, buildEntriesFromFiles, extractAtQuery, type FileIndexEntry, filterFileEntries,} from "@/lib/file-fuzzy";
-import {ArrowUp, ChevronDown} from "lucide-react";
+import {ArrowUp, Check, ChevronDown} from "lucide-react";
 import {FolderIcon, getFileIcon} from "./FileIcons";
 import {useIsMobile} from "@/hooks/useIsMobile";
 import {useI18n} from "@/hooks/useI18n";
 import {useChatAppearance} from "@/hooks/useChatAppearance";
 import {MobilePairDialog} from "./MobilePairDialog";
 import type {ToolPreset} from "@/lib/tool-presets";
+import { availableThinkingLevels as listAvailableThinkingLevels, DEFAULT_THINKING_LEVEL, isThinkingLevelAdjustable, type ThinkingLevelOption } from "@/lib/thinking-level-preference";
 
 export interface AttachedImage {
   data: string;   // base64, no prefix
@@ -50,8 +51,8 @@ interface Props {
   /** 普通对话模式：π 图标切换，不使用任何工具。 */
   chatMode?: "work" | "chat";
   onChatModeChange?: (mode: "work" | "chat") => void;
-  thinkingLevel?: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-  onThinkingLevelChange?: (level: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") => void;
+  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  onThinkingLevelChange?: (level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") => void;
   availableThinkingLevels?: string[] | null;
   thinkingLevelMap?: Record<string, string | null> | null;
   retryInfo?: { attempt: number; maxAttempts: number; errorMessage?: string } | null;
@@ -187,9 +188,11 @@ export function filterModelOptions(options: ModelOption[], query: string): Model
   ));
 }
 
-const THINKING_LEVELS = ["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-const THINKING_LEVEL_DESC_KEYS: Record<typeof THINKING_LEVELS[number], string> = {
-  auto: "chat.thinkingUseDefault", off: "chat.thinkingOff", minimal: "chat.thinkingMinimal", low: "chat.thinkingLow",
+// 没有 `auto`：「默认推理」在 rpi 里没有对应档位（必然落成 `off`），只在界面制造
+// 「选了没生效」的错觉，已删除。档位清单只有一份（`lib/thinking-level-preference.ts`
+// 的 `THINKING_LEVEL_OPTIONS`），这里只声明每个档位的文案 key，避免两份字面量分叉。
+const THINKING_LEVEL_DESC_KEYS: Record<ThinkingLevelOption, string> = {
+  off: "chat.thinkingOff", minimal: "chat.thinkingMinimal", low: "chat.thinkingLow",
   medium: "chat.thinkingMedium", high: "chat.thinkingHigh", xhigh: "chat.thinkingXhigh", max: "chat.thinkingMax",
 };
 
@@ -1820,10 +1823,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     ? `${compactResult.reason && compactResult.reason !== "manual" ? `${compactResult.reason[0].toUpperCase()}${compactResult.reason.slice(1)} ` : t("chat.compacted")} ${formatTokenCount(compactResult.tokensBefore)} -> ${formatTokenCount(compactResult.estimatedTokensAfter)} tokens (${t("chat.tokensSaved", { saved: formatTokenCount(compactSavedTokens) })})`
     : null;
   const thinkingDisplayLabel = (() => {
-    const lvl = thinkingLevel ?? "auto";
-    if (lvl === "auto" || !thinkingLevelMap) return lvl;
+    const lvl = thinkingLevel ?? DEFAULT_THINKING_LEVEL;
+    if (!thinkingLevelMap) return lvl;
     return thinkingLevelMap[lvl] ?? lvl;
   })();
+  // 菜单里真正能选的档位。只支持 `off` 的模型（`reasoning: false`，比如 qoder 的
+  // GLM / Kimi / MiniMax 系列）只有一项可选：再列一个「关闭推理」既没有可操作性，
+  // 也让人以为推理能力坏了，所以干脆不渲染入口。以前能选 `auto`（默认推理）时菜单
+  // 至少有 2 项，删掉 `auto` 后这个数量才可能变成 1。
+  const thinkingMenuLevels = listAvailableThinkingLevels(availableThinkingLevels);
+  const thinkingAdjustable = isThinkingLevelAdjustable(availableThinkingLevels);
   const toolPresetLabel = Object.entries(TOOL_PRESET_MAP).find(([, v]) => v === (toolPreset ?? "default"))?.[0] ?? "default";
   // 普通对话模式下工具集是空的，预设切换没有任何可应用的对象。
   const toolPresetDisabled = isStreaming || chatModeActive;
@@ -3212,7 +3221,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                           />
                         </div>
                       )}
-                      <div style={{ minHeight: 0, overflowY: "auto" }}>
+                      <div style={{ minHeight: 0, overflowY: "auto", padding: "4px 0" }}>
                         {modelsByProvider.length === 0 ? (
                           <div style={{ padding: "8px 12px", color: "var(--text-dim)", fontSize: 12, whiteSpace: "nowrap" }}>
                             {modelFilter.trim() ? t("chat.noMatchingModels") : t("chat.noAvailableModels")}
@@ -3241,20 +3250,31 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                                   }}
                                   style={{
                                     display: "flex", alignItems: "center", gap: 8,
-                                    width: "100%", padding: "7px 12px",
-                                    background: isActive ? "var(--bg-selected)" : "none",
+                                    // 左右各留 4px，胶囊才不会顶到弹层边上；padding 收回到 8px
+                                    // 让图标与文字仍落在原来的 12px 视觉基线上。
+                                    width: "calc(100% - 8px)", margin: "0 4px", padding: "7px 8px",
+                                    // 选中不靠底色（弹层里再叠一块灰面会跟分区标题抢层级），
+                                    // 只靠左侧对勾 + 字重；底色留给 hover 的胶囊（#f4f4f4，
+                                    // 比 --bg-hover 轻一档，贴在白弹层上只做轻微抬升）。
+                                    background: "none",
                                     border: "none",
+                                    borderRadius: "var(--radius-full)",
                                     color: isActive ? "var(--text)" : "var(--text-muted)",
                                     cursor: "pointer", fontSize: 12, textAlign: "left",
                                     fontWeight: isActive ? 600 : 400,
                                     whiteSpace: "nowrap",
+                                    transition: "background 0.12s ease",
                                   }}
-                                  onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                                  onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
+                                  onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover-soft)"; }}
+                                  onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
                                 >
+                                  {/* 图标与 TaskProgressPanel 的 completed 状态同一枚（Check / 13px / 2.6），
+                                      两个「已完成/已选中」的位置读起来才是一致的语言。
+                                      颜色跟行文字走（选中时即 --text），不用强调蓝：这里只是在说
+                                      「是这一项」，不是要把它标成可点击的主操作。 */}
                                   {isActive
-                                    ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
-                                    : <span style={{ width: 10, flexShrink: 0 }} />}
+                                    ? <Check size={13} strokeWidth={2.6} aria-hidden="true" style={{ flexShrink: 0, color: "currentColor" }} />
+                                    : <span style={{ width: 13, flexShrink: 0 }} aria-hidden="true" />}
                                   {opt.name}
                                 </button>
                               );
@@ -3348,7 +3368,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 backdropFilter: "blur(10px)",
               } : null),
             }}>
-            {onThinkingLevelChange && (
+            {onThinkingLevelChange && thinkingAdjustable && (
               <div ref={thinkingDropdownRef} style={{ position: "relative" }}>
                 <button
                   onClick={() => !isStreaming && setThinkingDropdownOpen((v) => !v)}
@@ -3392,16 +3412,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     ...(isMobile ? { left: 0 } : { right: 0 }),
                     zIndex: 100, background: "var(--bg)", border: "1px solid var(--border)",
                     borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
-                    overflow: "hidden", minWidth: 180,
+                    overflow: "hidden", minWidth: 180, padding: "4px 0",
                   }}>
-                    {THINKING_LEVELS.filter((lvl) => {
-                      if (!availableThinkingLevels) return true;
-                      if (lvl === "auto") return true;
-                      return availableThinkingLevels.includes(lvl);
-                    }).map((lvl) => {
-                      const isActive = (thinkingLevel ?? "auto") === lvl;
+                    {thinkingMenuLevels.map((lvl) => {
+                      const isActive = (thinkingLevel ?? DEFAULT_THINKING_LEVEL) === lvl;
                        const desc = t(THINKING_LEVEL_DESC_KEYS[lvl]);
-                      const mappedVal = (lvl !== "auto" && thinkingLevelMap) ? thinkingLevelMap[lvl] : undefined;
+                      const mappedVal = thinkingLevelMap ? thinkingLevelMap[lvl] : undefined;
                       const displayLabel = (mappedVal != null && mappedVal !== lvl) ? mappedVal : lvl;
                       const showOriginal = mappedVal != null && mappedVal !== lvl;
                       return (
@@ -3410,20 +3426,25 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                           onClick={() => { setThinkingDropdownOpen(false); if (!isActive) onThinkingLevelChange(lvl); }}
                           style={{
                             display: "flex", alignItems: "center", gap: 8,
-                            width: "100%", padding: "7px 12px",
-                            background: isActive ? "var(--bg-selected)" : "none",
+                            // 与模型菜单同一套：左右各留 4px 让胶囊不顶到弹层边，
+                            // padding 收到 8px 保住 12px 的视觉基线。
+                            width: "calc(100% - 8px)", margin: "0 4px", padding: "7px 8px",
+                            // 选中只靠对勾与字重，底色留给 hover 的胶囊（--bg-hover-soft）。
+                            background: "none",
                             border: "none",
+                            borderRadius: "var(--radius-full)",
                             color: isActive ? "var(--text)" : "var(--text-muted)",
                             cursor: "pointer", fontSize: 12, textAlign: "left",
                             fontWeight: isActive ? 600 : 400,
                             whiteSpace: "nowrap",
+                            transition: "background 0.12s ease",
                           }}
-                          onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                          onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover-soft)"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
                         >
                           {isActive
-                            ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
-                            : <span style={{ width: 10, flexShrink: 0 }} />}
+                            ? <Check size={13} strokeWidth={2.6} aria-hidden="true" style={{ flexShrink: 0, color: "currentColor" }} />
+                            : <span style={{ width: 13, flexShrink: 0 }} aria-hidden="true" />}
                           <span style={{ flex: 1 }}>
                             {displayLabel}
                             {showOriginal && <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)", marginLeft: 5 }}>({lvl})</span>}
@@ -3480,7 +3501,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     left: isMobile ? 0 : undefined,
                     zIndex: 100, background: "var(--bg)", border: "1px solid var(--border)",
                     borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
-                    overflow: "hidden", minWidth: 120,
+                    overflow: "hidden", minWidth: 120, padding: "4px 0",
                   }}>
                     {TOOL_PRESETS.map((lvl) => {
                       const preset = TOOL_PRESET_MAP[lvl];
@@ -3496,20 +3517,22 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                           onClick={() => { setToolDropdownOpen(false); if (!isActive) onToolPresetChange(preset); }}
                           style={{
                             display: "flex", alignItems: "center", gap: 8,
-                            width: "100%", padding: "7px 12px",
-                            background: isActive ? "var(--bg-selected)" : "none",
+                            width: "calc(100% - 8px)", margin: "0 4px", padding: "7px 8px",
+                            background: "none",
                             border: "none",
+                            borderRadius: "var(--radius-full)",
                             color: isActive ? "var(--text)" : "var(--text-muted)",
                             cursor: "pointer", fontSize: 12, textAlign: "left",
                             fontWeight: isActive ? 600 : 400,
                             whiteSpace: "nowrap",
+                            transition: "background 0.12s ease",
                           }}
-                          onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
-                          onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover-soft)"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
                         >
                           {isActive
-                            ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
-                            : <span style={{ width: 10, flexShrink: 0 }} />}
+                            ? <Check size={13} strokeWidth={2.6} aria-hidden="true" style={{ flexShrink: 0, color: "currentColor" }} />
+                            : <span style={{ width: 13, flexShrink: 0 }} aria-hidden="true" />}
                           <span style={{ flex: 1 }}>{lvl}</span>
                           <span style={{ fontSize: 11, color: "var(--text-dim)", marginLeft: 8 }}>{desc}</span>
                         </button>

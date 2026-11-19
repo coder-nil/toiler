@@ -646,6 +646,7 @@ html.dark .chat-jump-to-latest[data-visible="true"]:hover {
   --color-bg-chrome: var(--bg-chrome);
   --color-bg-panel: var(--bg-panel);
   --color-bg-hover: var(--bg-hover);
+  --color-bg-hover-soft: var(--bg-hover-soft);
   --color-bg-selected: var(--bg-selected);
   --color-border: var(--border);
   --color-text: var(--text);
@@ -680,6 +681,10 @@ html.dark .chat-jump-to-latest[data-visible="true"]:hover {
   --bg-chrome: #f7f7f7;
   --bg-panel: #f1f1f1;
   --bg-hover: #ebebeb;
+  /* 下拉条目悬停用的“轻悬停”：比 --bg-hover 更靠近 --bg，胶囊底在白弹层上
+     只做一点点抬升。--bg-hover（#ebebeb）是控件的完整抬升档，铺在整条菜单
+     行上会跟弹层边框抢视觉重量。 */
+  --bg-hover-soft: #f4f4f4;
   --bg-selected: #e4e4e4;
   --border: #e3e3e3;
   --text: #0d0d0d;
@@ -723,6 +728,7 @@ html.dark {
   --bg-chrome: #171717;
   --bg-panel: #2a2a2a;
   --bg-hover: #313131;
+  --bg-hover-soft: #2a2a2a;
   --bg-selected: #3a3a3a;
   --border: #3d3d3d;
   --text: #ececec;

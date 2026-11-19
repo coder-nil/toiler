@@ -122,22 +122,31 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 
 `set_thinking_level`（`{"type":"set_thinking_level","level":"high"}`）会实际更新 lane，
 向 v3 文件追加 `thinking_level_change`，返回 `{thinkingLevel}`（当前模型实际生效的级别）。
-`level` 支持 `auto/off/minimal/low/medium/high/xhigh/max`，其它值报错且不更新偏好。
+`level` 支持 `off/minimal/low/medium/high/xhigh/max`，其它值报错且不更新偏好。
 同时将用户选择保存为 `settings.json.defaultThinkingLevel`，新会话与重启后沿用；
 `/api/agent/new` 的 `thinkingLevel` 在第一轮 prompt 前应用。历史会话优先恢复自己的
-`thinking_level_change`，不覆盖全局偏好。`auto` 和模型不支持的级别在运行时回落到
+`thinking_level_change`，不覆盖全局偏好。模型不支持的级别在运行时回落到
 `off`；不支持的级别仍保留原始偏好，切回支持的模型后可恢复。草稿里的选择由浏览器
-暂存，并与建会话请求一起发送（包含显式 `auto` 和 `off`）。
+暂存，并与建会话请求一起发送。
 
-**响应里的 `thinkingLevel` 是「生效级别」，不是用户选的那一档。** rpi 的等级枚举里
-没有 `auto`，所以选 `auto` 时它必然回 `off`（`agent_runtime::effective_thinking_level`）；
-`/api/agent/new`、`get_state`、`/api/sessions/{id}` 的 `context.thinkingLevel` 以及
-v3 文件里的 `thinking_level_change` 全都是生效值 —— `auto` 与 `off` 在那里**不可区分**。
-前端因此把「用户原始偏好」（浏览器 `localStorage` + `settings.json`）与生效值分开保存，
-显示时用 `resolveDisplayThinkingLevel` 还原：偏好是 `auto` 而生效值是 `off`（或缺失）
-时显示 `auto`，否则按生效值显示。直接把生效值写回界面会让刚选的「默认推理」立刻
-跳成「关闭推理」，看起来像选择没生效（`scripts/thinking-level-preference.test.mjs`
-守着这条）。这是显示层的还原，不改接口形状，也不往 v3 文件写 `auto`。
+**`auto` 已从等级表删除（兼容别名仍在）。** 界面过去有第八个选项 `auto`（「默认推理」），
+但 rpi 的等级枚举里没有它，`effective_thinking_level` 必然把它落成 `off`；两者运行时
+完全等价，只让用户以为「选了什么都没发生」。现在：
+
+- `GET /api/models` 的 `thinkingLevels` 与前端菜单都只有 `off…max` 七档；
+  缺省（从未选择过）使用 `medium`（`settings::DEFAULT_THINKING_LEVEL`）。
+- 旧客户端发来 `{"level":"auto"}` 时按 `medium` 生效并落盘，`settings.json` 里不会
+  再写出 `auto`；`settings.json.defaultThinkingLevel` 里遗留的 `auto` 读时被忽略，
+  等同「没选过」。
+- `enabledModels` 的 `provider/id:level` 后缀本来就只认真实档位，`auto` 不会被当成
+  等级后缀，因此也不存在对应的 `thinkingLevelPins` 条目。
+
+历史背景（已不成立，保留供追溯）：`/api/agent/new`、`get_state`、
+`/api/sessions/{id}` 的 `context.thinkingLevel` 以及 v3 文件里的 `thinking_level_change`
+回报的一直是「生效值」而非用户选的那一档；`auto` 存在时它与 `off` 在生效值层面
+不可区分，前端只能靠 `resolveDisplayThinkingLevel` 把 `off` 还原成 `auto`（
+`scripts/thinking-level-preference.test.mjs` 守着这条）。删除 `auto` 后显示值与生效值
+同源，这个还原只剩「模型不支持所选档位时以生效值为准」这一条语义。
 
 `set_ui_locale`（`{"type":"set_ui_locale","locale":"zh-CN"|"en"}`）返回
 `{systemPrompt}`。前端打开会话、切换界面语言都会发它，返回值直接刷新「系统提示词」
@@ -373,7 +382,7 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
   "models": { "<provider>:<id>": "显示名" },        // 字典，不是数组
   "modelList": [{ "provider": "p", "id": "m", "name": "M" }],
   "defaultModel": { "provider": "p", "modelId": "m" } | null,
-  "defaultThinkingLevel": "high" | null,          // Toiler 扩展：最近显式选择，亦可为 auto
+  "defaultThinkingLevel": "high" | null,          // Toiler 扩展：最近显式选择（off…max）
   "thinkingLevels": { "<provider>:<id>": ["off", "low", "high"] },
   "thinkingLevelMaps": { "<provider>:<id>": { "max": "max", "minimal": null } },
   "thinkingLevelPins": { "<provider>/<id>": "level" },
@@ -399,13 +408,20 @@ pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文�
 
 > 不能用 rpi 的 `Model::supported_thinking_levels()` 代替：它对非推理模型仍返回
 > `off…high`，前端会在不支持推理的模型上显示出推理强度菜单。
+>
+> **前端会把只有一档的模型（`["off"]`）的推理入口直接不渲染。** 这正是上面
+> 「不该在非推理模型上显示推理菜单」的落地方式：`availableThinkingLevels` 只有 1 项时
+> 菜单没有可操作性。以前能选 `auto`（默认推理）时菜单至少有 2 项，删掉 `auto` 后
+> 才会出现「只有一项」的形态；`isThinkingLevelAdjustable` 守着这条。
 
 ### 可见范围
 
 按 `settings.json` 的 `enabledModels` 白名单过滤（§`settings::visible_models`）。
 `enabledModels` 里写成 `provider/id:level` 的条目会额外进 `thinkingLevelPins`。
-最近显式选择的推理级别优先于该固定级别；未选择时仍按固定级别、`auto` 依次回退。
-`defaultThinkingLevel` 是为跨启动恢复偏好新增的可选字段，旧客户端可直接忽略。
+最近显式选择的推理级别优先于该固定级别；未选择时按固定级别、`medium`
+（`settings::DEFAULT_THINKING_LEVEL`）依次回退。
+`defaultThinkingLevel` 是为跨启动恢复偏好新增的可选字段，旧客户端可直接忽略；
+它只会是 `off…max` 七档之一，遗留的 `auto` 值读取时被当成「没选过」。
 
 ### `defaultModel` 必须在 `modelList` 里
 

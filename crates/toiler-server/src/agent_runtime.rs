@@ -189,9 +189,12 @@ impl LiveAgent {
                 .flatten()
         });
         let saved_level = settings.default_thinking_level();
+        // 历史会话优先自己的级别；否则用最近偏好；都没有时用默认档位（不再有 `auto`）。
         let thinking_level = effective_thinking_level(
             &model,
-            historical_level.or(saved_level.as_deref()).unwrap_or("off"),
+            historical_level
+                .or(saved_level.as_deref())
+                .unwrap_or(crate::settings::DEFAULT_THINKING_LEVEL),
         );
         let options = AgentHarnessOptions {
             model: model.clone(),
@@ -513,15 +516,23 @@ impl LiveAgent {
     }
 
     /// 推理偏好与会话条目分开保存，打开历史会话不会覆盖最近选择。
+    ///
+    /// `auto` 是已删除的界面档位（它和 `off` 运行时等价）。为令旧前端/旧脚本仍能
+    /// 工作，这里把它当作「用默认档位」的同义词映射成
+    /// [`crate::settings::DEFAULT_THINKING_LEVEL`]，落盘的永远是真实级别，
+    /// `settings.json` 里不会再出现 `auto`。
     async fn set_thinking_level(&self, command: &Value) -> Result<Value> {
-        let level = command
+        let requested = command
             .get("level")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("缺少 level"))?;
-        if level != "auto" {
-            serde_json::from_value::<rpi_ai::ThinkingLevel>(json!(level))
+        let level = if requested == "auto" {
+            crate::settings::DEFAULT_THINKING_LEVEL
+        } else {
+            serde_json::from_value::<rpi_ai::ThinkingLevel>(json!(requested))
                 .context("无效的推理级别")?;
-        }
+            requested
+        };
         let model = self.model.lock().expect("model").clone();
         let effective = effective_thinking_level(&model, level);
         self.lane.set_thinking_level(effective).await?;

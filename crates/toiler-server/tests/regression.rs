@@ -2988,6 +2988,8 @@ async fn thinking_level_remembers_selection_and_restores_session_history() {
     .await
     .json();
     assert_eq!(reopened["data"]["thinkingLevel"], "off");
+    // `auto` 是已删除的界面档位（与 `off` 运行时等价），旧客户端发过来时按默认档位
+    // `medium` 生效，`settings.json` 里也不再出现 `auto`。
     let auto = call(
         router.clone(),
         "POST",
@@ -2997,9 +2999,10 @@ async fn thinking_level_remembers_selection_and_restores_session_history() {
     )
     .await;
     assert_eq!(auto.status, StatusCode::OK, "{}", auto.text());
+    assert_eq!(auto.json()["data"]["thinkingLevel"], "medium");
     assert_eq!(
         get(router, "/api/models").await.json()["defaultThinkingLevel"],
-        "auto"
+        "medium"
     );
 
     std::fs::remove_dir_all(&root).ok();

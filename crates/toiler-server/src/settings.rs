@@ -22,6 +22,14 @@ use crate::paths;
 
 const THINKING_LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
+/// 用户没有显式选过推理级别时使用的档位。
+///
+/// 界面里曾有一个 `auto`（「默认推理」）选项，但 rpi 的等级枚举里没有它，运行时必然
+/// 落成 `off`；前端只能靠显示层把生效值再还原成 `auto`，否则用户选完就跳成「关闭
+/// 推理」。既然 `auto` 与 `off` 运行时完全等价，这个选项只是制造「选了没生效」的错觉，
+/// 已从菜单删除。缺省值因此换成一个真实档位，显示值与生效值不再需要还原。
+pub const DEFAULT_THINKING_LEVEL: &str = "medium";
+
 /// 一条 `enabledModels` 模式的解析结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelPattern {
@@ -181,11 +189,15 @@ impl SettingsFile {
         self.write(&root)
     }
 
-    /// 最近显式选择的推理级别；`auto` 表示恢复模型默认行为。
+    /// 最近显式选择的推理级别。
+    ///
+    /// 早期版本会把 `auto` 写进来（已删除的界面档位）；这种旧值一律当成「没选过」
+    /// 返回 `None`，调用方按 [`DEFAULT_THINKING_LEVEL`] 处理，避免旧配置把新界面
+    /// 顶回一个不存在的档位。
     pub fn default_thinking_level(&self) -> Option<String> {
         let raw = self.read();
         let level = raw.get("defaultThinkingLevel")?.as_str()?;
-        (level == "auto" || THINKING_LEVELS.contains(&level)).then(|| level.to_string())
+        THINKING_LEVELS.contains(&level).then(|| level.to_string())
     }
 
     pub fn set_default_thinking_level(&self, level: &str) -> std::io::Result<()> {

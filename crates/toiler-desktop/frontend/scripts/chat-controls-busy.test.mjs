@@ -4,12 +4,17 @@ import test from "node:test";
 
 const source = await readFile(new URL("../components/ChatInput.tsx", import.meta.url), "utf8");
 
-for (const [callback, ref, disabled] of [
-  ["onThinkingLevelChange", "thinkingDropdownRef", "isStreaming"],
-  ["onToolPresetChange", "toolDropdownRef", "toolPresetDisabled"],
+for (const [callback, ref, disabled, gate] of [
+  ["onThinkingLevelChange", "thinkingDropdownRef", "isStreaming", " && thinkingAdjustable"],
+  ["onToolPresetChange", "toolDropdownRef", "toolPresetDisabled", ""],
 ]) {
   test(`${callback} 在处理期间仍渲染，按钮使用原生禁用和灰显样式`, () => {
-    assert.match(source, new RegExp(`\\{${callback} && \\(\\s*<div ref=\\{${ref}\\}`));
+    // 推理入口多一个 `thinkingAdjustable` 闸门：只支持一档（如非推理模型的只有
+    // `off`）时不渲染，因为菜单里只有一项没有可操作性。
+    const open = `{${callback}${gate} && (`;
+    assert.ok(source.includes(open), `找不到渲染条件：${open}`);
+    const after = source.slice(source.indexOf(open) + open.length).trimStart();
+    assert.ok(after.startsWith(`<div ref={${ref}}`), `渲染条件后应紧跟 <div ref={${ref}}`);
     assert.doesNotMatch(source, new RegExp(`!isStreaming && ${callback}`));
     const button = source.slice(source.indexOf(`<div ref={${ref}}`)).split("</button>")[0];
     assert.match(button, new RegExp(`disabled=\\{${disabled}\\}`));

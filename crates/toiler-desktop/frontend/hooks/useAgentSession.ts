@@ -19,7 +19,7 @@ import { PauseHandoff } from "@/lib/pause-handoff";
 import { clearDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-store";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
 import { getPreferredModel, resolvePreferredModel, setPreferredModel } from "@/lib/model-preference";
-import { getPreferredThinkingLevel, parseThinkingLevel, resolveDisplayThinkingLevel, resolveThinkingLevel, setPreferredThinkingLevel, type ThinkingLevelOption } from "@/lib/thinking-level-preference";
+import { DEFAULT_THINKING_LEVEL, getPreferredThinkingLevel, parseThinkingLevel, resolveDisplayThinkingLevel, resolveThinkingLevel, setPreferredThinkingLevel, type ThinkingLevelOption } from "@/lib/thinking-level-preference";
 import { getPreferredChatMode, setPreferredChatMode, type ChatMode } from "@/lib/chat-mode-preference";
 import { getPresetFromActiveNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
 import type { SessionStatsInfo } from "@/lib/session-stats";
@@ -371,7 +371,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // 普通对话模式是全局偏好（输入框 π 图标），不是会话内容：新会话按它创建，
   // 打开已有会话时由下方的同步 effect 把它推给服务端。
   const [chatMode, setChatMode] = useState<ChatMode>(() => getPreferredChatMode());
-  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelOption>("auto");
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelOption>(DEFAULT_THINKING_LEVEL);
   const [retryInfo, setRetryInfo] = useState<{ attempt: number; maxAttempts: number; errorMessage?: string } | null>(null);
   const [promptFailure, setPromptFailure] = useState<string | null>(null);
   const [contextUsage, setContextUsage] = useState<{ percent: number | null; contextWindow: number; tokens: number | null } | null>(null);
@@ -595,8 +595,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setCurrentModelOverride((current) => modelSwitchPendingRef.current ? current : null);
       setError(null);
       if (d.context.thinkingLevel) {
-        // 会话文件只记「实际生效级别」，`auto` 与 `off` 在那里都写成 `off`；
-        // 回显时按用户的原始偏好把这两种意图区分开。
+        // 会话文件里只有「实际生效级别」；用户原始偏好仅用于区分「偏好是 medium 而模型
+        // 只支持 off」这类回退，最终仍以生效值为准。
         setThinkingLevel(resolveDisplayThinkingLevel(d.context.thinkingLevel, getPreferredThinkingLevel()));
       }
 
@@ -816,7 +816,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         result.thinkingLevel
         && thinkingLevelOverrideRef.current === selectedThinkingLevel
       ) {
-        // 服务端回报的是生效级别（`auto` 已经落成 `off`），显示要按用户选的那档还原。
+        // 服务端回报的是生效级别（模型不支持时可能回退），显示以它为准。
         setThinkingLevel(resolveDisplayThinkingLevel(result.thinkingLevel, selectedThinkingLevel));
       }
       return realId;
@@ -1920,7 +1920,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const supported = displayModel ? d.thinkingLevels?.[`${displayModel.provider}:${displayModel.id}`] ?? [] : [];
         const preferred = getPreferredThinkingLevel();
         const level = resolveThinkingLevel(preferred, d.defaultThinkingLevel, pinned, supported);
-        thinkingLevelOverrideRef.current = preferred ?? parseThinkingLevel(d.defaultThinkingLevel) ?? parseThinkingLevel(pinned) ?? "auto";
+        thinkingLevelOverrideRef.current = preferred ?? parseThinkingLevel(d.defaultThinkingLevel) ?? parseThinkingLevel(pinned) ?? DEFAULT_THINKING_LEVEL;
         setThinkingLevel(level);
       }
     }
@@ -2138,7 +2138,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       const result = await sendAgentCommand<{ thinkingLevel?: ThinkingLevelOption }>(sid, { type: "set_thinking_level", level });
       setPreferredThinkingLevel(level);
-      // 选 `auto` 时后端会回报生效值 `off`：直接用它会把手动选项显示成「关闭推理」。
       setThinkingLevel(resolveDisplayThinkingLevel(result.thinkingLevel, level));
     } catch (e) {
       setThinkingLevel(previous);
