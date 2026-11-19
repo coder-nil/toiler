@@ -1,44 +1,11 @@
 import type { CSSProperties } from "react";
+import { codeLanguageIconFile } from "@/lib/language-icons";
+import { resolveFileIconName, type CatppuccinIconName } from "@/lib/file-icon-names";
 
 
 interface IconProps {
   size?: number;
 }
-
-type CatppuccinIconName =
-  | "_file"
-  | "_folder"
-  | "_folder_open"
-  | "bash"
-  | "config"
-  | "css"
-  | "database"
-  | "docker"
-  | "env"
-  | "git"
-  | "graphql"
-  | "html"
-  | "java"
-  | "javascript"
-  | "javascript-react"
-  | "json"
-  | "lock"
-  | "npm-lock"
-  | "bun-lock"
-  | "next"
-  | "eslint"
-  | "markdown"
-  | "ms-word"
-  | "pdf"
-  | "python"
-  | "rust"
-  | "sass"
-  | "terraform"
-  | "toml"
-  | "typescript"
-  | "typescript-react"
-  | "yaml"
-  | "go";
 
 const CATPPUCCIN_ICONS_ROOT = "/icons/catppuccin";
 
@@ -67,62 +34,28 @@ export function GenericFileIcon({ size = 14 }: IconProps) {
   return <CatppuccinIcon name="_file" size={size} />;
 }
 
-const EXTENSION_ICONS: Record<string, CatppuccinIconName> = {
-  ts: "typescript",
-  tsx: "typescript-react",
-  js: "javascript",
-  mjs: "javascript",
-  cjs: "javascript",
-  jsx: "javascript-react",
-  java: "java",
-  py: "python",
-  json: "json",
-  jsonl: "json",
-  css: "css",
-  less: "css",
-  scss: "sass",
-  html: "html",
-  htm: "html",
-  md: "markdown",
-  mdx: "markdown",
-  yaml: "yaml",
-  yml: "yaml",
-  toml: "toml",
-  sh: "bash",
-  bash: "bash",
-  zsh: "bash",
-  fish: "bash",
-  rs: "rust",
-  go: "go",
-  sql: "database",
-  graphql: "graphql",
-  gql: "graphql",
-  tf: "terraform",
-  hcl: "terraform",
-  docx: "ms-word",
-  pdf: "pdf",
-  lock: "lock",
-};
-
-function getSpecialFileIcon(name: string): CatppuccinIconName | undefined {
-  if (name === "dockerfile" || name.startsWith("dockerfile.")) return "docker";
-  if (name === ".env" || name.startsWith(".env.")) return "env";
-  if ([".gitignore", ".gitattributes", ".gitmodules"].includes(name)) return "git";
-  if (name === "package-lock.json") return "npm-lock";
-  if (name === "bun.lock") return "bun-lock";
-  if (["next.config.js", "next.config.mjs", "next.config.cjs", "next.config.ts"].includes(name)) return "next";
-  if ([".eslintrc", ".eslintrc.js", ".eslintrc.json", ".eslintrc.yml", "eslint.config.mjs", "eslint.config.js"].includes(name)) return "eslint";
-  if (["yarn.lock", "pnpm-lock.yaml", "cargo.lock"].includes(name)) return "lock";
-  if (name.endsWith(".config.ts") || name.endsWith(".config.js") || name.endsWith(".config.mjs") || name.endsWith(".config.cjs")) return "config";
-  return undefined;
+export function getFileIcon(name: string, size = 14): React.ReactNode {
+  const icon = resolveFileIconName(name);
+  return icon ? <CatppuccinIcon name={icon} size={size} /> : <GenericFileIcon size={size} />;
 }
 
-export function getFileIcon(name: string, size = 14): React.ReactNode {
-  const lower = name.toLowerCase();
-  const specialIcon = getSpecialFileIcon(lower);
-  if (specialIcon) return <CatppuccinIcon name={specialIcon} size={size} />;
+/**
+ * 代码块头部用：围栏语言 → 文件图标，映射不到返回 `null`。
+ *
+ * 与 `getFileIcon` 的区别只在兜底：文件面板里未知扩展名必须画点什么（否则整行
+ * 缩进会塌），而代码块头部没有图标是正常态（```text、```diff、```mermaid），
+ * 塞一个通用文件图标反而让人以为那是个真文件。
+ *
+ * 图标本身复用 `.catppuccin-file-icon`，与文件面板、TabBar、聊天提及里用的是同一
+ * 份 SVG；唯一的区别是配色：`globals.css` 里那条 `@supports` 遮罩规则把文件树
+ * 的图标统一涂成 `--text-dim`（不抢读），而代码块头部保留 Catppuccin 原色，因为
+ * 那里的图标是辨别语言的锥点。尺寸不走内联 px，而是按 13px 传给 `size`，与
+ * header 的 12px 字号匹配。
+ */
+export function getCodeLanguageIcon(language: string | null | undefined, size = 13): React.ReactNode {
+  const file = codeLanguageIconFile(language);
+  if (!file) return null;
 
-  const ext = lower.split(".").pop() ?? "";
-  const icon = EXTENSION_ICONS[ext];
-  return icon ? <CatppuccinIcon name={icon} size={size} /> : <GenericFileIcon size={size} />;
+  const icon = resolveFileIconName(file);
+  return icon ? <CatppuccinIcon name={icon} size={size} /> : null;
 }

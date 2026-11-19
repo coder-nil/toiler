@@ -1,11 +1,13 @@
 "use client";
 
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Check, Code, Copy, Eye } from "lucide-react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { useTheme } from "@/hooks/useTheme";
 import { useI18n } from "@/hooks/useI18n";
 import { copyText } from "@/lib/clipboard";
 import { darkSyntaxTheme, lightSyntaxTheme } from "@/lib/syntax-highlighter-theme";
+import { MarkdownCodeLang } from "./MarkdownCodeLang";
 
 interface MermaidBlockProps {
   code: string;
@@ -76,6 +78,10 @@ export function MermaidBlock({ code, isStreaming, defaultPreview = false }: Merm
       title={isStreaming ? t("i18n.previewAfterStreaming") : (previewVisible ? t("i18n.showMermaidSource") : t("i18n.previewMermaid"))}
       className={["markdown-code-action", previewVisible ? "is-active" : ""].filter(Boolean).join(" ")}
     >
+      {/* 图标跟着动作走：预览态显示「源代码」配代码图标，源码态显示「预览」配眼睛。 */}
+      {previewVisible
+        ? <Code size={13} strokeWidth={2} aria-hidden="true" />
+        : <Eye size={13} strokeWidth={2} aria-hidden="true" />}
       {previewVisible ? t("i18n.source") : t("i18n.preview")}
     </button>
   ), [isStreaming, previewVisible, t]);
@@ -107,8 +113,8 @@ export function MermaidBlock({ code, isStreaming, defaultPreview = false }: Merm
   return (
     <div className="markdown-code-block">
       <div className="markdown-code-header">
-        <span className="markdown-code-lang">mermaid</span>
-        {previewButton}
+        <MarkdownCodeLang language="mermaid" />
+        <div className="markdown-code-actions">{previewButton}</div>
       </div>
       {body}
     </div>
@@ -251,13 +257,16 @@ export const CodeBlock = memo(function CodeBlock({ code, lang, headerAction, isS
   return (
     <div className="markdown-code-block">
       <div className="markdown-code-header">
-        <span className="markdown-code-lang">{lang || "text"}</span>
+        <MarkdownCodeLang language={lang} />
         <div className="markdown-code-actions">
           {headerAction}
           <button
             onClick={copy}
             className="markdown-code-action"
           >
+            {copied
+              ? <Check size={13} strokeWidth={2.4} aria-hidden="true" />
+              : <Copy size={13} strokeWidth={2} aria-hidden="true" />}
             {copied ? t("i18n.copied") : t("i18n.copy")}
           </button>
         </div>

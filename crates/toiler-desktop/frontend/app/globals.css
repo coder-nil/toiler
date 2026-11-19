@@ -684,7 +684,7 @@ html.dark .chat-jump-to-latest[data-visible="true"]:hover {
   /* 下拉条目悬停用的“轻悬停”：比 --bg-hover 更靠近 --bg，胶囊底在白弹层上
      只做一点点抬升。--bg-hover（#ebebeb）是控件的完整抬升档，铺在整条菜单
      行上会跟弹层边框抢视觉重量。 */
-  --bg-hover-soft: #f4f4f4;
+  --bg-hover-soft: #eaeaea;
   --bg-selected: #e4e4e4;
   --border: #e3e3e3;
   --text: #0d0d0d;
@@ -1544,14 +1544,13 @@ pre, code {
   border-radius: 6px;
 }
 .markdown-body .markdown-inline-code {
-  background: var(--bg-subtle);
-  border-radius: 5px;
-  padding: 1px 5px;
+  background: var(--bg-hover-soft);
+  border-radius: 7px;
+  padding: 0px 5px;
   color: var(--text);
   font-family: var(--font-mono);
   font-size: 0.9em;
   line-height: 1.35;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 70%, transparent);
 }
 .markdown-body .contains-task-list {
   padding-left: 0;
@@ -1819,9 +1818,28 @@ pre, code {
   gap: 8px;
 }
 .markdown-code-lang {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-weight: 650;
+}
+/* 图标用 Catppuccin 原色（CSS 蓝、TS 蓝、Rust 橙…），与文件树「统一去色」的取向
+   不同：代码块头部只有一枚图标，它是识别语言的锥点，彩色反而更容易一眼分清。
+   因此要显式抵消全局那条把 SVG 当遮罩的规则（`.catppuccin-file-icon` 特异性
+   0,1,0，`html.dark .catppuccin-file-icon` 为 0,2,1）。下面两条分别是
+   0,2,0 / 0,3,1，严格高于全局规则，不靠书写顺序。 */
+.markdown-code-lang .catppuccin-file-icon {
+  background: center / contain no-repeat var(--catppuccin-icon-light);
+  mask: none;
+  -webkit-mask: none;
+}
+html.dark .markdown-code-lang .catppuccin-file-icon {
+  background: center / contain no-repeat var(--catppuccin-icon-dark);
+  mask: none;
+  -webkit-mask: none;
 }
 .markdown-code-actions {
   display: flex;
@@ -1829,6 +1847,9 @@ pre, code {
   gap: 6px;
 }
 .markdown-code-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 2px 7px;
@@ -1838,6 +1859,10 @@ pre, code {
   font: inherit;
   font-size: 12px;
   line-height: 1.25;
+}
+/* 图标跟着文字一起变弱 / 变亮：lucide 用 currentColor 描边，不需要单独上色。 */
+.markdown-code-action > svg {
+  flex-shrink: 0;
 }
 .markdown-code-action:hover:not(:disabled) {
   color: var(--text);

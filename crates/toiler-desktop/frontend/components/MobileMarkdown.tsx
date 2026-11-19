@@ -3,10 +3,12 @@
 import { memo, useMemo, useState } from "react";
 import ReactMarkdown, { type Components, type Options as ReactMarkdownOptions } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { Check, Copy } from "lucide-react";
 import { useI18n } from "@/hooks/useI18n";
 import { copyText } from "@/lib/clipboard";
 import { resolveLocalFileHref } from "@/lib/file-links";
 import { encodeFilePathForApi } from "@/lib/file-paths";
+import { MarkdownCodeLang } from "./MarkdownCodeLang";
 
 /**
  * 手机端的 markdown 渲染。
@@ -31,7 +33,7 @@ const MobileCodeBlock = memo(function MobileCodeBlock({ code, lang }: { code: st
   return (
     <div className="markdown-code-block">
       <div className="markdown-code-header">
-        <span className="markdown-code-lang">{lang || "text"}</span>
+        <MarkdownCodeLang language={lang} />
         <div className="markdown-code-actions">
           <button
             type="button"
@@ -45,6 +47,9 @@ const MobileCodeBlock = memo(function MobileCodeBlock({ code, lang }: { code: st
               });
             }}
           >
+            {copied
+              ? <Check size={13} strokeWidth={2.4} aria-hidden="true" />
+              : <Copy size={13} strokeWidth={2} aria-hidden="true" />}
             {copied ? t("i18n.copied") : t("i18n.copy")}
           </button>
         </div>
