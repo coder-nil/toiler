@@ -4,9 +4,10 @@ import changelog from "@/data/changelog.json";
 export type { ChangelogRelease };
 
 /**
- * 内置的版本变更记录。数据来自仓库根目录的 `CHANGELOG.md`，由
- * `npm run changelog:sync` 生成 `data/changelog.json` 并打进包内，
- * 因此读取是纯本地的，离线也能看到完整历史。
+ * 内置的版本变更记录。数据来自仓库根目录的 `CHANGELOG.md`，但**不是自动生成**：
+ * 两份历史条目已有漂移，重写会产生无关 diff，所以 `tools/bump-version.py` 的做法是
+ * 「往两份里各插一段」。手动改条目时两份要一起改，内容保持一致。
+ * 打进包内后读取是纯本地的，离线也能看到完整历史。
  */
 export const CHANGELOG: ChangelogRelease[] = changelog as ChangelogRelease[];
 

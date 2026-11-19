@@ -194,7 +194,7 @@ export const enLocale: LocalePlugin = {
     "git.versionUpgrade.patch": "Patch version",
     "git.versionUpgrade.minor": "Minor version",
     "git.versionUpgrade.major": "Major version",
-    "git.versionUpgradeHint": "Upgrade project versions and the full changelog, then create a release commit and a plain tag after confirmation. No automatic push. Requires Python 3.9+ and a project compatible with bump-version.py.",
+    "git.versionUpgradeHint": "Upgrade project versions and the full changelog, then create a release commit and a plain tag after confirmation. No automatic push. Requires a project compatible with bump-version.py; no local Python is needed.",
     "git.versionUpgradeDesktopOnly": "Version upgrades are only available in the desktop app.",
     "git.versionUpgradeConfirm": "Upgrade to {version}?",
     "git.versionUpgradeScope": "Upgrade from {current}, update the following version files and full changelog, and create a release commit and plain tag {tag}. No automatic build or push. Files or commits produced before a failure are kept.",

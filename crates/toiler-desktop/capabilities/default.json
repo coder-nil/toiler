@@ -23,7 +23,6 @@
     "allow-terminal-start",
     "allow-terminal-write",
     "allow-terminal-resize",
-    "allow-terminal-close",
-    "allow-upgrade-project-version"
+    "allow-terminal-close"
   ]
 }

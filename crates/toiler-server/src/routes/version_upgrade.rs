@@ -2,17 +2,28 @@
 //!
 //! ## 为什么在 `/api` 却又要额外闸门
 //!
-//! 这条路由会**创建提交和标签**，属于高权限写操作。但它不能像普通 `/api` 那样
-//! 只靠 `Trusted`（Host + Origin 同源）：手机配对与 Cloudflare 隧道也走同一套
-//! `/api`，`Trusted` 对它们是放行的。所以这里再叠一层「必须是桌面壳」：
+//! 这条路由会**创建提交和标签**，属于高权限写操作。除了常规的 `Trusted`
+//!（Host + Origin 同源）之外，这里再叠一层「进程必须是桌面壳」：环境里要有
+//! `PI_WEB_DESKTOP_API_ORIGIN`，这个变量只有 Tauri 壳会注入。命令行直启的
+//! `toiler-server` 没有它，三个按钮直接 403。
 //!
-//! 1. 进程里必须有 `PI_WEB_DESKTOP_API_ORIGIN`（只有 Tauri 壳会注入）
-//! 2. 请求的 `Origin` 必须与它相等。手机浏览器的 Origin 是对外地址，
-//!    隧道转发的请求带的是隧道域名，两者都不可能等于 `tauri://localhost`
+//! ## 为什么不再比对请求的 `Origin`
 //!
-//! 第 2 条是关键：只查环境变量的话，手机通过隧道打进来也会命中（服务端进程是
-//! 同一个），判定就失效了。原来把这段逻辑放在 Tauri command 里天然满足这两条，
-//! 现在移到 HTTP 上必须显式补回来。
+//! 早先这里要求 `Origin` 字符串等于 `PI_WEB_DESKTOP_API_ORIGIN`
+//!（`tauri://localhost`）。那条判定是错的，会让功能在**桌面窗口里也恒为 403**：
+//! `create_main_window` 用 `WebviewUrl::External("http://127.0.0.1:<port>")` 加载
+//! 页面，窗口里页面的 origin 就是那个回环地址，永远不会是 `tauri://localhost`。
+//! 只有手工用 curl 伪造 `Origin: tauri://localhost` 才通得过 —— 契约测试当初正是
+//! 这么写的，于是把「桌面窗口不可用」这个缺陷盖住了。
+//!
+//! 换成「回环 Origin」同样区分不出来：手机与隧道都经 `lan_proxy`，而
+//! `rewrite_request_head()` 会把它们的 `Origin` 改写成
+//! `http://127.0.0.1:<server_port>` —— 与桌面窗口发出的值逐字节相同。
+//!
+//! 所以闸门只保留环境变量这一条，本能力靠**前端只在桌面壳里渲染按钮**来收口
+//!（`window.__PI_WEB_DESKTOP__`，见 `lib/version-upgrade.ts`）。这意味着手机或
+//! 隧道若手工构造请求，服务端**会**放行；这是明确接受的取舍，别把这里当成
+//! 硬隔离。真要硬隔离得给桌面壳加一次性令牌，见 `docs/version-upgrade.md`。
 //!
 //! ## 为什么不再依赖 Python
 //!
@@ -43,37 +54,30 @@ fn error(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-/// 只有桌面壳窗口能改版本号。
+/// 进程是不是跑在桌面壳里。
+///
+/// 只看 `AppState` 里的 policy 有没有 `desktop_api_origin`（来自
+/// `PI_WEB_DESKTOP_API_ORIGIN`，只有 Tauri 壳注入），**不看请求的 `Origin`** ——
+/// 理由见文件头「为什么不再比对请求的 `Origin`」。
 ///
 /// 直接用 `AppState` 里的 policy，**不靠 `Trusted` 抽取器**：后者从
 /// `parts.extensions` 取 `TrustPolicy`，而本项目从未往扩展里注入过它（全仓只有
 /// `state.rs` 存着真实 policy），所以抽取器实际总是用 `default()`（空）。
-/// 对普通路由没影响（loopback 的 `Host` 本来就放行），但「桌面壳 origin 例外」
-/// 恰恰要靠 policy 里那个值 —— 跟着抽取器走永远不会生效。
-fn from_desktop_shell(policy: &crate::security::TrustPolicy, headers: &HeaderMap) -> bool {
-    let Some(desktop) = policy.desktop_api_origin.as_deref() else {
-        return false;
-    };
-    if desktop.trim().is_empty() {
-        return false;
-    }
-    let Some(origin) = headers
-        .get(axum::http::header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
-    origin.trim() == desktop.trim()
+fn from_desktop_shell(policy: &crate::security::TrustPolicy) -> bool {
+    policy
+        .desktop_api_origin
+        .as_deref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
 }
 
 /// `POST /api/version-upgrade?cwd=…`
 ///
 /// **故意不用 `Trusted` 抽取器**。它从 `parts.extensions` 取 `TrustPolicy`，而本
 /// 仓从未往扩展里注入过（`routes::router(state)` 没挂中间件），因此它总是用
-/// `TrustPolicy::default()`：`desktop_api_origin` 为 `None`，桌面壳的
-/// `Origin: tauri://localhost` 与 loopback 的 `Host` 不同源 → 一律 403。
-/// 普通路由靠「loopback Host 就放行」没暴露问题，但这条路由要的恰好是那条
-/// 例外，所以这里直接拿 state 里的真实 policy 自带校验。
+/// `TrustPolicy::default()`。抽取器本身没问题（loopback 的 Host 本来就放行），
+/// 但这条路由还要读 policy 里的 `desktop_api_origin`，而那个值只在 state 的真实
+/// policy 里，所以直接拿 `state.trust()` 自己校。
 pub async fn upgrade(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -82,7 +86,7 @@ pub async fn upgrade(
 ) -> Response {
     // 两道闸：
     // 1. Host + Origin 必须过基础可信校验（代替 `Trusted` 抽取器，理由见上面 doc）
-    // 2. 必须是桌面壳（Origin 等于 `PI_WEB_DESKTOP_API_ORIGIN`）
+    // 2. 进程必须跑在桌面壳里（环境里有 `PI_WEB_DESKTOP_API_ORIGIN`）
     let policy = state.trust();
     if !security::is_trusted_api_request(
         &axum::http::Method::POST,
@@ -92,7 +96,7 @@ pub async fn upgrade(
     ) {
         return error(StatusCode::FORBIDDEN, "不受信任的请求来源");
     }
-    if !from_desktop_shell(policy, &headers) {
+    if !from_desktop_shell(policy) {
         return error(
             StatusCode::FORBIDDEN,
             "版本升级只在桌面窗口提供，手机与隧道不支持",

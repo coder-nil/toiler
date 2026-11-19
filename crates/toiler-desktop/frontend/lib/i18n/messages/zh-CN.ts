@@ -194,7 +194,7 @@ export const zhCNLocale: LocalePlugin = {
     "git.versionUpgrade.patch": "补丁版本",
     "git.versionUpgrade.minor": "次要版本",
     "git.versionUpgrade.major": "主要版本",
-    "git.versionUpgradeHint": "升级项目版本与完整变更记录，确认后创建版本提交及普通标签，不自动推送。需要 Python 3.9+ 和兼容 bump-version.py 的项目结构。",
+    "git.versionUpgradeHint": "升级项目版本与完整变更记录，确认后创建版本提交及普通标签，不自动推送。需要兼容 bump-version.py 的项目结构，不需要本机安装 Python。",
     "git.versionUpgradeDesktopOnly": "版本升级仅在桌面应用中可用。",
     "git.versionUpgradeConfirm": "确认升级到 {version}？",
     "git.versionUpgradeScope": "从 {current} 升级并更新以下版本文件及完整变更记录，创建版本提交与普通标签 {tag}。不会自动构建或推送；失败时保留已产生的文件或提交。",

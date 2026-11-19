@@ -1,9 +1,29 @@
 //! `POST /api/version-upgrade` 的契约与安全边界。
 //!
-//! 这条路由**会创建提交和标签**，所以除了 `Trusted`（Host + Origin 同源）还必须
-//! 满足「来自桌面壳」：进程里有 `PI_WEB_DESKTOP_API_ORIGIN`，且请求 `Origin`
-//! 与它相等。手机配对页与 Cloudflare 隧道的 Origin 都是对外地址，不可能等于
-//! `tauri://localhost`，因此会被 403 挡住 —— 这是本文件最要紧的断言。
+//! 这条路由**会创建提交和标签**，属于高权限写操作，所以除了 `Trusted`
+//!（Host + Origin 同源）之外还有一道「进程必须是桌面壳」的闸门：环境里要有
+//! `PI_WEB_DESKTOP_API_ORIGIN`，它只有 Tauri 壳会注入，命令行直启的
+//! `toiler-server` 没有。
+//!
+//! ## 这份测试曾经掩盖过一个真实缺陷
+//!
+//! 早先的实现要求请求 `Origin` **字符串等于** `tauri://localhost`，而这份测试
+//! 就用手工构造的 `Origin: tauri://localhost` 去断言「桌面壳放行」。但桌面窗口
+//! 根本不发这个值 —— `create_main_window` 用
+//! `WebviewUrl::External("http://127.0.0.1:<port>")` 加载页面，窗口里页面的
+//! origin 是那个回环地址。于是**功能在它唯一被允许的地方恒为 403**，而测试全绿。
+//!
+//! 现在 [`desktop_window_request_shape_is_allowed`] 专门盯这一点：它发出的
+//! Origin 就是桌面窗口真实会发的回环地址，不带任何伪造的 `tauri://`。
+//!
+//! ## 闸门不管「谁在打」这件事
+//!
+//! Origin 判定也区分不出手机与隧道：两者都经 `lan_proxy`，而
+//! `rewrite_request_head()` 会把它们的 `Origin` 改写成
+//! `http://127.0.0.1:<server_port>`，与桌面窗口发出的值逐字节相同。按当前决策，
+//! 这个能力靠**前端只在桌面壳里渲染按钮**（`window.__PI_WEB_DESKTOP__`）收口，
+//! 服务端不再加严格判别。别把这些断言当成「手机与隧道被硬隔离」的证据 ——
+//! 它们只证明「命令行直启的进程没有这个能力」。
 
 #![allow(clippy::await_holding_lock)]
 
@@ -15,13 +35,13 @@ use std::path::PathBuf;
 use toiler_server::{catalog::ModelCatalog, routes, state::AppState};
 use tower::ServiceExt;
 
-/// 与 `toiler-desktop/src/lib.rs` 的 `DESKTOP_API_ORIGIN` 一致：
-/// macOS/Linux 报 `tauri://localhost`，Windows 报 `http://tauri.localhost`。
+/// 测试里服务绑定的回环地址；`Host` 与桌面窗口的 `Origin` 都用它。
+const LOOPBACK: &str = "127.0.0.1:30141";
+
+/// 与 `toiler-desktop/src/lib.rs` 的 `DESKTOP_API_ORIGIN` 一致。
 ///
-/// 注意 `tauri://` 不是合法 HTTP URL —— `security.rs` 的同源判定用 `url::Url`
-/// 解析 Origin，所以这里取 Windows 那个形状来跑路由级断言（两者走的是同一段
-/// 字符串相等比较，差别只在这个 scheme 能否被 url 解析）。
-const DESKTOP_ORIGIN: &str = "http://tauri.localhost";
+/// 注意它**只**用来模拟「壳进程里的那个环境变量」，不再是期望的请求 `Origin`。
+const DESKTOP_ENV: &str = "tauri://localhost";
 
 fn fixture(tag: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
@@ -99,7 +119,7 @@ async fn post(
     let mut builder = Request::builder()
         .method("POST")
         .uri(uri)
-        .header("host", "127.0.0.1:30141")
+        .header("host", LOOPBACK)
         .header("content-type", "application/json");
     if let Some(origin) = origin {
         builder = builder.header("origin", origin);
@@ -118,8 +138,8 @@ fn preview_body() -> Value {
     json!({ "level": "patch", "dryRun": true })
 }
 
-/// **核心安全断言**：没有桌面壳环境变量时（命令行直启 / 手机 / 隧道），
-/// 即使 Origin 自洽也必须 403。
+/// **核心安全断言**：没有桌面壳环境变量时（命令行直启的 `toiler-server`），
+/// 即使 Origin 与 Host 完全同源也必须 403。
 #[tokio::test]
 async fn rejects_when_not_running_in_desktop_shell() {
     let _guard = acquire_env();
@@ -127,13 +147,9 @@ async fn rejects_when_not_running_in_desktop_shell() {
     let root = fixture("no-shell");
     let url = format!("/api/version-upgrade?cwd={}", ascii_cwd(&root));
 
-    let (status, body) = post(
-        app(&root),
-        &url,
-        preview_body(),
-        Some("http://127.0.0.1:30141"),
-    )
-    .await;
+    // 请求形状与桌面窗口完全一致，唯一的差别是进程里没有那个环境变量。
+    let origin = format!("http://{LOOPBACK}");
+    let (status, body) = post(app(&root), &url, preview_body(), Some(&origin)).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert!(
         body["error"].as_str().unwrap_or_default().contains("桌面"),
@@ -141,35 +157,22 @@ async fn rejects_when_not_running_in_desktop_shell() {
     );
 }
 
-/// 手机通过隧道打进来时，服务端进程里**确实**有桌面壳环境变量（同一个进程），
-/// 但 Origin 是外部地址 —— 必须靠 Origin 比对挡住。
+/// **回归用例**：桌面窗口真实发出的请求形状必须放行。
+///
+/// 桌面窗口加载的是 `http://127.0.0.1:<port>`，所以它发出的 `Origin` 就是这个
+/// 回环地址，绝不是 `tauri://localhost`。旧实现按后者的字符串相等判定，导致三个
+/// 按钮在桌面里恒为 403 —— 这个用例就是守着那个缺陷不再复发。
 #[tokio::test]
-async fn rejects_foreign_origin_even_inside_desktop_shell() {
+async fn desktop_window_request_shape_is_allowed() {
     let _guard = acquire_env();
-    let _env = DesktopEnv::set(DESKTOP_ORIGIN);
-    let root = fixture("foreign-origin");
+    let _env = DesktopEnv::set(DESKTOP_ENV);
+    let root = fixture("desktop-shape");
     let url = format!("/api/version-upgrade?cwd={}", ascii_cwd(&root));
 
-    for origin in ["https://abc.trycloudflare.com", "http://192.168.1.5:8787"] {
-        let (status, body) = post(app(&root), &url, preview_body(), Some(origin)).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "origin={origin}: {body}");
-    }
+    let origin = format!("http://{LOOPBACK}");
+    let (status, body) = post(app(&root), &url, preview_body(), Some(&origin)).await;
 
-    // 不带 Origin（curl 之类）同样拒绝：不能靠「省略 Origin」绕过。
-    let (status, body) = post(app(&root), &url, preview_body(), None).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-}
-
-/// 桌面壳 origin 正确时放行到业务层。这里不是 Git 仓库，所以应报「不是 Git 仓库」，
-/// 而不是 403 —— 说明闸门已经通过。
-#[tokio::test]
-async fn allows_desktop_origin_and_reaches_business_logic() {
-    let _guard = acquire_env();
-    let _env = DesktopEnv::set(DESKTOP_ORIGIN);
-    let root = fixture("allowed");
-    let url = format!("/api/version-upgrade?cwd={}", ascii_cwd(&root));
-
-    let (status, body) = post(app(&root), &url, preview_body(), Some(DESKTOP_ORIGIN)).await;
+    // 已穿过闸门：这里不是 Git 仓库，所以业务层报「不是 Git 仓库」。
     assert_ne!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
@@ -178,18 +181,37 @@ async fn allows_desktop_origin_and_reaches_business_logic() {
     );
 }
 
+/// 跨站 `Origin` 仍被 `Trusted` 那一层挡住，与桌面壳闸门无关。
+///
+/// 注意这**不是**「手机与隧道被挡住」的证据：`lan_proxy` 会把它们的 `Origin`
+/// 改写成回环地址，所以经代理进来的请求在这一层是通过的（见文件头说明）。
+/// 这条只为守住「不经过代理、直接跨站打过来」的请求被拒。
+#[tokio::test]
+async fn foreign_origin_is_rejected_by_the_trusted_layer() {
+    let _guard = acquire_env();
+    let _env = DesktopEnv::set(DESKTOP_ENV);
+    let root = fixture("foreign-origin");
+    let url = format!("/api/version-upgrade?cwd={}", ascii_cwd(&root));
+
+    for origin in ["https://abc.trycloudflare.com", "http://192.168.1.5:8787"] {
+        let (status, body) = post(app(&root), &url, preview_body(), Some(origin)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "origin={origin}: {body}");
+    }
+}
+
 /// 参数校验：缺 cwd / 相对路径 / 不存在目录都回 400，且都在桌面壳闸门之后。
 #[tokio::test]
 async fn validates_cwd_arguments() {
     let _guard = acquire_env();
-    let _env = DesktopEnv::set(DESKTOP_ORIGIN);
+    let _env = DesktopEnv::set(DESKTOP_ENV);
     let root = fixture("cwd-args");
+    let origin = format!("http://{LOOPBACK}");
 
     let (status, body) = post(
         app(&root),
         "/api/version-upgrade",
         preview_body(),
-        Some(DESKTOP_ORIGIN),
+        Some(&origin),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -198,7 +220,7 @@ async fn validates_cwd_arguments() {
         app(&root),
         "/api/version-upgrade?cwd=relative/path",
         preview_body(),
-        Some(DESKTOP_ORIGIN),
+        Some(&origin),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -212,7 +234,7 @@ async fn validates_cwd_arguments() {
 
     let missing = std::env::temp_dir().join("toiler-verup-definitely-missing-dir");
     let url = format!("/api/version-upgrade?cwd={}", ascii_cwd(&missing));
-    let (status, _) = post(app(&root), &url, preview_body(), Some(DESKTOP_ORIGIN)).await;
+    let (status, _) = post(app(&root), &url, preview_body(), Some(&origin)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -220,16 +242,17 @@ async fn validates_cwd_arguments() {
 #[tokio::test]
 async fn rejects_malformed_bodies() {
     let _guard = acquire_env();
-    let _env = DesktopEnv::set(DESKTOP_ORIGIN);
+    let _env = DesktopEnv::set(DESKTOP_ENV);
     let root = fixture("bodies");
     let url = format!("/api/version-upgrade?cwd={}", ascii_cwd(&root));
+    let origin = format!("http://{LOOPBACK}");
 
     // 非法 level：serde 反序列化失败 → axum 回 422。
     let (status, _) = post(
         app(&root),
         &url,
         json!({ "level": "bogus", "dryRun": true }),
-        Some(DESKTOP_ORIGIN),
+        Some(&origin),
     )
     .await;
     assert!(
@@ -242,7 +265,7 @@ async fn rejects_malformed_bodies() {
         app(&root),
         &url,
         json!({ "level": "patch", "dryRun": true, "command": "rm -rf /" }),
-        Some(DESKTOP_ORIGIN),
+        Some(&origin),
     )
     .await;
     assert!(
