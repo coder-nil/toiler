@@ -926,7 +926,10 @@ function ThinkingBlock({ block, duration, sessionId, entryId, blockIndex }: {
   return (
     <div
       style={{
-        border: "1px solid var(--border)",
+        // 思考块只留一道左侧 2px 实色竖线，不套整圈边框：它比工具调用弱一档，
+        // 又必须一眼能和正文分开。颜色用不带透明的 --text-muted，
+        // 半透明色在浅 / 深两套主题里会各自糊成一档灰。
+        borderLeft: "2px solid var(--text-muted)",
         borderRadius: 6,
         overflow: "hidden",
         fontSize: 13,
@@ -995,8 +998,12 @@ function ToolCallBlock({ block, result, duration }: { block: ToolCallContent; re
         borderRadius: 7,
         overflow: "hidden",
         fontSize: 12,
-        border: isError ? "1px solid rgba(248,113,113,0.45)" : "1px solid rgba(34,197,94,0.25)",
-        background: isError ? "rgba(248,113,113,0.05)" : "rgba(34,197,94,0.04)",
+        // 摘要不再套整圈半透明描边，只留一道 2px 实色左边：成功用 --live、
+        // 失败用 --danger，两者都是不透明 token，浅 / 深主题各有一档。
+        // 底色与边线同色系，透明度 0.15：整块摘要在正文里是一块能一眼扫到的卡，
+        // 但罩层仍压得住，正文颜色不用改；再高（0.2）深色主题下连片工具调用会发亮。
+        borderLeft: isError ? "2px solid var(--danger)" : "2px solid var(--live)",
+        background: isError ? "rgba(248,113,113,0.15)" : "rgba(34,197,94,0.15)",
       }}
     >
       {/* ── Tool call header ── */}
@@ -1042,7 +1049,7 @@ function ToolCallBlock({ block, result, duration }: { block: ToolCallContent; re
             lineHeight: 1.5,
             overflow: "auto",
             background: "var(--bg-subtle)",
-            borderTop: isError ? "1px solid rgba(248,113,113,0.25)" : "1px solid rgba(34,197,94,0.2)",
+            borderTop: "1px solid var(--border)",
             whiteSpace: "pre-wrap",
             wordBreak: "break-all",
           }}
@@ -1079,7 +1086,7 @@ function PairedDiffResult({ diff }: {
   return (
     <div
       style={{
-        borderTop: "1px solid rgba(34,197,94,0.15)",
+        borderTop: "1px solid var(--border)",
         background: "var(--bg)",
       }}
     >
@@ -1314,7 +1321,7 @@ function PairedResult({ text, isEmpty, isError }: {
   return (
     <div
       style={{
-        borderTop: `1px solid ${isError ? "rgba(248,113,113,0.3)" : "rgba(34,197,94,0.15)"}`,
+        borderTop: "1px solid var(--border)",
         background: isError ? "rgba(248,113,113,0.04)" : "var(--bg-subtle)",
       }}
     >
