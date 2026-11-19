@@ -8,6 +8,30 @@ Toiler 的版本变更记录。界面的「关于」对话框读的是
 Next 应用来的），保留在原位置作为来源记录。`1.0.0` 是 Toiler 自己的第一个版本，
 基线为 pi-desktop `1.5.0-alpha.22`（契约与前端产物的来源版本）。
 
+## [1.0.8] - 2026-11-19
+
+### Added
+
+- feat(models): 支持手动刷新供应商模型目录（`43d4bac5ab4a`）：- API Key 与订阅详情改用 ProviderModelsPicker，刷新入口紧跟已选模型数量；- 新增 remote_models 模块：按供应商请求 `/models`，结果写入 models-store.json 并注入运行时目录；- Qoder CN 走 COSY 签名的 `model/list`，按账号 uid 缓存，并同步刷新的路由键到转发层；- 目录刷新按 provider 替换而非追加，避免同一模型 id 重复；- 技能注入 harness resources，保证 `/skill:` 可展开且系统提示词只出现一份技能清单；- 补充前端与 Rust 回归用例，更新 README / PLAN / AGENTS 文档
+- feat(desktop): 为 macOS 标题栏启用原生磨砂效果（`a1acc5f6d4db`）：- 配置透明窗口与原生背景材质，失焦时保持完整磨砂效果；- 仅标题带透出原生材质，正文与侧栏内容保持实色；- 添加标题栏材质、透明范围及配置一致性测试
+- feat(desktop): 改进模型导入与四季图标切换（`0ed20217efd6`）：- 引入 lunar_rust，按四立交节时刻和 UTC 切换应用图标；- 将上游待导入模型并入勾选列表，勾选即导入并设为可见；- 抽出 minimap 布局与视口胶囊几何，修复首轮胶囊偏移；- 同步命令 chip 的 ref 快照，避免发送后残留；修正 UNC 路径编码
+- feat(titlebar): 新增 Windows Acrylic 材质并统一回退协议（`b56627db97d7`）：- 新增 `titlebar.rs`，按平台返回 `solid`/`vibrancy`/`acrylic`，失败统一降级实色；- Windows 使用官方 DWM Acrylic，校验合成、透明开关与高对比度，失败时清理背景属性；- `sync_titlebar_appearance` 等待主线程原生结果，不再把“已排队”当作已生效；- 前端仅在收到成功确认后添加 `toiler-native-titlebar` 能力类，与 macOS 红绿灯避让类分离，Windows 控制按钮区同步透明；- 页面就绪、主题变化与重新聚焦时重查系统能力，并忽略过期的材质回复；- 补充跨平台单测、Windows 依赖与文档说明
+
+### Changed
+
+- Merge remote-tracking branch 'origin/main'（`2e8f6724b54d`）
+- Merge remote-tracking branch 'origin/main'（`e09068ea2cda`）
+- 应用、npm、Tauri 和 Cargo 版本号统一为 `1.0.8`。
+
+### Fixed
+
+- fix(models): 修正订阅模型刷新与目录解析（`fe92a61c42c9`）：- 未配置凭据时仍允许点击刷新，由服务端返回登录或保存 Key 等具体原因；- Qoder CN 订阅目录要求 OAuth 登录并按账号缓存，禁止把订阅令牌当作 API Key 使用；- 修正目录信封带请求 `id` 时误判模型条目的问题，并按已刷新快照统计模型数；- 保留自定义 provider 配置，移除冗余的 Qoder CN 目录注入；- 更新契约文档与模型刷新测试
+- fix(desktop): 修复 macOS 标题栏实时毛玻璃与主题同步（`c490963e057e`）：- 使用独立原生材质层，随窗口缩放更新并保持失焦时实时合成；- 打通标题区透明背景，补齐主题同步命令及权限；- 添加材质布局、主题同步测试与动态验收文档
+- fix(paths): 去掉 Windows 扩展路径前缀 `\\?\`（`04e1614f5ae2`）：- 新增 `paths::simplified` 和 `simplified_path`：按 dunce 规则（盘符/UNC、合法段名、非 DOS 保留名、≤260）仅在结果仍可打开时剥离，否则原样返回；- gitsvc、files、projects、skills、misc 等接口返回的路径统一去前缀，分隔符归一为 `\`；- ProjectStore 读写与选中项归一，并在 `open()` 时迁移历史带前缀行（保留星标与更早 added_at），避免同目录出现两行；- trust、sessions_store、agent、system_prompt 的路径归一，修复带前缀与普通写法被允许根判定当成不同目录的问题；- 补充剥离/保留/等价性及迁移相关测试
+- fix(toiler-desktop): 刷新反馈、推理档位回显与 Git 面板材质带（`4df92969efda`）：- 刷新按钮改为图标转一圈的一次性反馈，去掉变绿/对勾与 2s 定时器，并通过 svg key 重放动画，尊重 prefers-reduced-motion；- 新增 resolveDisplayThinkingLevel：用户选 auto 时把生效值 off 回显为 auto，避免显示跳成「关闭推理」；- Git 面板标题栏接入 --titlebar-surface、正文接入 --git-panel-surface，与另三列共用同一条材质带；- 补充刷新反馈、档位回显、Git 面板材质的单测与契约/材质文档说明
+- fix(version-upgrade): 修复桌面窗口内版本升级恒返回 403（`f20ff04f26d0`）：- 闸门改为只校验进程运行在桌面壳里（存在 `PI_WEB_DESKTOP_API_ORIGIN`），不再比对请求 `Origin`：桌面窗口加载的是回环地址，旧判定在唯一允许的场景下永远不成立；- 契约测试改为发送桌面窗口真实的回环 `Origin`，新增回归用例 `desktop_window_request_shape_is_allowed`；- 移除 Tauri 权限中残留的 `allow-upgrade-project-version`，版本升级已改走 HTTP 路由；- 同步更新 README、`docs/version-upgrade.md`、CHANGELOG 及中英文文案，明确不再需要本机 Python
+- fix(macos): 启用整包 ad-hoc 签名并补充验签与文档（`da391c138128`）：- tauri.conf.json 增加 signingIdentity:"-"，修复 bundle 级签名缺失导致的无效签名；- release.yml 新增 macOS 验签步骤，校验封存资源与签名类型；- 更新 README 与 Release 说明中 Gatekeeper 的放行方式；- 新增 docs/macos-release.md，记录签名现状、实测结论与公证接入清单
+
 ## [1.0.7] - 2026-11-17
 
 ### Added
