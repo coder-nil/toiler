@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createJiti } from "jiti";
 const jiti = createJiti(import.meta.url);
-const { THINKING_LEVEL_OPTIONS, getPreferredThinkingLevel, setPreferredThinkingLevel, resolveThinkingLevel } = await jiti.import("../lib/thinking-level-preference.ts");
+const { THINKING_LEVEL_OPTIONS, getPreferredThinkingLevel, setPreferredThinkingLevel, resolveThinkingLevel, resolveDisplayThinkingLevel } = await jiti.import("../lib/thinking-level-preference.ts");
 
 test("记住最近显式选择，包含关闭与自动", () => {
   const values = new Map();
@@ -27,6 +27,22 @@ test("不支持的级别安全回退，切回支持的模型仍可恢复偏好",
   assert.equal(resolveThinkingLevel("high", null, null, []), "auto");
   assert.equal(resolveThinkingLevel("max", null, null, ["off", "high"]), "auto");
   assert.equal(resolveThinkingLevel("high", null, null, ["off", "high"]), "high");
+});
+
+test("选自动时生效级别 off 回显为自动，不跳成关闭", () => {
+  // 后端只回报实际生效级别（auto 在 rpi 里没有对应档位，一律落成 off）。
+  assert.equal(resolveDisplayThinkingLevel("off", "auto"), "auto");
+  assert.equal(resolveDisplayThinkingLevel(null, "auto"), "auto");
+  // 关闭是用户自己选的，不能被改写成自动。
+  assert.equal(resolveDisplayThinkingLevel("off", "off"), "off");
+  assert.equal(resolveDisplayThinkingLevel("off", null), "off");
+  // 其它级别原样回显。
+  assert.equal(resolveDisplayThinkingLevel("high", "high"), "high");
+  assert.equal(resolveDisplayThinkingLevel("high", "auto"), "high");
+  // 偏好无法解析（旧数据、未选过、被清掉）时按实际生效级别显示。
+  assert.equal(resolveDisplayThinkingLevel("low", "invalid"), "low");
+  assert.equal(resolveDisplayThinkingLevel(null, null), "auto");
+  assert.equal(resolveDisplayThinkingLevel("medium", undefined), "medium");
 });
 
 test("损坏数据与不可用存储不会影响会话初始化", () => {

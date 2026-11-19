@@ -197,7 +197,7 @@ test("透明 CSS 只由原生成功能力类开启，Windows 控制区不留实�
   assert.match(css, /html\.toiler-native-titlebar,\s*html\.toiler-native-titlebar body\s*\{\s*background: transparent;/);
   assert.match(css, /\.toiler-native-titlebar \.toiler-window-controls\s*\{\s*background: transparent;/);
   assert.doesNotMatch(css, /html\.pi-overlay-chrome body\s*\{\s*background: transparent;/);
-  for (const [surface, color] of [["workspace", "bg"], ["sidebar", "bg-chrome"], ["file-panel", "bg"]]) {
+  for (const [surface, color] of [["workspace", "bg"], ["sidebar", "bg-chrome"], ["file-panel", "bg"], ["git-panel", "bg"]]) {
     assert.ok(block.includes(`--${surface}-surface: linear-gradient(to bottom,\n    transparent var(--native-titlebar-height),\n    var(--${color}) var(--native-titlebar-height))`));
   }
   const layout = await read("../lib/panel-layout.ts");
@@ -214,4 +214,16 @@ test("三列标题区保留背景回退、窗口拖动与按钮交互入口", ()
   assert.equal(shell.match(/background: "var\(--titlebar-surface, var\(--bg-chrome\)\)"/g)?.length, 2);
   assert.match(shell, /className="app-chrome app-topbar"[\s\S]*?data-tauri-drag-region="deep"/);
   assert.match(shell, /className="app-chrome app-file-panel-titlebar" data-tauri-drag-region="deep"/);
+});
+
+test("Git 面板标题栏与其它列共用材质带，正文仍为实色", async () => {
+  const header = css.match(/\n\.git-panel-header\s*\{([^}]+)\}/)?.[1];
+  assert.ok(header);
+  assert.match(header, /background: var\(--titlebar-surface, var\(--bg-chrome\)\);/);
+  const dialog = css.match(/\n\.git-panel-dialog\s*\{([^}]+)\}/)?.[1];
+  assert.ok(dialog);
+  assert.match(dialog, /background: var\(--git-panel-surface, var\(--bg\)\);/);
+  // 标题栏高度与其它列一致，否则材质带上会露出半截实色。
+  const panel = (await read("../components/GitPanel.tsx")).replace(/\s+/g, " ");
+  assert.match(panel, /className="git-panel-header"[^>]*height: `calc\(\$\{CHAT_TOP_BAR_HEIGHT\}px \+ env\(safe-area-inset-top\)\)`/);
 });

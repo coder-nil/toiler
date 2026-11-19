@@ -19,7 +19,7 @@ import { PauseHandoff } from "@/lib/pause-handoff";
 import { clearDraft, rekeyDraft, restoreDraftSubmission } from "@/lib/draft-store";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
 import { getPreferredModel, resolvePreferredModel, setPreferredModel } from "@/lib/model-preference";
-import { getPreferredThinkingLevel, parseThinkingLevel, resolveThinkingLevel, setPreferredThinkingLevel, type ThinkingLevelOption } from "@/lib/thinking-level-preference";
+import { getPreferredThinkingLevel, parseThinkingLevel, resolveDisplayThinkingLevel, resolveThinkingLevel, setPreferredThinkingLevel, type ThinkingLevelOption } from "@/lib/thinking-level-preference";
 import { getPreferredChatMode, setPreferredChatMode, type ChatMode } from "@/lib/chat-mode-preference";
 import { getPresetFromActiveNames, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
 import type { SessionStatsInfo } from "@/lib/session-stats";
@@ -595,7 +595,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setCurrentModelOverride((current) => modelSwitchPendingRef.current ? current : null);
       setError(null);
       if (d.context.thinkingLevel) {
-        setThinkingLevel(d.context.thinkingLevel as ThinkingLevelOption);
+        // 会话文件只记「实际生效级别」，`auto` 与 `off` 在那里都写成 `off`；
+        // 回显时按用户的原始偏好把这两种意图区分开。
+        setThinkingLevel(resolveDisplayThinkingLevel(d.context.thinkingLevel, getPreferredThinkingLevel()));
       }
 
       messagesLoaded = true;
@@ -612,7 +614,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (liveState) {
           if (liveState.contextUsage !== undefined) setContextUsage(liveState.contextUsage ?? null);
           if (liveState.systemPrompt !== undefined) setSystemPrompt(liveState.systemPrompt ?? null);
-          if (liveState.thinkingLevel !== undefined) setThinkingLevel((liveState.thinkingLevel as ThinkingLevelOption) ?? "auto");
+          if (liveState.thinkingLevel !== undefined) {
+            setThinkingLevel(resolveDisplayThinkingLevel(liveState.thinkingLevel, getPreferredThinkingLevel()));
+          }
           if (liveState.extensionStatuses !== undefined) setExtensionStatuses(liveState.extensionStatuses ?? []);
           if (liveState.extensionWidgets !== undefined) setExtensionWidgets(liveState.extensionWidgets ?? []);
           if (liveState.queuedMessages !== undefined) setQueuedMessages(normalizeQueuedMessages(liveState.queuedMessages));
@@ -812,7 +816,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         result.thinkingLevel
         && thinkingLevelOverrideRef.current === selectedThinkingLevel
       ) {
-        setThinkingLevel(result.thinkingLevel);
+        // 服务端回报的是生效级别（`auto` 已经落成 `off`），显示要按用户选的那档还原。
+        setThinkingLevel(resolveDisplayThinkingLevel(result.thinkingLevel, selectedThinkingLevel));
       }
       return realId;
     })();
@@ -2133,7 +2138,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       const result = await sendAgentCommand<{ thinkingLevel?: ThinkingLevelOption }>(sid, { type: "set_thinking_level", level });
       setPreferredThinkingLevel(level);
-      setThinkingLevel(result.thinkingLevel ?? level);
+      // 选 `auto` 时后端会回报生效值 `off`：直接用它会把手动选项显示成「关闭推理」。
+      setThinkingLevel(resolveDisplayThinkingLevel(result.thinkingLevel, level));
     } catch (e) {
       setThinkingLevel(previous);
       console.error("Failed to set thinking level:", e);
@@ -2294,7 +2300,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           if (agentState.state.isCompacting !== undefined) setIsCompacting(agentState.state.isCompacting);
           if (agentState.state.contextUsage !== undefined) setContextUsage(agentState.state.contextUsage ?? null);
           if (agentState.state.systemPrompt !== undefined) setSystemPrompt(agentState.state.systemPrompt ?? null);
-          if (agentState.state.thinkingLevel !== undefined) setThinkingLevel((agentState.state.thinkingLevel as ThinkingLevelOption) ?? "auto");
+          if (agentState.state.thinkingLevel !== undefined) {
+            setThinkingLevel(resolveDisplayThinkingLevel(agentState.state.thinkingLevel, getPreferredThinkingLevel()));
+          }
           if (agentState.state.extensionStatuses !== undefined) setExtensionStatuses(agentState.state.extensionStatuses ?? []);
           if (agentState.state.extensionWidgets !== undefined) setExtensionWidgets(agentState.state.extensionWidgets ?? []);
           if (agentState.state.queuedMessages !== undefined) setQueuedMessages(normalizeQueuedMessages(agentState.state.queuedMessages));

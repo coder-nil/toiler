@@ -41,3 +41,28 @@ export function resolveThinkingLevel(
   // 不修改偏好本身，切回支持的模型仍可恢复原选择。
   return level === "auto" || supported.includes(level) ? level : "auto";
 }
+
+/**
+ * 界面要显示的等级：服务端只回报「实际生效级别」，`auto` 不在 rpi 的等级表里，
+ * 一律按 `off` 生效（`agent_runtime::effective_thinking_level`）。
+ *
+ * 直接把生效级别写回显示状态，用户刚选的「默认推理(auto)」会立刻跳成「关闭推理
+ * (off)」，看起来像选择没生效。所以用户显式选过 `auto` 时，`off` 这个生效值
+ * 回显成 `auto`：两者运行时完全等价（都是不请求推理），差别只在用户的原意。
+ *
+ * 只覆盖 `auto` 这一种情况 —— `off` 是用户自己选的，不能被改写成别的档位。
+ *
+ * @param recorded 服务端回报或会话文件里记录的生效级别（可能是 `null`）。
+ * @param requested 用户显式选过的原始偏好（浏览器 / `settings.json` 里那份）。
+ */
+export function resolveDisplayThinkingLevel(
+  recorded: unknown,
+  requested: unknown,
+): ThinkingLevelOption {
+  const effective = parseThinkingLevel(recorded);
+  const desired = parseThinkingLevel(requested);
+  if (desired === "auto" && (effective === null || effective === "off")) {
+    return "auto";
+  }
+  return effective ?? desired ?? "auto";
+}

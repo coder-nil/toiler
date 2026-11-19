@@ -1194,6 +1194,11 @@ html.toiler-native-titlebar body {
   --file-panel-surface: linear-gradient(to bottom,
     transparent var(--native-titlebar-height),
     var(--bg) var(--native-titlebar-height));
+  /* Git 面板是从右侧抽出（≥960px 时贴住文件面板）的独立一列，顶部同样
+     与三列标题带同高。不接这条渐变，它的标题栏就会在材质带上留一块实色。 */
+  --git-panel-surface: linear-gradient(to bottom,
+    transparent var(--native-titlebar-height),
+    var(--bg) var(--native-titlebar-height));
 }
 
 /* Windows 控制按钮位于 body 下，不在工作台内；成功启用材质时也要透出，
@@ -2432,6 +2437,19 @@ span.token.table {
   to { transform: rotate(360deg); }
 }
 
+/* 刷新按钮的动作反馈：图标自己转一圈，按钮本身不换色、不换图标。
+   只跑一次且起止都是 0°，所以跑完就停在原样；再次点击时 React 换掉 svg 的
+   key 重挂载，把这一圈从头再跑一遍。 */
+.refresh-icon-spin {
+  animation: spin 0.7s linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .refresh-icon-spin {
+    animation: none;
+  }
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
@@ -2540,7 +2558,8 @@ span.token.table {
   height: 100%;
   flex-shrink: 0;
   overflow: hidden;
-  background: var(--bg);
+  /* 原生材质可用时顶部一条透明（见 --git-panel-surface），否则仍是实色。 */
+  background: var(--git-panel-surface, var(--bg));
   border-left: 1px solid var(--border);
   /* 面板是从右边缘抽出来的，阴影只往左打，别用 --shadow-overlay（那是向下打的浮层阴影）。 */
   box-shadow: -14px 0 32px -12px rgba(0, 0, 0, 0.3);
@@ -2568,10 +2587,10 @@ span.token.table {
 }
 
 /* ── Git 面板内部 ─────────────────────────────────────────────
-   面板分三层面：顶栏走 --bg-chrome（外壳面）、内容列走 --bg（内容面）、
-   卡片与输入走 --bg-panel（控件填充）。所有颜色读 token —— 之前状态色是
-   写死的 #4ade80 / #ef4444 / #16a34a，同一份值在浅色主题下要么过曝、
-   要么（#16a34a 绿字）掉到 3:1 以下。
+   面板分三层面：顶栏走 --titlebar-surface（外壳面，材质启用时透明）、内容
+   列走 --bg（内容面）、卡片与输入走 --bg-panel（控件填充）。所有颜色读 token
+   —— 之前状态色是写死的 #4ade80 / #ef4444 / #16a34a，同一份值在浅色主题下
+   要么过曝、要么（#16a34a 绿字）掉到 3:1 以下。
    行内操作沿用 .project-row 的结论：图标按钮常驻、尺寸不随 hover 变化，
    只有按钮自己被 hover / 键盘聚焦才换色（淡入会让人找不到按钮，撑高会
    把列表推得发抖）。 */
@@ -2583,7 +2602,9 @@ span.token.table {
   /* 与应用其它 26px 工具条按键同高；高度由组件内联写
      （CHAT_TOP_BAR_HEIGHT + 安全区），内联的 padding-top 盖住这里的简写。 */
   padding: 0 8px 0 14px;
-  background: var(--bg-chrome);
+  /* 与侧栏 / 对话 / 文件面板同一套外壳面：材质启用时透明，让这条带子和
+     其它列的标题栏连成一片，而不是中间嵌一块实色。 */
+  background: var(--titlebar-surface, var(--bg-chrome));
   /* 这条带子是拖拽区（data-tauri-drag-region="deep"）：光标保持箭头、
      不吃文本选择，跟窗口外壳（.app-chrome）同一套规矩。否则路径文字上
      显示可选中光标，按下去却在拖窗口。 */

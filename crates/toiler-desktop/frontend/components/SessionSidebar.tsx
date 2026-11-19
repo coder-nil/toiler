@@ -39,11 +39,18 @@ declare global {
  */
 const HEADER_ROW_HEIGHT = 32;
 
+/**
+ * 刷新按钮的动作反馈：图标自己转一圈，按钮本身既不换颜色也不换图标。
+ * 动画只跑一遍、从 0° 转到 360°，跑完正好回到起点，不会停在半路的角度上；
+ * 再次点击靠给 svg 换 key 重挂载，把这一圈重新跑一遍。
+ * 首帧不加类，所以打开应用时不会白白转一圈。
+ */
+const REFRESH_SPIN_CLASS = "refresh-icon-spin";
+
 function ToolbarIconButton({
   onClick,
   title,
   disabled,
-  skipHover,
   color,
   background = "none",
   marginRight,
@@ -53,7 +60,6 @@ function ToolbarIconButton({
   onClick: () => void;
   title: string;
   disabled?: boolean;
-  skipHover?: boolean;
   color: string;
   background?: string;
   marginRight?: number;
@@ -61,12 +67,12 @@ function ToolbarIconButton({
   children: ReactNode;
 }) {
   const enter = (e: React.MouseEvent<HTMLButtonElement>) => {
-    if (disabled || skipHover) return;
+    if (disabled) return;
     e.currentTarget.style.color = "var(--text-muted)";
     e.currentTarget.style.background = "var(--bg-hover)";
   };
   const leave = (e: React.MouseEvent<HTMLButtonElement>) => {
-    if (disabled || skipHover) return;
+    if (disabled) return;
     e.currentTarget.style.color = color;
     e.currentTarget.style.background = background;
   };
@@ -527,8 +533,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [hideDotDirs, setHideDotDirsState] = useState(false);
   const [changesCount, setChangesCount] = useState(0);
   const [changesCollapsed, setChangesCollapsed] = useState(true);
-  const [sessionRefreshDone, setSessionRefreshDone] = useState(false);
-  const [explorerRefreshDone, setExplorerRefreshDone] = useState(false);
+  // 点一次刷新就让图标转一圈：计数只用来换 svg 的 key，让动画从头再跑。
+  const [sessionRefreshTick, setSessionRefreshTick] = useState(0);
+  const [explorerRefreshTick, setExplorerRefreshTick] = useState(0);
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
   const [pendingUiSessionIds, setPendingUiSessionIds] = useState<Set<string>>(() => new Set());
   const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(() => loadUnreadSessionIds());
@@ -536,8 +543,6 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   // Once polling has delivered a snapshot it is the source of truth for
   // running state; late /api/sessions responses must not overwrite it.
   const runningPollAuthoritativeRef = useRef(false);
-  const sessionRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const explorerRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileExplorerRef = useRef<FileExplorerHandle>(null);
 
   // The directory list shown in the selector is exactly the persisted records
@@ -585,11 +590,6 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         return next.size === prev.size ? prev : next;
       });
       setError(null);
-      if (!showLoading) {
-        setSessionRefreshDone(true);
-        if (sessionRefreshTimerRef.current) clearTimeout(sessionRefreshTimerRef.current);
-        sessionRefreshTimerRef.current = setTimeout(() => setSessionRefreshDone(false), 2000);
-      }
     } catch (e) {
       setError(String(e));
     } finally {
@@ -2356,28 +2356,24 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             )}
             <ToolbarIconButton
               onClick={() => {
+                setExplorerRefreshTick((tick) => tick + 1);
                 if (onExplorerRefresh) onExplorerRefresh();
                 else setExplorerKey((k) => k + 1);
-                setExplorerRefreshDone(true);
-                if (explorerRefreshTimerRef.current) clearTimeout(explorerRefreshTimerRef.current);
-                explorerRefreshTimerRef.current = setTimeout(() => setExplorerRefreshDone(false), 2000);
               }}
               title={t("sidebar.refreshExplorer")}
-              skipHover={explorerRefreshDone}
-              color={explorerRefreshDone ? "#4ade80" : "var(--text-dim)"}
-              background={explorerRefreshDone ? "rgba(74,222,128,0.18)" : "none"}
+              color="var(--text-dim)"
               marginRight={6}
             >
-              {explorerRefreshDone ? (
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              ) : (
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-                  <path d="M3 3v5h5" />
-                </svg>
-              )}
+              <svg
+                key={explorerRefreshTick}
+                className={explorerRefreshTick > 0 ? REFRESH_SPIN_CLASS : undefined}
+                width="13" height="13" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                <path d="M3 3v5h5" />
+              </svg>
             </ToolbarIconButton>
           </div>
           {explorerOpen && (
@@ -2474,8 +2470,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           <button type="button" onClick={handleNewSession} disabled={!selectedCwd} title={selectedCwd ? t("sidebar.newSessionTitle", { path: selectedCwd }) : t("sidebar.selectProject")} aria-label={t("sidebar.new")} style={{ width: 30, height: 30, padding: 0, border: "none", borderRadius: 6, background: "transparent", color: selectedCwd ? "var(--text-muted)" : "var(--text-dim)", cursor: selectedCwd ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} onMouseEnter={(e) => { if (selectedCwd) e.currentTarget.style.background = "var(--bg-hover)"; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
           </button>
-          <button type="button" onClick={() => loadSessions(false, true)} title={t("sidebar.refresh")} aria-label={t("sidebar.refresh")} style={{ width: 30, height: 30, padding: 0, border: "none", borderRadius: 6, background: "transparent", color: sessionRefreshDone ? "#4ade80" : "var(--text-muted)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} onMouseEnter={(e) => { if (!sessionRefreshDone) e.currentTarget.style.background = "var(--bg-hover)"; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
-            {sessionRefreshDone ? <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg> : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>}
+          <button type="button" onClick={() => { setSessionRefreshTick((tick) => tick + 1); void loadSessions(false, true); }} title={t("sidebar.refresh")} aria-label={t("sidebar.refresh")} style={{ width: 30, height: 30, padding: 0, border: "none", borderRadius: 6, background: "transparent", color: "var(--text-muted)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+            <svg key={sessionRefreshTick} className={sessionRefreshTick > 0 ? REFRESH_SPIN_CLASS : undefined} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
           </button>
         </div>
       </div>

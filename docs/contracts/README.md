@@ -129,6 +129,16 @@ compressedEntryIds?:[…], branchPreview?:{role?, text}}`，`depth` 上限 200�
 `off`；不支持的级别仍保留原始偏好，切回支持的模型后可恢复。草稿里的选择由浏览器
 暂存，并与建会话请求一起发送（包含显式 `auto` 和 `off`）。
 
+**响应里的 `thinkingLevel` 是「生效级别」，不是用户选的那一档。** rpi 的等级枚举里
+没有 `auto`，所以选 `auto` 时它必然回 `off`（`agent_runtime::effective_thinking_level`）；
+`/api/agent/new`、`get_state`、`/api/sessions/{id}` 的 `context.thinkingLevel` 以及
+v3 文件里的 `thinking_level_change` 全都是生效值 —— `auto` 与 `off` 在那里**不可区分**。
+前端因此把「用户原始偏好」（浏览器 `localStorage` + `settings.json`）与生效值分开保存，
+显示时用 `resolveDisplayThinkingLevel` 还原：偏好是 `auto` 而生效值是 `off`（或缺失）
+时显示 `auto`，否则按生效值显示。直接把生效值写回界面会让刚选的「默认推理」立刻
+跳成「关闭推理」，看起来像选择没生效（`scripts/thinking-level-preference.test.mjs`
+守着这条）。这是显示层的还原，不改接口形状，也不往 v3 文件写 `auto`。
+
 `set_ui_locale`（`{"type":"set_ui_locale","locale":"zh-CN"|"en"}`）返回
 `{systemPrompt}`。前端打开会话、切换界面语言都会发它，返回值直接刷新「系统提示词」
 面板；它同时把提示词换成对应语言（preamble / 工具说明 / 行为准则 / 语言指令）。
