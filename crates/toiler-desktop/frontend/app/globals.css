@@ -2489,9 +2489,7 @@ span.token.table {
   to { transform: rotate(360deg); }
 }
 
-/* 刷新按钮的动作反馈：图标自己转一圈，按钮本身不换色、不换图标。
-   只跑一次且起止都是 0°，所以跑完就停在原样；再次点击时 React 换掉 svg 的
-   key 重挂载，把这一圈从头再跑一遍。 */
+/* 顺时针刷新箭头只转一圈，不使用加载指示器的循环动画。 */
 .refresh-icon-spin {
   animation: spin 0.7s linear;
 }

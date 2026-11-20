@@ -1,0 +1,584 @@
+.sidebar {
+  --sidebar-gutter: 10px;
+  --sidebar-control: 28px;
+  --sidebar-session-height: 46px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.header {
+  flex: none;
+  padding: 0 var(--sidebar-gutter) 12px;
+}
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.hideButton {
+  margin-inline-start: auto;
+}
+
+.iconButton,
+.newSession,
+.explorerTrigger,
+.projectTrigger,
+.sessionTarget,
+.deleteActions button {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.iconButton {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: var(--sidebar-control);
+  height: var(--sidebar-control);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+}
+
+:is(.iconButton, .newSession):hover:not(:disabled),
+.explorerTrigger:hover,
+.projectTrigger:hover,
+.projectTrigger[aria-expanded="true"] {
+  background: var(--bg-hover-soft);
+  color: var(--text);
+}
+
+.iconButton[aria-pressed="true"] {
+  background: var(--bg-selected);
+  color: var(--text);
+}
+
+.sidebar :is(button, input):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.projectControl {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 44px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-selector);
+  background: var(--bg);
+}
+
+.projectTrigger {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 2px 5px;
+  border-radius: var(--radius-md);
+  color: var(--text);
+  text-align: start;
+}
+
+.projectMark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+}
+
+.projectMark[data-starred="true"] {
+  color: var(--star);
+}
+
+.projectText {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+
+.projectName,
+.sectionHeading,
+.explorerTrigger span,
+.sessionTitle,
+.sessionMeta > span,
+.sessionBranch span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projectName {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.projectChevron {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.explorer,
+.sessions {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.explorer + .sessions {
+  margin-block-start: 6px;
+}
+
+/* 文件少时按内容收起，多时独立滚动，把更多空间留给会话。 */
+.explorer[data-open="true"] {
+  flex: 0 1 auto;
+  min-height: 40px;
+  max-height: 40%;
+}
+
+.explorerScroll,
+.sessionList {
+  min-height: 0;
+  overflow: hidden auto;
+  overscroll-behavior-y: contain;
+}
+
+.explorerScroll {
+  padding: 0 4px 6px;
+}
+
+.sectionBar {
+  position: relative;
+  container-type: inline-size;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  min-height: 38px;
+  padding: 0 var(--sidebar-gutter);
+}
+
+.sectionActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 隐藏时让标题占满一行，但不移出键盘顺序；触屏不依赖悬停。 */
+@media (hover: hover) and (pointer: fine) {
+  :is(.explorer, .sessions):not(:hover, :has(:focus-visible), [data-search-open="true"]) .sectionActions {
+    position: absolute;
+    inset-inline-end: var(--sidebar-gutter);
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+.explorerTrigger {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  min-height: var(--sidebar-control);
+  padding: 0 4px;
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: start;
+}
+
+.explorerTrigger svg {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.explorerTrigger[aria-expanded="true"] .explorerChevron {
+  transform: rotate(90deg);
+}
+
+.sessions {
+  flex: 1 0 108px;
+}
+
+.sessionHeader {
+  flex: none;
+  padding-bottom: 6px;
+}
+
+.sectionHeading {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding-inline-start: 4px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.newSession {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: var(--sidebar-control);
+  padding: 0 8px;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+@container (max-width: 208px) {
+  .newSession {
+    width: var(--sidebar-control);
+    padding: 0;
+  }
+
+  .newSession span {
+    display: none;
+  }
+}
+
+.sidebar button:disabled {
+  cursor: not-allowed;
+}
+
+:is(.newSession, .iconButton):disabled {
+  opacity: 0.55;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  margin-inline: var(--sidebar-gutter);
+  padding: 0 3px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--text-muted);
+}
+
+.search[hidden] {
+  display: none;
+}
+
+.search:focus-within {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.search > svg {
+  flex: none;
+}
+
+.search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.sidebar .search input:focus-visible {
+  outline: none;
+}
+
+.search input::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+.search .iconButton {
+  width: 24px;
+  height: 24px;
+}
+
+.sessionList {
+  flex: 1;
+  padding: 2px 6px 6px var(--sidebar-gutter);
+}
+
+.sessionRow {
+  --row-bg: transparent;
+  --action-offset: 3px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  min-height: var(--sidebar-session-height);
+  margin-block-end: 2px;
+  padding-inline: calc(8px + var(--fork-indent)) 3px;
+  border-radius: var(--radius-md);
+  background: var(--row-bg);
+}
+
+.sessionRow:hover,
+.sessionRow:focus-within,
+.sessionRow:has(.sessionActions[data-status]) {
+  --row-bg: var(--bg-hover-soft);
+}
+
+/* 内嵌色条不触发 WebKit 给圆角单边边框附带的细描边。 */
+.sessionRow[data-current="true"] {
+  --row-bg: color-mix(in srgb, var(--accent) 10%, var(--sidebar-bg));
+  box-shadow: inset 2px 0 var(--accent);
+}
+
+.sessionRow[data-delete="true"] {
+  --row-bg: color-mix(in srgb, var(--danger) 8%, var(--sidebar-bg));
+  box-shadow: inset 2px 0 var(--danger);
+  padding-inline: 8px 4px;
+}
+
+.sessionRow[data-deleting="true"] {
+  opacity: 0.55;
+}
+
+.sessionTarget {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: stretch;
+  flex: 1;
+  min-width: 0;
+  padding-inline-end: 4px;
+  border-radius: var(--radius-md);
+  color: var(--text);
+  text-align: start;
+}
+
+.sessionGlyph {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.sessionRow[data-current="true"] .sessionGlyph {
+  color: var(--accent);
+}
+
+.sessionCopy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sessionTitle {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.sessionRow[data-current="true"] .sessionTitle {
+  font-weight: 600;
+}
+
+.sessionMeta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.unreadDot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+
+.sessionBranch {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  color: var(--text-muted);
+}
+
+.sessionBranch svg,
+.sessionMeta time {
+  flex: none;
+}
+
+.sessionRow[data-forks="true"] {
+  --action-offset: calc(6px + var(--sidebar-control));
+}
+
+.forkToggle[aria-expanded="false"] svg {
+  transform: rotate(-90deg);
+}
+
+.sessionActions {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: var(--action-offset);
+  display: flex;
+  align-items: center;
+  padding-inline-start: 14px;
+  background: linear-gradient(to right, transparent, var(--row-bg) 14px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sessionRow:hover .sessionActions,
+.sessionRow:focus-within .sessionActions,
+.sessionActions[data-status] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sessionActions[data-status="success"] button:first-child {
+  color: var(--accent);
+}
+
+.sessionActions[data-status="error"] button:first-child,
+.sessionActions .deleteIcon:hover {
+  color: var(--danger);
+}
+
+.renameInput {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding-inline: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.deleteActions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.deleteActions button {
+  height: 28px;
+  padding-inline: 7px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.deleteActions .confirmDelete {
+  color: var(--danger);
+}
+
+.deleteActions .cancelDelete {
+  color: var(--text);
+}
+
+.deleteActions button:hover {
+  background: var(--bg-hover);
+}
+
+.listState {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  padding: 12px 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.listState strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.listState[role="alert"] {
+  border-inline-start: 2px solid var(--danger);
+  padding-inline-start: 8px;
+}
+
+.skeletons > div {
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  min-height: var(--sidebar-session-height);
+  padding-inline-start: 30px;
+}
+
+.skeletons span {
+  width: 66%;
+  height: 7px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-panel);
+}
+
+.skeletons span + span {
+  width: 33%;
+}
+
+@media (max-width: 640px), (hover: none) {
+  .sidebar {
+    --sidebar-control: 30px;
+    --sidebar-session-height: 48px;
+  }
+
+  .sessionActions,
+  .sessionRow:hover .sessionActions {
+    position: static;
+    order: 1;
+    padding: 0;
+    background: none;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .forkToggle {
+    order: 2;
+  }
+
+  .search {
+    height: 36px;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :is(.iconButton, .newSession, .explorerTrigger, .projectTrigger, .deleteActions button):active:not(:disabled) {
+    transform: scale(0.97);
+  }
+
+  .spinner {
+    animation: sidebar-spin 0.9s linear infinite;
+  }
+
+  @keyframes sidebar-spin {
+    to { transform: rotate(360deg); }
+  }
+}

@@ -1961,10 +1961,11 @@ export function AppShell() {
       <div
         ref={sidebarResizer.panelRef}
         id="session-sidebar"
+        inert={!sidebarOpen}
         className={`sidebar-container${sidebarOpen ? " sidebar-open" : " sidebar-closed"}${mobileSidebarReady ? "" : " sidebar-mobile-pending"}${sidebarResizer.isResizing ? " sidebar-resizing" : ""}`}
         style={{
           "--sidebar-width": `${sidebarResizer.width}px`,
-          /* 外壳面用 --bg-chrome：侧栏与顶部条是“应用壳”，不是内容。 */
+          /* 侧栏正文与原生标题带由 --sidebar-surface 统一处理。 */
           background: "var(--sidebar-surface, var(--bg-chrome))",
           borderRight: "none",
           display: "flex",

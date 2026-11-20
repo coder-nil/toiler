@@ -2,8 +2,7 @@
 
 import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Speech } from "lucide-react";
-import { Eye, EyeOff, Star } from "lucide-react";
+import { ChevronDown, ChevronRight, Eye, EyeOff, Folder, FolderPlus, GitBranch, GitCommitHorizontal, MessageSquare, PanelLeftClose, Pencil, Plus, RotateCw, Search, Speech, Star, Trash2, Upload, WandSparkles, X, Check, LoaderCircle } from "lucide-react";
 import type { SessionInfo } from "@/lib/types";
 import type { AppUpdateResponse } from "@/lib/api-types";
 import { loadExplorerOpen, saveExplorerOpen } from "@/lib/file-explorer-state";
@@ -23,6 +22,9 @@ import { AboutButton } from "./AboutDialog";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { FileExplorer, TreeLoadingSpinner, type FileExplorerHandle } from "./FileExplorer";
 import { BranchPicker } from "./BranchPicker";
+import styles from "./SessionSidebar.module.css";
+
+const ICON_STROKE = 1.8;
 
 declare global {
   interface Window {
@@ -33,15 +35,8 @@ declare global {
 }
 
 /**
- * 文件浏览器标题行的高度。收起时它就是这个区块的全部高度，所以取固定值：
- * 26px 的工具按钮在其中垂直居中（上下各留 3px），行本身也不会像原先靠文字
- * 行高撑出的 29px 那样随字体浮动。
- */
-const HEADER_ROW_HEIGHT = 32;
-
-/**
  * 刷新按钮的动作反馈：图标自己转一圈，按钮本身既不换颜色也不换图标。
- * 动画只跑一遍、从 0° 转到 360°，跑完正好回到起点，不会停在半路的角度上；
+ * 沿着箭头顺时针转一圈，跑完正好回到原位；
  * 再次点击靠给 svg 换 key 重挂载，把这一圈重新跑一遍。
  * 首帧不加类，所以打开应用时不会白白转一圈。
  */
@@ -51,53 +46,26 @@ function ToolbarIconButton({
   onClick,
   title,
   disabled,
-  color,
-  background = "none",
-  marginRight,
-  ariaPressed,
+  pressed,
+  className,
   children,
 }: {
   onClick: () => void;
   title: string;
   disabled?: boolean;
-  color: string;
-  background?: string;
-  marginRight?: number;
-  ariaPressed?: boolean;
+  pressed?: boolean;
+  className?: string;
   children: ReactNode;
 }) {
-  const enter = (e: React.MouseEvent<HTMLButtonElement>) => {
-    if (disabled) return;
-    e.currentTarget.style.color = "var(--text-muted)";
-    e.currentTarget.style.background = "var(--bg-hover)";
-  };
-  const leave = (e: React.MouseEvent<HTMLButtonElement>) => {
-    if (disabled) return;
-    e.currentTarget.style.color = color;
-    e.currentTarget.style.background = background;
-  };
   return (
     <button
+      type="button"
       onClick={onClick}
       disabled={disabled}
       title={title}
       aria-label={title}
-      aria-pressed={ariaPressed}
-      style={{
-        position: "relative",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        width: 26, height: 26, padding: 0, marginRight,
-        background,
-        border: "none",
-        color,
-        cursor: disabled ? "default" : "pointer",
-        borderRadius: 5,
-        flexShrink: 0,
-        opacity: disabled ? 0.6 : 1,
-        transition: "color 0.3s, background 0.3s",
-      }}
-      onMouseEnter={enter}
-      onMouseLeave={leave}
+      aria-pressed={pressed}
+      className={`${styles.iconButton}${className ? ` ${className}` : ""}`}
     >
       {children}
     </button>
@@ -487,7 +455,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [loading, setLoading] = useState(true);
   const [initialLoadSettled, setInitialLoadSettled] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sessionSearchOpen, setSessionSearchOpen] = useState(false);
   const [sessionSearch, setSessionSearch] = useState("");
+  const sessionSectionRef = useRef<HTMLElement>(null);
+  const sessionSearchButtonRef = useRef<HTMLButtonElement>(null);
+  const sessionSearchRef = useRef<HTMLInputElement>(null);
   const [sessionSearchResult, setSessionSearchResult] = useState<{ query: string; matches: SessionSearchMatch[] }>({
     query: "",
     matches: [],
@@ -782,6 +754,36 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       });
     return () => controller.abort();
   }, []);
+
+  const closeSessionSearch = useCallback(() => {
+    setSessionSearchOpen(false);
+    setSessionSearch("");
+  }, []);
+
+  useEffect(() => {
+    if (!sessionSearchOpen) return;
+    sessionSearchRef.current?.focus();
+
+    const inSessionSection = (event: Event) => event.target instanceof Node
+      && sessionSectionRef.current?.contains(event.target);
+    const dismissOutside = (event: PointerEvent) => {
+      if (!inSessionSection(event)) closeSessionSearch();
+    };
+    const dismissByEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.isComposing || !inSessionSection(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeSessionSearch();
+      sessionSearchButtonRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", dismissOutside, true);
+    // 弹层内的 Esc 先关闭搜索，不能落到 document 上的全局停止会话快捷键。
+    window.addEventListener("keydown", dismissByEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      window.removeEventListener("keydown", dismissByEscape, true);
+    };
+  }, [closeSessionSearch, sessionSearchOpen]);
 
   useEffect(() => {
     const query = sessionSearch.trim();
@@ -1241,8 +1243,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   // open session after manually switching worktrees.
   const handleSelectSessionFromList = useCallback((s: SessionInfo) => {
     if (s.cwd) setSelectedCwd(s.cwd);
+    closeSessionSearch();
     onSelectSession(s);
-  }, [onSelectSession]);
+  }, [closeSessionSearch, onSelectSession]);
 
   const handleNewSession = useCallback(() => {
     if (!selectedCwd) return;
@@ -1346,11 +1349,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     }
     return matches;
   }, [allSessions, normalizedSessionSearch, sessionSearch, sessionSearchResult]);
-  const filteredSessions = normalizedSessionSearch
+  const selectedProjectKey = selectedProject?.key;
+  const filteredSessions = useMemo(() => normalizedSessionSearch
     ? allSessions.filter((session) => sessionSearchMatchMap.has(session.id))
-    : selectedProject
-      ? sessionsForProject(allSessions, selectedProject.key)
-      : allSessions;
+    : selectedProjectKey
+      ? sessionsForProject(allSessions, selectedProjectKey)
+      : allSessions, [allSessions, normalizedSessionSearch, selectedProjectKey, sessionSearchMatchMap]);
   const showWorktreeSwitcher = Boolean(
     worktreeState?.isGit
     && worktreeState.isTopLevel
@@ -1379,10 +1383,15 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       : null);
 
   // Build parent-child tree within the filtered set
-  const sessionTree = buildSessionTree(filteredSessions);
+  const sessionTree = useMemo(() => buildSessionTree(filteredSessions), [filteredSessions]);
+  const projectPath = selectedProject?.root ?? selectedCwd;
+  const refreshSessions = () => {
+    setSessionRefreshTick((tick) => tick + 1);
+    void loadSessions(false, true);
+  };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+    <aside className={styles.sidebar} aria-label={t("sidebar.label")}>
       {customPathOpen && (
         <DirectoryPicker
           // Anchor the picker to the active project's root. With no project
@@ -1398,29 +1407,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           onSelect={(path) => void commitCustomPath(path)}
         />
       )}
-      {/* Header */}
-      <div
-        className="app-chrome app-sidebar-header"
-        style={{
-          // 标题行的上边距改由标题行自身高度承担：它的垂直中心要落在对话顶栏
-          // （完整历史 / 对话分支 / 系统）的中线上。
-          // 底边线由下方区块（文件浏览器 / 搜索框）自己的 borderTop 负责。
-          padding: "0 10px 10px",
-          flexShrink: 0,
-        }}
-      >
+      <header className={`app-chrome ${styles.header}`}>
         <div
-          // 只有标题行可以拖窗口（红绿灯就在这一行）：deep 让行内空白处都能拖，
-          // 而“Toiler”本身是个按钮（关于弹窗），它会拦住拖拽——这是对的。
           data-tauri-drag-region="deep"
-          className="app-sidebar-title-row"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            minHeight: CHAT_TOP_BAR_HEIGHT,
-            marginBottom: 10,
-          }}
+          className={`app-sidebar-title-row ${styles.titleRow}`}
+          style={{ minHeight: CHAT_TOP_BAR_HEIGHT }}
         >
           <PiWebTitle onAboutClick={onAboutClick} />
           {appUpdate && onAppUpdateClick && appUpdate.updateAvailable && (
@@ -1444,103 +1435,33 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             </button>
           )}
           {onHideSidebar && (
-            <button
-              type="button"
-              onClick={onHideSidebar}
-              title={t("sidebar.hide")}
-              aria-label={t("sidebar.hide")}
-              style={{
-                marginLeft: "auto", flexShrink: 0,
-                display: "inline-flex", alignItems: "center", justifyContent: "center",
-                width: 24, height: 24, padding: 0, border: "none", borderRadius: 5,
-                background: "transparent", color: "var(--text-muted)", cursor: "pointer",
-              }}
-              onMouseEnter={(event) => { event.currentTarget.style.background = "var(--bg-hover)"; event.currentTarget.style.color = "var(--text)"; }}
-              onMouseLeave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.color = "var(--text-muted)"; }}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" />
-              </svg>
-            </button>
+            <ToolbarIconButton onClick={onHideSidebar} title={t("sidebar.hide")} className={styles.hideButton}>
+              <PanelLeftClose size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />
+            </ToolbarIconButton>
           )}
         </div>
 
-        {/* CWD picker */}
-        {/* 选择框：白底 + 10px 圆角 + 1px 边框，和下面搜索框同一套平面语言。
-            不再用阴影：侧栏是 #fcfcfc 的浅灰面，白底一加羽化影就“浮”起来，
-            而这一栏里其它控件（搜索框、新建/刷新、标题行按钮）全是平面的，
-            只有它带阴影会显得像别的系统里搬过来的。
-            白底写 var(--bg) 而不是 #fff：深色主题下 #fff 会让 --text 变成
-            白字压白底，而 --bg 在两套主题里都跟文字保持对比。 */}
-        <div
-          ref={dropdownRef}
-          style={{
-            position: "relative",
-            display: "flex",
-            alignItems: "center",
-            gap: 0,
-            height: 32,
-            boxSizing: "border-box",
-            background: "var(--bg)",
-            border: "1px solid var(--border)",
-            borderRadius: "var(--radius-selector)",
-          }}
-        >
+        <div ref={dropdownRef} className={styles.projectControl}>
           <button
+            type="button"
+            className={styles.projectTrigger}
+            aria-expanded={dropdownOpen}
             onClick={() => setDropdownOpen((v) => !v)}
-            title={selectedProject?.root ?? selectedCwd ?? ""}
-            style={{
-              flex: 1,
-              display: "flex",
-              alignItems: "center",
-              padding: "0 6px 0 11px",
-              height: "100%",
-              boxSizing: "border-box",
-              background: "transparent",
-              border: "none",
-              borderRadius: "var(--radius-selector) 0 0 var(--radius-selector)",
-              cursor: "pointer",
-              fontSize: 12,
-              color: "var(--text)",
-              textAlign: "left",
-            }}
+            title={projectPath ?? t("sidebar.selectProject")}
           >
-            {selectedCwd ? (
-              <>
-                {selectedProjectStarred && (
-                  <span
-                    title={t("sidebar.starredProject")}
-                    aria-label={t("sidebar.starredProject")}
-                    style={{ display: "inline-flex", alignItems: "center", flexShrink: 0, marginRight: 5, color: "var(--star)" }}
-                  >
-                    <Star size={11} strokeWidth={2} fill="currentColor" aria-hidden="true" />
-                  </span>
-                )}
-                <PathLabel
-                  text={getFileName(selectedProject?.root ?? selectedCwd) || selectedProject?.root || selectedCwd}
-                  style={{
-                    flex: 1,
-                    fontFamily: "var(--font-mono)",
-                    fontSize: 11,
-                    color: "var(--text)",
-                  }}
-                />
-              </>
-            ) : (
-              <span
-                style={{
-                  flex: 1,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 11,
-                  color: "var(--text-dim)",
-                }}
-              >
-                 {initialSessionId && !restoredRef.current ? "" : t("sidebar.selectProject")}
+            <span className={styles.projectMark} data-starred={selectedProjectStarred} aria-hidden="true">
+              {selectedProjectStarred
+                ? <Star size={16} strokeWidth={ICON_STROKE} fill="currentColor" />
+                : <Folder size={16} strokeWidth={ICON_STROKE} />}
+            </span>
+            <span className={styles.projectText}>
+              <span className={styles.projectName}>
+                {projectPath ? getFileName(projectPath) || projectPath : t("sidebar.selectProject")}
               </span>
-            )}
+              {projectPath && (
+                <PathLabel text={displayCwd(projectPath, homeDir)} style={{ fontSize: 11, color: "var(--text-muted)" }} />
+              )}
+            </span>
             {totalAwaitingCount > 0 && (
               <span
                 title={t("sidebar.waitingForUser")}
@@ -1574,36 +1495,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                 }}
               />
             )}
+            <ChevronDown size={13} strokeWidth={ICON_STROKE} className={styles.projectChevron} aria-hidden="true" />
           </button>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              handleCustomPathClick();
-            }}
-            title={t("sidebar.customPath")}
-            aria-label={t("sidebar.customPath")}
-            style={{
-              width: 30,
-              height: "100%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              flexShrink: 0,
-              padding: 0,
-              margin: "0 1px 0 0",
-              border: "none",
-              borderRadius: "0 var(--radius-selector) var(--radius-selector) 0",
-              background: "transparent",
-              color: "var(--text-muted)",
-              cursor: "pointer",
-            }}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5Z" />
-              <path d="M15.5 10.5v5M13 13h5" />
-            </svg>
-          </button>
+          <ToolbarIconButton onClick={handleCustomPathClick} title={t("sidebar.customPath")}>
+            <FolderPlus size={16} strokeWidth={ICON_STROKE} aria-hidden="true" />
+          </ToolbarIconButton>
           <AnimatedDropdown
             open={dropdownOpen}
             style={{
@@ -1787,6 +1683,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   这样加了一道边框后总高仍是 29px，不会把下面内容预下去。 */}
               <div style={{ position: "relative", display: "flex", alignItems: "center", height: 29, boxSizing: "border-box", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-selector)", overflow: "hidden" }}>
               <button
+                type="button"
+                aria-expanded={wtDropdownOpen}
                 onClick={() => setWtDropdownOpen((v) => !v)}
                  title={currentWorktree ? t("sidebar.switchWorktreeTitle", { path: currentWorktree.path }) : t("sidebar.switchWorktree")}
                 style={{
@@ -2249,15 +2147,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               gap: 6,
               padding: "0 10px",
               border: "1px solid var(--border)",
-              borderRadius: 7,
-              background: "var(--bg-hover)",
-              color: "var(--text-dim)",
+              borderRadius: "var(--radius-selector)",
+              background: "var(--bg-panel)",
+              color: "var(--text-muted)",
               fontSize: 11,
               lineHeight: 1.35,
               whiteSpace: "nowrap",
               textAlign: "left",
               cursor: "default",
-              opacity: 0.82,
             }}
           >
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
@@ -2269,128 +2166,76 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{inactiveWorktreeSelector.label}</span>
           </button>
         )}
-      </div>
+      </header>
 
-      {/* File Explorer section */}
       {(selectedCwdProp || selectedCwd) && (
-        <div
-          style={{
-            borderTop: "1px solid var(--border)",
-            display: "flex",
-            flexDirection: "column",
-            flex: explorerOpen ? "1 1 0" : "0 0 auto",
-            minHeight: 0,
-            overflow: "hidden",
-          }}
-        >
-          {/* 标题行高度固定且与工具按钮同高：收起时它就是这个区块的全部高度，
-              靠文字行高撑出来的 29px 会比搜索栏（30px）窄一线，看起来欠齐。 */}
-          <div style={{ display: "flex", alignItems: "center", flexShrink: 0, height: HEADER_ROW_HEIGHT }}>
+        <section className={styles.explorer} data-open={explorerOpen} aria-label={t("files.explorer")}>
+          <div className={styles.sectionBar}>
             <button
+              type="button"
+              className={styles.explorerTrigger}
               onClick={() => setExplorerOpen((open) => {
                 const next = !open;
                 saveExplorerOpen(next);
                 return next;
               })}
               aria-expanded={explorerOpen}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                flex: 1,
-                height: "100%",
-                padding: "0 10px",
-                background: "none",
-                border: "none",
-                color: "var(--text-muted)",
-                cursor: "pointer",
-                fontSize: 11,
-                fontWeight: 600,
-                letterSpacing: "0.05em",
-                textTransform: "uppercase",
-                textAlign: "left",
-              }}
             >
               {explorerOpen && explorerLoading ? (
-                <TreeLoadingSpinner size={9} label={t("files.loading")} />
+                <TreeLoadingSpinner size={12} label={t("files.loading")} />
               ) : (
-                <svg
-                  width="9" height="9" viewBox="0 0 10 10" fill="none"
-                  stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
-                  style={{ transform: explorerOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }}
-                >
-                  <polyline points="3 2 7 5 3 8" />
-                </svg>
+                <ChevronRight size={13} strokeWidth={ICON_STROKE} className={styles.explorerChevron} aria-hidden="true" />
               )}
-              {t("files.explorer")}
+              <span>{t("files.explorer")}</span>
             </button>
-            {explorerOpen && (
+            <div className={styles.sectionActions}>
+              {explorerOpen && (
+                <ToolbarIconButton
+                  onClick={() => fileExplorerRef.current?.setHideDotDirs((v) => !v)}
+                  title={hideDotDirs ? t("files.showHiddenFiles") : t("files.hideHiddenFiles")}
+                  pressed={hideDotDirs}
+                >
+                  {hideDotDirs ? <EyeOff size={14} strokeWidth={ICON_STROKE} /> : <Eye size={14} strokeWidth={ICON_STROKE} />}
+                </ToolbarIconButton>
+              )}
+              {explorerOpen && changesCount > 0 && (
+                <ToolbarIconButton
+                  onClick={() => setChangesCollapsed((v) => !v)}
+                  title={t("sidebar.changedFiles", { count: changesCount })}
+                  pressed={!changesCollapsed}
+                >
+                  <GitCommitHorizontal size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+                </ToolbarIconButton>
+              )}
+              {explorerOpen && (
+                <ToolbarIconButton
+                  onClick={() => fileExplorerRef.current?.openUploadPicker()}
+                  disabled={explorerUploadBusy}
+                  title={t("sidebar.uploadFilesTitle")}
+                >
+                  <Upload size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+                </ToolbarIconButton>
+              )}
               <ToolbarIconButton
-                onClick={() => fileExplorerRef.current?.setHideDotDirs((v) => !v)}
-                title={hideDotDirs ? t("files.showHiddenFiles") : t("files.hideHiddenFiles")}
-                aria-pressed={hideDotDirs}
-                color={hideDotDirs ? "var(--text-muted)" : "var(--text)"}
+                onClick={() => {
+                  setExplorerRefreshTick((tick) => tick + 1);
+                  if (onExplorerRefresh) onExplorerRefresh();
+                  else setExplorerKey((k) => k + 1);
+                }}
+                title={t("sidebar.refreshExplorer")}
               >
-                {hideDotDirs ? (
-                  <EyeOff size={13} />
-                ) : (
-                  <Eye size={13} />
-                )}
+                <RotateCw
+                  key={explorerRefreshTick}
+                  className={explorerRefreshTick > 0 ? REFRESH_SPIN_CLASS : undefined}
+                  size={14}
+                  strokeWidth={ICON_STROKE}
+                  aria-hidden="true"
+                />
               </ToolbarIconButton>
-            )}
-            {explorerOpen && changesCount > 0 && (
-              <ToolbarIconButton
-                onClick={() => setChangesCollapsed((v) => !v)}
-                title={t("sidebar.changedFiles", { count: changesCount })}
-                ariaPressed={!changesCollapsed}
-                color={changesCollapsed ? "var(--text-dim)" : "var(--accent)"}
-                background={changesCollapsed ? "none" : "var(--bg-selected)"}
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <circle cx="12" cy="12" r="3" />
-                  <path d="M3 12h6" />
-                  <path d="M15 12h6" />
-                </svg>
-              </ToolbarIconButton>
-            )}
-            {explorerOpen && (
-              <ToolbarIconButton
-                onClick={() => fileExplorerRef.current?.openUploadPicker()}
-                disabled={explorerUploadBusy}
-                title={t("sidebar.uploadFilesTitle")}
-                color="var(--text-dim)"
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <path d="m17 8-5-5-5 5" />
-                  <path d="M12 3v12" />
-                </svg>
-              </ToolbarIconButton>
-            )}
-            <ToolbarIconButton
-              onClick={() => {
-                setExplorerRefreshTick((tick) => tick + 1);
-                if (onExplorerRefresh) onExplorerRefresh();
-                else setExplorerKey((k) => k + 1);
-              }}
-              title={t("sidebar.refreshExplorer")}
-              color="var(--text-dim)"
-              marginRight={6}
-            >
-              <svg
-                key={explorerRefreshTick}
-                className={explorerRefreshTick > 0 ? REFRESH_SPIN_CLASS : undefined}
-                width="13" height="13" viewBox="0 0 24 24" fill="none"
-                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-                <path d="M3 3v5h5" />
-              </svg>
-            </ToolbarIconButton>
+            </div>
           </div>
           {explorerOpen && (
-            <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
+            <div className={styles.explorerScroll}>
               <FileExplorer
                 ref={fileExplorerRef}
                 cwd={selectedCwd ?? selectedCwdProp!}
@@ -2410,132 +2255,130 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               />
             </div>
           )}
-        </div>
+        </section>
       )}
 
-      {/* Session search */}
-      <div style={{ flexShrink: 0, padding: "8px 10px 10px", borderTop: "1px solid var(--border)" }}>
-        <div style={{ display: "flex", gap: 4 }}>
-          <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-              style={{ position: "absolute", left: 9, top: 8, color: "var(--text-dim)", pointerEvents: "none" }}
-            >
-              <circle cx="11" cy="11" r="7" />
-              <path d="m20 20-3.5-3.5" />
-            </svg>
+      <section
+        ref={sessionSectionRef}
+        className={styles.sessions}
+        aria-label={t("sidebar.sessions")}
+        data-search-open={sessionSearchOpen}
+      >
+        <div className={styles.sessionHeader}>
+          <div className={styles.sectionBar}>
+            <h2 className={styles.sectionHeading}>{t("sidebar.sessions")}</h2>
+            <div className={styles.sectionActions}>
+              <button
+                type="button"
+                className={styles.newSession}
+                onClick={() => {
+                  closeSessionSearch();
+                  handleNewSession();
+                }}
+                disabled={!selectedCwd}
+                title={selectedCwd ? t("sidebar.newSessionTitle", { path: selectedCwd }) : t("sidebar.selectProject")}
+                aria-label={t("i18n.newSession")}
+              >
+                <Plus size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+                <span>{t("i18n.newSession")}</span>
+              </button>
+              <ToolbarIconButton onClick={refreshSessions} title={t("sidebar.refresh")}>
+                <RotateCw
+                  key={sessionRefreshTick}
+                  className={sessionRefreshTick > 0 ? REFRESH_SPIN_CLASS : undefined}
+                  size={14}
+                  strokeWidth={ICON_STROKE}
+                  aria-hidden="true"
+                />
+              </ToolbarIconButton>
+              <button
+                ref={sessionSearchButtonRef}
+                type="button"
+                className={styles.iconButton}
+                aria-label={t("sidebar.searchSessions")}
+                title={t("sidebar.searchSessions")}
+                aria-expanded={sessionSearchOpen}
+                aria-controls="sidebar-session-search"
+                onClick={() => {
+                  if (sessionSearchOpen) closeSessionSearch();
+                  else setSessionSearchOpen(true);
+                }}
+              >
+                <Search size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+          <div id="sidebar-session-search" className={styles.search} role="search" aria-label={t("sidebar.searchSessions")} hidden={!sessionSearchOpen}>
+            <Search size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
             <input
+              ref={sessionSearchRef}
               type="text"
               role="searchbox"
               value={sessionSearch}
               onChange={(event) => setSessionSearch(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  setSessionSearch("");
-                  event.currentTarget.blur();
-                }
-              }}
               placeholder={t("sidebar.searchSessions")}
               aria-label={t("sidebar.searchSessions")}
-              style={{
-                width: "100%",
-                height: 30,
-                boxSizing: "border-box",
-                padding: "0 30px",
-                border: "1px solid var(--border)",
-                borderRadius: 6,
-                outline: "none",
-                background: "var(--bg)",
-                color: "var(--text)",
-                fontSize: 12,
-              }}
-              onFocus={(event) => { event.currentTarget.style.borderColor = "var(--accent)"; }}
-              onBlur={(event) => { event.currentTarget.style.borderColor = "var(--border)"; }}
             />
             {sessionSearch && (
-              <button
-                type="button"
-                onClick={() => setSessionSearch("")}
-                title={t("sidebar.clearSearch")}
-                aria-label={t("sidebar.clearSearch")}
-                style={{
-                  position: "absolute", right: 4, top: 3,
-                  width: 24, height: 24, padding: 0,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  border: "none", borderRadius: 5,
-                  background: "transparent", color: "var(--text-dim)", cursor: "pointer",
-                }}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <path d="M6 6l12 12M18 6 6 18" />
-                </svg>
-              </button>
+              <ToolbarIconButton onClick={() => {
+                setSessionSearch("");
+                sessionSearchRef.current?.focus();
+              }} title={t("sidebar.clearSearch")}>
+                <X size={13} strokeWidth={ICON_STROKE} aria-hidden="true" />
+              </ToolbarIconButton>
             )}
           </div>
-          <button type="button" onClick={handleNewSession} disabled={!selectedCwd} title={selectedCwd ? t("sidebar.newSessionTitle", { path: selectedCwd }) : t("sidebar.selectProject")} aria-label={t("sidebar.new")} style={{ width: 30, height: 30, padding: 0, border: "none", borderRadius: 6, background: "transparent", color: selectedCwd ? "var(--text-muted)" : "var(--text-dim)", cursor: selectedCwd ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} onMouseEnter={(e) => { if (selectedCwd) e.currentTarget.style.background = "var(--bg-hover)"; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
-          </button>
-          <button type="button" onClick={() => { setSessionRefreshTick((tick) => tick + 1); void loadSessions(false, true); }} title={t("sidebar.refresh")} aria-label={t("sidebar.refresh")} style={{ width: 30, height: 30, padding: 0, border: "none", borderRadius: 6, background: "transparent", color: "var(--text-muted)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }} onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
-            <svg key={sessionRefreshTick} className={sessionRefreshTick > 0 ? REFRESH_SPIN_CLASS : undefined} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
-          </button>
         </div>
-      </div>
 
-      {/* Session list */}
-      <div style={{ flex: explorerOpen && (selectedCwdProp || selectedCwd) ? "1 1 0" : "1 1 auto", overflowY: "auto", padding: "2px 0 4px", minHeight: 80 }}>
-        {loading && (
-          <div style={{ padding: "16px 14px", color: "var(--text-muted)", fontSize: 12 }}>
-            {t("sidebar.loading")}
-          </div>
-        )}
-        {error && (
-          <div style={{ padding: "12px 14px", color: "#f87171", fontSize: 12 }}>
-            {error}
-          </div>
-        )}
-        {!loading && !error && normalizedSessionSearch && sessionSearchPending && filteredSessions.length === 0 && (
-          <div style={{ padding: "16px 14px", color: "var(--text-muted)", fontSize: 12 }}>
-            {t("sidebar.searchingSessions")}
-          </div>
-        )}
-        {!loading && !error && normalizedSessionSearch && sessionSearchError && filteredSessions.length === 0 && (
-          <div style={{ padding: "16px 14px", color: "#f87171", fontSize: 12 }}>
-            {t("sidebar.searchFailed")}
-          </div>
-        )}
-        {!loading && !error && filteredSessions.length === 0 && (!normalizedSessionSearch || (!sessionSearchPending && !sessionSearchError)) && (
-          <div style={{ padding: "16px 14px", color: "var(--text-muted)", fontSize: 12 }}>
-            {normalizedSessionSearch ? t("sidebar.noMatchingSessions") : t("sidebar.noSessions")}
-          </div>
-        )}
-        {sessionTree.map((node) => (
-          <SessionTreeItem
-            key={node.session.id}
-            node={node}
-            selectedSessionId={selectedSessionId}
-            runningSessionIds={runningSessionIds}
-            unreadSessionIds={unreadSessionIds}
-            onSelectSession={handleSelectSessionFromList}
-            onRenamed={loadSessions}
-            onSessionDeleted={(id) => {
-              onSessionDeleted?.(id);
-              loadSessions();
-            }}
-            onGenerateTitle={onGenerateTitle}
-            titleGenerationStatus={titleGenerationStatus}
-            searchMatches={sessionSearchMatchMap}
-            depth={0}
-          />
-        ))}
-      </div>
+        <div className={styles.sessionList} aria-busy={loading || (Boolean(normalizedSessionSearch) && sessionSearchPending)}>
+          {loading && (
+            <>
+              <span className="sr-only" role="status">{t("sidebar.loading")}</span>
+              <div className={styles.skeletons} aria-hidden="true">
+                {[0, 1, 2].map((row) => <div key={row}><span /><span /></div>)}
+              </div>
+            </>
+          )}
+          {error && (
+            <div className={styles.listState} role="alert">
+              <strong>{t("sidebar.loadFailed")}</strong>
+              <span>{error}</span>
+            </div>
+          )}
+          {!loading && !error && normalizedSessionSearch && sessionSearchPending && filteredSessions.length === 0 && (
+            <div className={styles.listState} role="status">{t("sidebar.searchingSessions")}</div>
+          )}
+          {!loading && !error && normalizedSessionSearch && sessionSearchError && filteredSessions.length === 0 && (
+            <div className={styles.listState} role="alert">{t("sidebar.searchFailed")}</div>
+          )}
+          {!loading && !error && filteredSessions.length === 0 && (!normalizedSessionSearch || (!sessionSearchPending && !sessionSearchError)) && (
+            <div className={styles.listState} role="status">
+              <MessageSquare size={18} strokeWidth={ICON_STROKE} aria-hidden="true" />
+              <strong>{normalizedSessionSearch ? t("sidebar.noMatchingSessions") : t("sidebar.noSessions")}</strong>
+              {!normalizedSessionSearch && <span>{t(selectedCwd ? "sidebar.emptyProjectHint" : "sidebar.emptyWorkspaceHint")}</span>}
+            </div>
+          )}
+          {sessionTree.map((node) => (
+            <SessionTreeItem
+              key={node.session.id}
+              node={node}
+              selectedSessionId={selectedSessionId}
+              runningSessionIds={runningSessionIds}
+              unreadSessionIds={unreadSessionIds}
+              onSelectSession={handleSelectSessionFromList}
+              onRenamed={loadSessions}
+              onSessionDeleted={(id) => {
+                onSessionDeleted?.(id);
+                loadSessions();
+              }}
+              onGenerateTitle={onGenerateTitle}
+              titleGenerationStatus={titleGenerationStatus}
+              searchMatches={sessionSearchMatchMap}
+              depth={0}
+            />
+          ))}
+        </div>
+      </section>
 
       {createBranchDialog && (
         <CreateBranchDialog
@@ -2592,7 +2435,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           onConfirm={() => void handleBranchGitAction("merge_branch", mergeBranchDialog, selectedCwd, undefined, undefined, undefined, false, mergeTargetBranch)}
         />
       )}
-    </div>
+    </aside>
   );
 }
 
@@ -2750,35 +2593,22 @@ function SessionTreeItem({
 
   return (
     <div>
-      <div style={{ position: "relative" }}>
-        {/* Indent line for child sessions */}
-        {depth > 0 && (
-          <div style={{
-            position: "absolute",
-            left: depth * 12 + 6,
-            top: 0, bottom: 0,
-            width: 1,
-            background: "var(--border)",
-            pointerEvents: "none",
-          }} />
-        )}
-        <SessionItem
-          session={node.session}
-          isSelected={node.session.id === selectedSessionId}
-          isRunning={runningSessionIds.has(node.session.id)}
-          isUnread={unreadSessionIds.has(node.session.id)}
-          onClick={() => onSelectSession(node.session)}
-          onRenamed={onRenamed}
-          onDeleted={(id) => onSessionDeleted?.(id)}
-          onGenerateTitle={onGenerateTitle}
-          titleGenerationStatus={titleGenerationStatus}
-          searchMatch={searchMatch}
-          depth={depth}
-          hasChildren={hasChildren}
-          collapsed={collapsed}
-          onToggleCollapse={() => setCollapsed((v) => !v)}
-        />
-      </div>
+      <SessionItem
+        session={node.session}
+        isSelected={node.session.id === selectedSessionId}
+        isRunning={runningSessionIds.has(node.session.id)}
+        isUnread={unreadSessionIds.has(node.session.id)}
+        onClick={() => onSelectSession(node.session)}
+        onRenamed={onRenamed}
+        onDeleted={onSessionDeleted}
+        onGenerateTitle={onGenerateTitle}
+        titleGenerationStatus={titleGenerationStatus}
+        searchMatch={searchMatch}
+        depth={depth}
+        hasChildren={hasChildren}
+        collapsed={collapsed}
+        onToggleCollapse={() => setCollapsed((v) => !v)}
+      />
       {hasChildren && !collapsed && (
         <div>
           {node.children.map((child) => (
@@ -2819,24 +2649,7 @@ function RunningSessionIndicator() {
         color: "var(--accent)",
       }}
     >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ display: "block" }}>
-        <g>
-          <path
-            d="M21 12a9 9 0 1 1-3.8-7.4"
-            stroke="currentColor"
-            strokeWidth="2.8"
-            strokeLinecap="round"
-          />
-          <animateTransform
-            attributeName="transform"
-            type="rotate"
-            from="0 12 12"
-            to="360 12 12"
-            dur="0.9s"
-            repeatCount="indefinite"
-          />
-        </g>
-      </svg>
+      <LoaderCircle className={styles.spinner} size={13} strokeWidth={ICON_STROKE} aria-hidden="true" />
     </span>
   );
 }
@@ -2857,13 +2670,7 @@ function UnreadSessionIndicator() {
         color: "#0891b2",
       }}
     >
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ display: "block" }}>
-        <circle cx="7" cy="7" r="2.5" fill="currentColor" />
-        <circle cx="7" cy="7" r="3" stroke="currentColor" strokeWidth="1.4" opacity="0.32">
-          <animate attributeName="r" values="3;6;3" dur="1.6s" repeatCount="indefinite" />
-          <animate attributeName="opacity" values="0.32;0;0.32" dur="1.6s" repeatCount="indefinite" />
-        </circle>
-      </svg>
+      <span className={styles.unreadDot} aria-hidden="true" />
     </span>
   );
 }
@@ -2953,7 +2760,6 @@ function SessionItem({
   onToggleCollapse?: () => void;
 }) {
   const { t } = useI18n();
-  const [hovered, setHovered] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -3051,58 +2857,15 @@ function SessionItem({
     e.stopPropagation();
   }, [onRenamed, session.cwd, session.id, session.name, session.path]);
 
-  // Fixed-height outer wrapper — content swaps in place so the list never reflows
-  const ITEM_HEIGHT = 54;
-  // Transparent gap between rows: the row already insets itself 6px on the
-  // left/right (`marginInline`), so it needs the same breathing room on top and
-  // bottom — otherwise the 6px rounded rects collide vertically while sitting
-  // loose horizontally. Visual height 50 + a 2px gap keeps the old 54px rhythm.
-  const ITEM_GAP = 4;
-  // Collapse toggle (20px) + the row's 6px gap + its 8px right padding
-  const ACTION_LAYER_RIGHT_WITH_TOGGLE = 34;
-  // Hover actions sit in their own overlay layer, so the fade behind them must
-  // match the background of the row they cover.
-  const rowBackground = confirmDelete
-    ? "rgba(239,68,68,0.06)"
-    : isSelected ? "var(--bg-selected)" : hovered ? "var(--bg-hover)" : "transparent";
-  // When the layer is pinned by a title-generation status the row is not hovered,
-  // so its own background is transparent — fall back to the list's panel colour.
-  const actionLayerBackdrop = rowBackground === "transparent" ? "var(--bg-panel)" : rowBackground;
-
   return (
     <div
-      onClick={confirmDelete || renaming ? undefined : onClick}
+      className={styles.sessionRow}
+      data-current={isSelected}
+      data-delete={confirmDelete}
+      data-deleting={deleting}
+      data-forks={hasChildren}
+      style={{ "--fork-indent": `${Math.min(depth, 3) * 10}px` } as CSSProperties}
       onContextMenu={confirmDelete || renaming ? undefined : handleContextMenu}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => { setHovered(false); }}
-      style={{
-        height: ITEM_HEIGHT - ITEM_GAP,
-        marginInline: 6,
-        marginBlock: ITEM_GAP / 2,
-        boxSizing: "border-box",
-        display: "flex",
-        alignItems: "center",
-        paddingLeft: depth > 0 ? depth * 12 + 16 : 16,
-        paddingRight: 8,
-        borderRadius: 6,
-        cursor: confirmDelete || renaming ? "default" : "pointer",
-        // Positioning context for the action overlay below
-        position: "relative",
-        background: rowBackground,
-        // The selected / delete accent is an inset ring instead of a
-        // `border-left`. WebKit also paints a hairline of a one-sided border
-        // around the whole rounded box, and since the row background covers
-        // only its rounded shape, that hairline showed up as stray accent
-        // arcs in the top-right / bottom-right corners. Padding-left above
-        // absorbs the 2px the removed border used to occupy.
-        boxShadow: confirmDelete
-          ? "inset 2px 0 0 0 #ef4444"
-          : isSelected ? "inset 2px 0 0 0 var(--accent)" : "none",
-        transition: "background 0.1s, box-shadow 0.1s",
-        opacity: deleting ? 0.5 : 1,
-        gap: 6,
-        overflow: "hidden",
-      }}
     >
       {confirmDelete ? (
         /* ── Delete confirmation: same height, two flat buttons ── */
@@ -3110,37 +2873,11 @@ function SessionItem({
           <div style={{ flex: 1, minWidth: 0, fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {t("sidebar.deleteSession", { title: title.slice(0, 22) + (title.length > 22 ? "…" : "") })}
           </div>
-          <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
-            <button
-              onClick={handleDeleteConfirm}
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
-                height: 30, padding: "0 11px",
-                background: "#ef4444", border: "none",
-                borderRadius: 6, color: "#fff",
-                cursor: "pointer", fontSize: 12, fontWeight: 600,
-                whiteSpace: "nowrap",
-              }}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-                <path d="M10 11v6M14 11v6" />
-                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-              </svg>
+          <div className={styles.deleteActions}>
+            <button type="button" onClick={handleDeleteConfirm} className={styles.confirmDelete}>
               {t("sidebar.delete")}
             </button>
-            <button
-              onClick={handleDeleteCancel}
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
-                height: 30, padding: "0 11px",
-                background: "var(--bg)", border: "1px solid var(--border)",
-                borderRadius: 6, color: "var(--text-muted)",
-                cursor: "pointer", fontSize: 12, fontWeight: 500,
-                whiteSpace: "nowrap",
-              }}
-            >
+            <button type="button" onClick={handleDeleteCancel} className={styles.cancelDelete} autoFocus>
               {t("sidebar.cancel")}
             </button>
           </div>
@@ -3156,121 +2893,59 @@ function SessionItem({
             if (e.key === "Enter") commitRename();
             if (e.key === "Escape") setRenaming(false);
           }}
+          aria-label={t("sidebar.rename")}
+          className={styles.renameInput}
           autoFocus
-          style={{
-            flex: 1,
-            fontSize: 12,
-            padding: "5px 8px",
-            border: "1px solid var(--accent)",
-            borderRadius: 5,
-            outline: "none",
-            background: "var(--bg)",
-            color: "var(--text)",
-            height: 30,
-          }}
         />
       ) : (
-        /* ── Normal view ── */
         <>
-          {/* Fork indicator for child sessions */}
-          {depth > 0 && (
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-              <line x1="6" y1="3" x2="6" y2="15" />
-              <circle cx="18" cy="6" r="3" />
-              <circle cx="6" cy="18" r="3" />
-              <path d="M18 9a9 9 0 0 1-9 9" />
-            </svg>
-          )}
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 5,
-                minWidth: 0,
-                fontSize: 12,
-                fontWeight: isSelected ? 500 : 400,
-                lineHeight: 1.4,
-                color: "var(--text)",
-              }}
-              title={title}
-            >
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                {title}
+          <button type="button" className={styles.sessionTarget} onClick={onClick} aria-current={isSelected ? "true" : undefined} disabled={deleting}>
+            {depth > 0
+              ? <GitBranch size={14} strokeWidth={ICON_STROKE} className={styles.sessionGlyph} aria-hidden="true" />
+              : <MessageSquare size={14} strokeWidth={ICON_STROKE} className={styles.sessionGlyph} aria-hidden="true" />}
+            <span className={styles.sessionCopy}>
+              <span className={styles.sessionTitle} title={title}>{title}</span>
+              <span className={styles.sessionMeta}>
+                {searchMatch ? (
+                  <span title={searchMatch}>{searchMatch}</span>
+                ) : isRunning ? (
+                  <RunningSessionIndicator />
+                ) : isUnread ? (
+                  <UnreadSessionIndicator />
+                ) : (
+                  <time dateTime={session.modified} title={session.modified}>{formatRelativeTime(session.modified)}</time>
+                )}
+                {!searchMatch && <span>{t("sidebar.messagesCount", { count: session.messageCount })}</span>}
+                {!searchMatch && session.worktreeBranch && (
+                  <span title={session.cwd} className={styles.sessionBranch}>
+                    <GitBranch size={10} strokeWidth={ICON_STROKE} aria-hidden="true" />
+                    <span>{session.worktreeBranch}</span>
+                  </span>
+                )}
               </span>
-            </div>
-            <div style={{ marginTop: 2, display: "flex", alignItems: "center", gap: 8, color: "var(--text-dim)", fontSize: 11, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden" }}>
-              {searchMatch ? (
-                <span title={searchMatch} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                  {searchMatch}
-                </span>
-              ) : isRunning ? (
-                <RunningSessionIndicator />
-              ) : isUnread ? (
-                <UnreadSessionIndicator />
-              ) : (
-                <span title={session.modified} style={{ flexShrink: 0 }}>{formatRelativeTime(session.modified)}</span>
-              )}
-              {!searchMatch && <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{t("sidebar.messagesCount", { count: session.messageCount })}</span>}
-              {!searchMatch && session.worktreeBranch && (
-                <span
-                  title={`Worktree: ${session.cwd}`}
-                  style={{ display: "flex", alignItems: "center", gap: 3, color: "var(--accent)", minWidth: 0, overflow: "hidden" }}
-                >
-                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                    <line x1="6" y1="3" x2="6" y2="15" />
-                    <circle cx="18" cy="6" r="3" />
-                    <circle cx="6" cy="18" r="3" />
-                    <path d="M18 9a9 9 0 0 1-9 9" />
-                  </svg>
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.worktreeBranch}</span>
-                </span>
-              )}
-            </div>
-          </div>
+            </span>
+          </button>
 
-          {/* Collapse toggle — always visible when has children */}
           {hasChildren && (
             <button
-              onClick={(e) => { e.stopPropagation(); onToggleCollapse?.(); }}
-              title={collapsed ? "Expand forks" : "Collapse forks"}
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
-                width: 20, height: 20, padding: 0, flexShrink: 0,
-                background: "none", border: "none",
-                color: "var(--text-dim)", cursor: "pointer",
-                transform: collapsed ? "rotate(-90deg)" : "none",
-                transition: "transform 0.15s",
-              }}
+              type="button"
+              className={`${styles.iconButton} ${styles.forkToggle}`}
+              onClick={onToggleCollapse}
+              aria-expanded={!collapsed}
+              aria-label={t(collapsed ? "sidebar.expandForks" : "sidebar.collapseForks")}
+              title={t(collapsed ? "sidebar.expandForks" : "sidebar.collapseForks")}
             >
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="2 3.5 5 6.5 8 3.5" />
-              </svg>
+              <ChevronDown size={13} strokeWidth={ICON_STROKE} aria-hidden="true" />
             </button>
           )}
 
-          {/* Action buttons — an overlay layer pinned to the right edge. They must
-              never take part in the row's flex layout: doing so squeezed the
-              title/meta column and wrapped it on every hover. */}
-          {(hovered || titleStatus) && !session.transient && (
-            <div
-              style={{
-                position: "absolute",
-                top: 0,
-                bottom: 0,
-                right: hasChildren ? ACTION_LAYER_RIGHT_WITH_TOGGLE : 8,
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-                flexShrink: 0,
-                paddingLeft: 16,
-                // Fade the covered text out instead of hiding it with a hard edge
-                background: `linear-gradient(to right, transparent, ${actionLayerBackdrop} 16px)`,
-              }}
-            >
+          {/* 操作浮层不参与桌面行布局，鼠标移入时标题不会突然缩短。 */}
+          {!session.transient && !deleting && (
+            <div className={styles.sessionActions} data-status={titleStatus?.kind}>
               <button
-                onClick={(event) => {
-                  event.stopPropagation();
+                type="button"
+                className={styles.iconButton}
+                onClick={() => {
                   if (canGenerateTitle) onGenerateTitle?.(session.id);
                 }}
                 disabled={!canGenerateTitle}
@@ -3284,95 +2959,18 @@ function SessionItem({
                         ? t("title.updated")
                         : t("title.generateSession")}
                 aria-label={titleStatus?.kind === "naming" ? t("title.generating") : t("title.generate")}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  width: 32, height: 32, padding: 0,
-                  background: "transparent", border: "none",
-                  borderRadius: 7,
-                  color: titleStatus?.kind === "error"
-                    ? "#dc2626"
-                    : titleStatus?.kind === "success"
-                      ? "var(--accent)"
-                      : canGenerateTitle ? "var(--text)" : "var(--text-dim)",
-                  cursor: canGenerateTitle ? "pointer" : "not-allowed",
-                  opacity: canGenerateTitle || titleStatus ? 1 : 0.45,
-                  flexShrink: 0,
-                  transition: "background 0.12s, color 0.12s",
-                }}
-                onMouseEnter={(event) => {
-                  if (canGenerateTitle) event.currentTarget.style.background = "var(--bg-selected)";
-                }}
-                onMouseLeave={(event) => {
-                  event.currentTarget.style.background = "transparent";
-                }}
               >
-                {titleStatus?.kind === "naming" ? (
-                  <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" opacity="0.25" />
-                    <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                  </svg>
-                ) : titleStatus?.kind === "success" ? (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <polyline points="20 6 9 17 4 12" />
-                  </svg>
-                ) : (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="m15 4 5 5L7 22l-5-5Z" />
-                    <path d="m14 5 5 5" />
-                    <path d="M6 4V2M5 3H3M19 19v3M17.5 20.5h3" />
-                  </svg>
-                )}
+                {titleStatus?.kind === "naming"
+                  ? <LoaderCircle className={styles.spinner} size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+                  : titleStatus?.kind === "success"
+                    ? <Check size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+                    : <WandSparkles size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />}
               </button>
-              <button
-                onClick={startRename}
-                title={t("sidebar.rename")}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  width: 32, height: 32, padding: 0,
-                  background: "transparent", border: "none",
-                  borderRadius: 7, color: "var(--text)",
-                  cursor: "pointer", flexShrink: 0,
-                  transition: "background 0.12s, color 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "var(--bg-selected)";
-                  e.currentTarget.style.color = "var(--accent)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "transparent";
-                  e.currentTarget.style.color = "var(--text)";
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
-                </svg>
+              <button type="button" className={styles.iconButton} onClick={startRename} title={t("sidebar.rename")} aria-label={t("sidebar.rename")}>
+                <Pencil size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
               </button>
-              <button
-                onClick={handleDeleteClick}
-                title={t("sidebar.deleteWithShiftClick")}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  width: 32, height: 32, padding: 0,
-                  background: "transparent", border: "none",
-                  borderRadius: 7, color: "var(--text)",
-                  cursor: "pointer", flexShrink: 0,
-                  transition: "background 0.12s, color 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "rgba(239,68,68,0.08)";
-                  e.currentTarget.style.color = "#ef4444";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "transparent";
-                  e.currentTarget.style.color = "var(--text)";
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="3 6 5 6 21 6" />
-                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-                  <path d="M10 11v6M14 11v6" />
-                  <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-                </svg>
+              <button type="button" className={`${styles.iconButton} ${styles.deleteIcon}`} onClick={handleDeleteClick} title={t("sidebar.deleteWithShiftClick")} aria-label={t("sidebar.delete")}>
+                <Trash2 size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
               </button>
             </div>
           )}
