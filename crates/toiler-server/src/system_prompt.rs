@@ -192,7 +192,7 @@ impl PromptInputs {
         Some(format!("{}\n\n{}", lines.join("\n"), tail))
     }
 
-    /// `<rules>`：各工具自带的行为准则 + 两条通用准则。
+    /// `<rules>`：各工具自带的行为准则 + 不依赖工具的通用准则。
     ///
     /// 去重顺序与 pi 的 `buildRules` 一致：条件规则 → 工具准则（按工具顺序）
     /// → 通用准则。`bash` 的「用 bash 做 ls/rg/find」只在没有 grep/find/ls
@@ -220,6 +220,21 @@ impl PromptInputs {
                 }
             }
         }
+        push(if locale.zh() {
+            "以可核实的事实为依据：先查阅相关代码、接口契约、文档或工具输出；区分已证实的事实与待验证的推断，不编造实现细节或根因。关键信息无法核实时，明确说明不确定之处；若会实质影响实现，先向用户澄清。"
+        } else {
+            "Ground conclusions in verifiable evidence: inspect relevant code, contracts, documentation, or tool output. Distinguish confirmed facts from unverified inferences; do not invent implementation details or root causes. State what you cannot verify and ask for clarification if it materially affects the implementation."
+        });
+        push(if locale.zh() {
+            "按用户明确的需求和约束精准实现：做足以满足需求的最小改动，保留无关行为，不擅自扩展范围或重构。"
+        } else {
+            "Implement the user's stated requirements and constraints precisely: make the smallest change that fully satisfies the request, preserve unrelated behavior, and avoid unrequested scope expansion or refactoring."
+        });
+        push(if locale.zh() {
+            "交付前用相关检查验证改动；如实报告通过、失败及未执行的检查，不把未验证的结果说成已通过。"
+        } else {
+            "Verify changes with relevant checks before handing them off. Report what passed, what failed, and what was not run; never claim that an unrun check passed."
+        });
         push(if locale.zh() {
             "回答应简洁明了"
         } else {
@@ -517,12 +532,12 @@ const TOOL_PROMPTS: &[ToolPrompt] = &[
     },
 ];
 
-/// 开场白（文案取自 pi 的默认 preamble，只把框架名换成 toiler）。
+/// 开场白：保留 pi 的角色和工具描述，并明确首席工程师的工作标准。
 fn preamble(locale: Locale) -> &'static str {
     if locale.zh() {
-        "你是运行在 toiler 编程代理框架中的专业编程助手。你通过读取文件、执行命令、编辑代码和创建新文件来帮助用户。"
+        "你是运行在 toiler 编程代理框架中的专业编程助手，以首席工程师的标准开展工作。你通过读取文件、执行命令、编辑代码和创建新文件来帮助用户。"
     } else {
-        "You are an expert coding assistant operating inside toiler, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files."
+        "You are an expert coding assistant operating inside toiler, a coding agent harness. Work to the standards of a principal engineer. You help users by reading files, executing commands, editing code, and writing new files."
     }
 }
 
@@ -642,6 +657,41 @@ mod tests {
         prompt_inputs.skills = vec![skill("demo-skill", "演示用技能", false)];
         let prompt = prompt_inputs.compose(Locale::ZhCn);
         assert!(!prompt.contains("<skills>"), "{prompt}");
+    }
+
+    /// 首席工程师的工作标准是通用准则，不依赖任何工具。
+    #[test]
+    fn engineering_standards_apply_in_both_locales_without_tools() {
+        let prompt_inputs = inputs(Vec::new(), Vec::new());
+        for (locale, role, rules) in [
+            (
+                Locale::ZhCn,
+                "以首席工程师的标准开展工作",
+                [
+                    "以可核实的事实为依据",
+                    "按用户明确的需求和约束精准实现",
+                    "如实报告通过、失败及未执行的检查",
+                ],
+            ),
+            (
+                Locale::En,
+                "Work to the standards of a principal engineer",
+                [
+                    "Ground conclusions in verifiable evidence",
+                    "Implement the user's stated requirements and constraints precisely",
+                    "Report what passed, what failed, and what was not run",
+                ],
+            ),
+        ] {
+            let prompt = prompt_inputs.compose(locale);
+            assert!(!prompt.contains("<tools>"));
+            let (preamble, rest) = prompt.split_once("<rules>\n").expect("rules 段");
+            assert!(preamble.contains(role), "{preamble}");
+            let (body, _) = rest.split_once("\n</rules>").expect("rules 段结束");
+            for rule in rules {
+                assert!(body.contains(rule), "缺少准则 {rule}：{body}");
+            }
+        }
     }
 
     #[test]
