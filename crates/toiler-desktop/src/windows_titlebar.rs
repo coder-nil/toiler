@@ -21,7 +21,8 @@ use windows_sys::Win32::{
         WindowsAndMessaging::{
             GetWindowLongW, SetWindowLongW, SetWindowPos, SystemParametersInfoW, GWL_STYLE,
             SPI_GETHIGHCONTRAST, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-            SWP_NOSIZE, SWP_NOZORDER, WM_NCDESTROY, WM_STYLECHANGING, WS_CAPTION,
+            SWP_NOSIZE, SWP_NOZORDER, WM_NCACTIVATE, WM_NCDESTROY, WM_NCPAINT, WM_STYLECHANGING,
+            WS_CAPTION,
         },
     },
 };
@@ -40,15 +41,25 @@ unsafe extern "system" fn custom_caption_proc(
     id: usize,
     _data: usize,
 ) -> LRESULT {
-    // SAFETY: 仅处理 Win32 样式消息携带的有效 STYLESTRUCT；不保存指针，其他消息照常传递。
+    // SAFETY: STYLESTRUCT 仅在处理对应消息时有效；不保存指针。其它消息传给 Tao。
     unsafe {
-        if message == WM_STYLECHANGING && wparam as i32 == GWL_STYLE && lparam != 0 {
-            let styles = &mut *(lparam as *mut STYLESTRUCT);
-            styles.styleNew = without_caption(styles.styleNew);
-        } else if message == WM_NCDESTROY {
-            RemoveWindowSubclass(hwnd, Some(custom_caption_proc), id);
+        match message {
+            // Tao 已用 WM_NCCALCSIZE 把标题栏区域交给 WebView，不再让 Win32 重绘旧窗框。
+            WM_NCPAINT => 0,
+            // -1 只禁止 DefWindowProc 重绘，仍让 Tao 处理激活状态与焦点事件。
+            WM_NCACTIVATE => DefSubclassProc(hwnd, message, wparam, -1),
+            WM_STYLECHANGING if wparam as i32 == GWL_STYLE && lparam != 0 => {
+                let result = DefSubclassProc(hwnd, message, wparam, lparam);
+                let styles = &mut *(lparam as *mut STYLESTRUCT);
+                styles.styleNew = without_caption(styles.styleNew);
+                result
+            }
+            WM_NCDESTROY => {
+                RemoveWindowSubclass(hwnd, Some(custom_caption_proc), id);
+                DefSubclassProc(hwnd, message, wparam, lparam)
+            }
+            _ => DefSubclassProc(hwnd, message, wparam, lparam),
         }
-        DefSubclassProc(hwnd, message, wparam, lparam)
     }
 }
 
@@ -57,7 +68,11 @@ unsafe extern "system" fn custom_caption_proc(
 /// 所以不能只在建窗时清一次。保留其它样式，避免影响边缘缩放和系统菜单。
 pub fn install_custom_caption(window: &tauri::WebviewWindow) -> Result<(), String> {
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0 as HWND;
-    // SAFETY: hwnd 由 Tauri 提供；窗口在当前线程创建；回调不持有借用或外部状态。
+    install_custom_caption_on_hwnd(hwnd)
+}
+
+fn install_custom_caption_on_hwnd(hwnd: HWND) -> Result<(), String> {
+    // SAFETY: 仅用于当前线程拥有的有效 HWND；回调不持有借用或外部状态。
     unsafe {
         if SetWindowSubclass(hwnd, Some(custom_caption_proc), CUSTOM_CAPTION_SUBCLASS, 0) == 0 {
             return Err("无法安装窗口标题栏样式回调".into());
@@ -222,13 +237,93 @@ pub fn clear(window: &tauri::WebviewWindow) {
 mod tests {
     use super::*;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        WS_MAXIMIZE, WS_MAXIMIZEBOX, WS_MINIMIZE, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
-        WS_VISIBLE,
+        CreateWindowExW, DestroyWindow, SendMessageW, WS_MAXIMIZE, WS_MAXIMIZEBOX, WS_MINIMIZE,
+        WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
     };
+
+    const WINDOW_FEATURES: u32 = WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+
+    struct TestWindow(HWND);
+
+    impl Drop for TestWindow {
+        fn drop(&mut self) {
+            // SAFETY: 测试窗口在当前测试线程创建，且未交给其它所有者。
+            unsafe { DestroyWindow(self.0) };
+        }
+    }
+
+    unsafe extern "system" fn observe_frame_messages(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> LRESULT {
+        match message {
+            WM_NCPAINT => 42,
+            WM_NCACTIVATE if lparam == -1 => 43,
+            WM_NCACTIVATE => 44,
+            // SAFETY: 其它消息沿原窗口回调链传递，不读取参数指针。
+            _ => unsafe { DefSubclassProc(hwnd, message, wparam, lparam) },
+        }
+    }
+
+    #[test]
+    fn windows_caption_subclass_blocks_frame_paint_but_forwards_activation() {
+        // 使用隐藏的测试 HWND 验证实际 Win32 消息链，不启动应用或依赖 WebView2。
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        // SAFETY: 系统预注册的 STATIC 类名以 NUL 结尾；未传入父窗口或创建数据。
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                std::ptr::null(),
+                WS_CAPTION | WINDOW_FEATURES,
+                0,
+                0,
+                400,
+                300,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                std::ptr::null(),
+            )
+        };
+        assert!(!hwnd.is_null(), "{}", std::io::Error::last_os_error());
+        let _window = TestWindow(hwnd);
+        // SAFETY: HWND 归当前线程；两条非客户区消息都不携带指针。
+        unsafe {
+            assert_ne!(
+                SetWindowSubclass(hwnd, Some(observe_frame_messages), 1, 0),
+                0
+            );
+            assert_eq!(SendMessageW(hwnd, WM_NCPAINT, 1, 0), 42);
+            assert_eq!(SendMessageW(hwnd, WM_NCACTIVATE, 1, 0), 44);
+
+            install_custom_caption_on_hwnd(hwnd).unwrap();
+            assert_eq!(GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION, 0);
+            assert_eq!(SendMessageW(hwnd, WM_NCPAINT, 1, 0), 0);
+            for active in [0, 1] {
+                assert_eq!(SendMessageW(hwnd, WM_NCACTIVATE, active, 0), 43);
+            }
+            // 模拟 Tao 在最大化或还原时重写样式，不把系统标题栏带回来。
+            for state in [WS_MAXIMIZE, 0] {
+                let style = WS_CAPTION | WINDOW_FEATURES | state;
+                assert_ne!(SetWindowLongW(hwnd, GWL_STYLE, style as i32), 0);
+                let actual = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                assert_eq!(actual & WS_CAPTION, 0);
+                assert_eq!(
+                    actual & (WINDOW_FEATURES | WS_MAXIMIZE),
+                    WINDOW_FEATURES | state
+                );
+            }
+        }
+    }
 
     #[test]
     fn tao_style_updates_keep_window_features_without_system_caption() {
-        let features = WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+        let features = WINDOW_FEATURES;
         for state in [
             0,
             WS_VISIBLE,

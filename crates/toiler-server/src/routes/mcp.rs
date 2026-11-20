@@ -533,7 +533,8 @@ fn body_has_jsonrpc(body: &str) -> bool {
 /// `command --version` 能跑起来就算「已配置」（进程在真正用到工具时才由 MCP
 /// 插件拉起 —— 本仓库不加载插件，这层如实说明）。
 async fn probe_command(name: &str, command: &str) -> Value {
-    let mut cmd = tokio::process::Command::new(command);
+    // 走统一封装：Windows 上后台探测也不能弹控制台窗口。
+    let mut cmd = crate::process::tokio_command(command);
     cmd.arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())

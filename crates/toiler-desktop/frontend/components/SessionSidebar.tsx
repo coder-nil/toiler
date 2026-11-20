@@ -129,7 +129,7 @@ interface Props {
   /** Fired when sessions that are not currently selected finish running. */
   onBackgroundTaskDone?: (sessions: SessionInfo[]) => void;
   onRunningSessionIdsChange?: (ids: Set<string>) => void;
-  onProjectGitStateChange?: (isGit: boolean | null) => void;
+  onProjectGitStateChange?: (isGit: boolean | null, gitAvailable?: boolean) => void;
   onGenerateTitle?: (sessionId: string) => void;
   titleGenerationStatus?: {
     sessionId: string;
@@ -163,6 +163,9 @@ interface WorktreeState {
   /** Stable server-computed identity; never derive OS path semantics here. */
   projectKey: string;
   isGit: boolean;
+  /** 本机有没有 git。false 时 `isGit` 必然是 false，但两者含义不同：
+   *  一个是「目录没初始化」，一个是「根本没装工具」，界面要分开提示。 */
+  gitAvailable: boolean;
   /** False when forCwd is a repo subdirectory — the switcher is hidden there
    *  because subdir sessions keep their own project identity */
   isTopLevel: boolean;
@@ -914,7 +917,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     setWorktreeLoadingCwd(selectedCwd);
     fetch(`/api/worktrees?cwd=${encodeURIComponent(selectedCwd)}`)
       .then((r) => r.json())
-      .then((d: { projectRoot?: string; projectKey?: string; isGit?: boolean; isTopLevel?: boolean; currentWorktreePath?: string | null; worktrees?: WorktreeEntry[]; branches?: string[]; remoteBranches?: string[]; error?: string }) => {
+      .then((d: { projectRoot?: string; projectKey?: string; isGit?: boolean; gitAvailable?: boolean; isTopLevel?: boolean; currentWorktreePath?: string | null; worktrees?: WorktreeEntry[]; branches?: string[]; remoteBranches?: string[]; error?: string }) => {
         if (cancelled) return;
         setWorktreeLoadingCwd(null);
         if (d.error || !d.projectRoot) {
@@ -926,6 +929,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           projectRoot: d.projectRoot,
           projectKey: d.projectKey ?? d.projectRoot,
           isGit: d.isGit ?? false,
+          // 缺省当成「有 git」：老服务端不返回这个字段时，行为与以前一致。
+          gitAvailable: d.gitAvailable ?? true,
           isTopLevel: d.isTopLevel ?? false,
           currentWorktreePath: d.currentWorktreePath ?? null,
           worktrees: d.worktrees ?? [],
@@ -949,6 +954,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     }
     onProjectGitStateChange?.(
       worktreeState?.forCwd === selectedCwd ? worktreeState.isGit : null,
+      worktreeState?.forCwd === selectedCwd ? worktreeState.gitAvailable : undefined,
     );
   }, [onProjectGitStateChange, selectedCwd, worktreeLoadingCwd, worktreeState]);
 

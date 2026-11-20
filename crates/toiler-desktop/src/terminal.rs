@@ -66,7 +66,7 @@ impl Drop for TerminalSession {
         }
         #[cfg(windows)]
         if let Some(pid) = self.child.process_id() {
-            let _ = crate::hidden_command("taskkill")
+            let _ = toiler_server::process::command("taskkill")
                 .args(["/PID", &pid.to_string(), "/T", "/F"])
                 .status();
         }

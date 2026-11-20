@@ -45,26 +45,37 @@ pub async fn get(
     }
     let query: String = params.q.unwrap_or_default().chars().take(500).collect();
     // Git 会应用 .gitignore；非仓库或 git 不可用时退回有限扫描。
-    let listing = tokio::time::timeout(
-        Duration::from_secs(10),
-        tokio::process::Command::from(crate::gitsvc::git_command())
-            .arg("-C")
-            .arg(&cwd)
-            .args([
-                "ls-files",
-                "--cached",
-                "--others",
-                "--exclude-standard",
-                "-z",
-            ])
-            .env("LC_ALL", "C")
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
-    let (files, truncated) = match listing {
-        Ok(Ok(output)) if output.status.success() => {
-            let paths: BTreeSet<_> = String::from_utf8_lossy(&output.stdout)
+    // 没有 git 时连 spawn 都跳过，直接走扫描（它本来就会带上忽略规则）。
+    let listed: Option<String> = if crate::gitsvc::git_available() {
+        match tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::process::Command::from(crate::gitsvc::git_command())
+                .arg("-C")
+                .arg(&cwd)
+                .args([
+                    "ls-files",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                    "-z",
+                ])
+                .env("LC_ALL", "C")
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        {
+            Ok(Ok(output)) if output.status.success() => {
+                Some(String::from_utf8_lossy(&output.stdout).to_string())
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let (files, truncated) = match listed {
+        Some(stdout) => {
+            let paths: BTreeSet<_> = stdout
                 .split('\0')
                 .filter(|v| !v.is_empty() && safe_relative(v))
                 .take(200_001)
@@ -76,7 +87,7 @@ pub async fn get(
                 truncated,
             )
         }
-        _ => match tokio::task::spawn_blocking(move || scan(&cwd)).await {
+        None => match tokio::task::spawn_blocking(move || scan(&cwd)).await {
             Ok(listing) => listing,
             Err(_) => return error(StatusCode::INTERNAL_SERVER_ERROR, "文件索引扫描失败"),
         },

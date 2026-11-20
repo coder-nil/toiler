@@ -133,6 +133,10 @@ pub fn prepare_state(options: &BootOptions) -> Result<AppState> {
     std::fs::create_dir_all(&options.sessions_root)
         .with_context(|| format!("创建会话根 {} 失败", options.sessions_root.display()))?;
 
+    // 启动时探测一次本机 git：缺失时后续所有 git 调用直接短路，不再 spawn
+    // 进程，日志里也留一条可排查的记录（Git 面板会换成安装提示）。
+    crate::gitsvc::probe_git();
+
     let mut catalog = ModelCatalog::load()?;
     catalog.apply_default_hint(last_used_model(&options.sessions_root));
     let default_cwd = options

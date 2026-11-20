@@ -13,3 +13,11 @@ export function isMacPlatform(): boolean {
   const userAgent = navigator.userAgent || "";
   return /mac|iphone|ipad|ipod/i.test(platform) || /mac os x|iphone|ipad/i.test(userAgent);
 }
+
+/** 当前是不是 Windows。只用于选文案（各平台的 Git 安装方式不同）。 */
+export function isWindowsPlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const platform = navigator.platform || "";
+  const userAgent = navigator.userAgent || "";
+  return /win/i.test(platform) || /windows/i.test(userAgent);
+}

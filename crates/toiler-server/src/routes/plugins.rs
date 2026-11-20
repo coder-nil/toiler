@@ -406,7 +406,7 @@ const NPM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// 跑一次 npm，非零退出时把 stderr 尾部原样带回（`ETARGET` 这类信息对用户最有用）。
 async fn run_npm(npm: &Path, args: &[String]) -> Result<(), Failure> {
-    let mut command = tokio::process::Command::new(npm);
+    let mut command = crate::process::tokio_command(npm);
     command
         .args(args)
         .stdin(std::process::Stdio::null())

@@ -26,6 +26,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -57,6 +58,99 @@ fn err(message: impl Into<String>) -> GitError {
     }
 }
 
+/// 探测结果：`None` 表示 git 不在 `PATH` 上（或无法执行）。
+///
+/// 缓存一次就够，后续调用不必反复 spawn 进程：进程启动后 `PATH` 不会再变，
+/// 所以「启动时检查」与「每次现查」语义一致。
+static GIT_PROBE: Mutex<Option<Option<String>>> = Mutex::new(None);
+
+// 测试专用的线程本地覆盖。
+//
+// 不能改上面的全局缓存：`cargo test` 默认多线程并行，一个用例把缓存写成
+// 「没有 git」会让同时跑的其它 git 用例集体失败。线程本地只影响当前用例。
+// （用普通注释而非 `///`：rustdoc 不为宏调用生成文档，写 `///` 会告警。）
+#[cfg(test)]
+thread_local! {
+    static GIT_PROBE_OVERRIDE: std::cell::RefCell<Option<Option<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 启动时探测一次本机 git，并在不可用时打一条明确的日志。
+///
+/// 返回 `true` 表示 git 可用。探测失败后所有 git 调用会直接返回错误，
+/// 不再 spawn 进程。
+pub fn probe_git() -> bool {
+    match git_version() {
+        Some(version) => {
+            tracing::info!("Git 可用：{version}");
+            true
+        }
+        None => {
+            tracing::warn!("未检测到 Git：Git 面板将显示安装指引，相关接口不会再调用 git 命令");
+            false
+        }
+    }
+}
+
+/// `git --version` 的输出（缓存后复用，`None` = 不可用）。
+fn git_version() -> Option<String> {
+    #[cfg(test)]
+    if let Some(overridden) = GIT_PROBE_OVERRIDE.with(|cell| cell.borrow().clone()) {
+        return overridden;
+    }
+    let mut cache = GIT_PROBE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(cached) = cache.as_ref() {
+        return cached.clone();
+    }
+    let probed = probe_git_version();
+    *cache = Some(probed.clone());
+    probed
+}
+
+fn probe_git_version() -> Option<String> {
+    let mut command = git_command();
+    command
+        .arg("--version")
+        .env("LC_ALL", "C")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!version.is_empty()).then_some(version)
+}
+
+/// 本机 git 是否可用（`git --version` 能跑起来）。
+///
+/// 前端拿它决定「显示面板内容」还是「显示安装提示」；后端拿它决定
+/// 要不要真的 spawn git。
+pub fn git_available() -> bool {
+    git_version().is_some()
+}
+
+/// 测试钩子：固定探测结果，用于覆盖「本机没有 git」的分支。
+///
+/// 只影响当前线程，记得用完调 [`clear_git_probe_override_for_tests`] 恢复。
+#[cfg(test)]
+pub(crate) fn set_git_probe_for_tests(value: Option<String>) {
+    GIT_PROBE_OVERRIDE.with(|cell| *cell.borrow_mut() = Some(value));
+}
+
+/// 撤销测试覆盖，回到真实的 `git --version` 探测。
+#[cfg(test)]
+pub(crate) fn clear_git_probe_override_for_tests() {
+    GIT_PROBE_OVERRIDE.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// 把「git 不可用」抄成一个错误（比「git 启动失败」更好读）。
+fn git_missing() -> GitError {
+    err("此系统未安装 Git。Git 相关功能不可用，请先安装 Git 后重启应用。")
+}
+
 /// 跑一条 git 命令，返回 trim 过的 stdout。
 pub fn run_git(cwd: &Path, args: &[&str], timeout: Duration) -> Result<String, GitError> {
     run_git_inner(cwd, args, timeout, &[], true)
@@ -79,17 +173,9 @@ pub fn run_git_with_env(
 
 pub(crate) fn git_command() -> Command {
     // 桌面发布版没有控制台，后台刷新启动 Git 时也不能让 Windows 新建控制台。
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let mut command = Command::new("git");
-        command.creation_flags(CREATE_NO_WINDOW);
-        command
-    }
-    #[cfg(not(windows))]
-    Command::new("git")
+    // 走统一的 [`crate::process`]：全项目一个地方管窗口策略，避免以后
+    // 新增的 git（或其他）调用忘了传标志又闪出黑窗。
+    crate::process::command("git")
 }
 
 fn run_git_inner(
@@ -99,6 +185,11 @@ fn run_git_inner(
     extra_env: &[(&str, String)],
     trim: bool,
 ) -> Result<String, GitError> {
+    // 本机没装 git 时直接返回，不去 spawn。在 Windows 上每次 spawn 找不到
+    // 可执行文件都要把 PATH 扫一遍，面板刷新是高频路径，没必要白花这个代价。
+    if !git_available() {
+        return Err(git_missing());
+    }
     let mut command = git_command();
     command
         .arg("-C")
@@ -558,8 +649,38 @@ pub fn full_status(cwd: &Path) -> Value {
 
 /// [`full_status`] 的可注入版本：测试用临时目录里的凭据文件，不碰用户真实配置。
 pub fn full_status_with_store(cwd: &Path, store: &CredentialStore) -> Value {
+    // 没装 git 时不能报「此目录不是 Git 仓库」：那是两回事，前者需要装
+    // 工具，后者需要 `git init`。前端靠这个字段决定显示哪种提示。
+    if !git_available() {
+        return json!({
+            "gitAvailable": false,
+            "isGitRepository": false,
+            "repositoryRoot": Value::Null,
+            "branch": Value::Null,
+            "upstream": Value::Null,
+            "ahead": 0,
+            "behind": 0,
+            "remote": Value::Null,
+            "credentialKind": "none",
+            "hasSavedCredential": false,
+            "savedCredentialUsername": Value::Null,
+            "canRememberCredential": false,
+            "operation": Value::Null,
+            "branches": [],
+            "tags": [],
+            "changes": {
+                "isGitRepository": false,
+                "repositoryRoot": Value::Null,
+                "files": [],
+                "additions": 0,
+                "deletions": 0,
+            },
+            "untrackedPaths": [],
+        });
+    }
     let Some(root) = repository_root(cwd) else {
         return json!({
+            "gitAvailable": true,
             "isGitRepository": false,
             "repositoryRoot": Value::Null,
             "branch": Value::Null,
@@ -630,6 +751,7 @@ pub fn full_status_with_store(cwd: &Path, store: &CredentialStore) -> Value {
     }
 
     json!({
+        "gitAvailable": true,
         "isGitRepository": true,
         "repositoryRoot": root.to_string_lossy(),
         "branch": branch,
@@ -1391,6 +1513,11 @@ pub fn action(cwd: &Path, body: &Value) -> Result<Value, GitError> {
     if !is_supported_action(action) {
         return Err(err("Unsupported Git action"));
     }
+    // 没装 git 时 `repository_root` 会失败并报成「Not a Git repository」，
+    // 把用户引到错的方向。先把真实原因说清楚。
+    if !git_available() {
+        return Err(git_missing());
+    }
     let root = repository_root(cwd).ok_or_else(|| err("Not a Git repository"))?;
     let lock = repo_lock(&root);
     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -1683,6 +1810,10 @@ pub fn action(cwd: &Path, body: &Value) -> Result<Value, GitError> {
 /// 用户终端里自己跑的 `git push` 也受益。
 fn remember_credential(url: Option<&str>, username: Option<&str>, secret: &str) {
     let Some(url) = url else { return };
+    // 没装 git 就没有 credential helper 这一层，直接跳过。
+    if !git_available() {
+        return;
+    }
     let Some(parsed) = url::Url::parse(url).ok() else {
         return;
     };
@@ -2169,6 +2300,73 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert!(list[0].is_main);
         assert!(current_worktree_path(&list, &dir).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 没装 git 时面板必须能区分「缺工具」与「目录没初始化」。
+    ///
+    /// 两者以前都只能报 `isGitRepository: false`，前端于是显示「此目录不是
+    /// Git 仓库」——用户会去 `git init`，而真正要装的是 git 本身。
+    #[test]
+    fn missing_git_is_reported_separately_from_non_repository() {
+        let dir = temp_repo("nogit-status");
+        set_git_probe_for_tests(None);
+
+        let value = full_status_with_store(&dir, &CredentialStore::default());
+        assert_eq!(value["gitAvailable"], false, "必须报「没装 git」");
+        assert_eq!(value["isGitRepository"], false);
+        // 缺工具时无从得知凭据能力，不应许诺能加密保存
+        assert_eq!(value["canRememberCredential"], false);
+        assert_eq!(value["changes"]["files"].as_array().unwrap().len(), 0);
+
+        clear_git_probe_override_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 没装 git 时 `run_git` 不得 spawn 进程，而是返回可读的错误。
+    #[test]
+    fn missing_git_short_circuits_commands() {
+        let dir = temp_path("nogit-run");
+        set_git_probe_for_tests(None);
+
+        let error = run_git(&dir, &["status"], STATUS_TIMEOUT).unwrap_err();
+        assert!(
+            error.message.contains("未安装 Git"),
+            "错误应直说缺 git，实际：{}",
+            error.message
+        );
+
+        // `repository_root` 不能把「缺 git」误报成「不是仓库」给上层
+        assert!(repository_root(&dir).is_none());
+
+        clear_git_probe_override_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 动作在没有 git 时也要报「缺 git」，而不是「Not a Git repository」。
+    #[test]
+    fn missing_git_action_reports_install_hint() {
+        let dir = temp_path("nogit-action");
+        set_git_probe_for_tests(None);
+
+        let error = action(&dir, &json!({"action": "stage", "paths": []})).unwrap_err();
+        assert!(
+            error.message.contains("未安装 Git"),
+            "动作层也要报缺 git，实际：{}",
+            error.message
+        );
+
+        clear_git_probe_override_for_tests();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 有 git 时正常路径不受影响（防止探测把一切当成不可用）。
+    #[test]
+    fn available_git_reports_repository() {
+        let dir = temp_repo("hasgit-status");
+        let value = full_status_with_store(&dir, &CredentialStore::default());
+        assert_eq!(value["gitAvailable"], true);
+        assert_eq!(value["isGitRepository"], true);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

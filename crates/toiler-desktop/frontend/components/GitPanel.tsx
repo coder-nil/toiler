@@ -7,6 +7,7 @@ import { readApiJson } from "@/lib/api-json";
 import { APPLICATION_VERSION } from "@/lib/changelog";
 import { nextTagName, sortTagsDescending } from "@/lib/git-tags";
 import { CHAT_TOP_BAR_HEIGHT } from "@/lib/panel-layout";
+import { isMacPlatform, isWindowsPlatform } from "@/lib/platform-key";
 import { revealNext } from "@/lib/typewriter";
 import { upgradeProjectVersion, VERSION_UPGRADE_LEVELS, type VersionUpgradeLevel, type VersionUpgradePreview } from "@/lib/version-upgrade";
 import { BranchPicker } from "./BranchPicker";
@@ -23,6 +24,10 @@ type GitFileStatus = {
 };
 
 type GitSummary = {
+  /// 本机能不能跑 `git --version`。false 时整个面板换成安装提示：
+  /// 此时 `isGitRepository` 也是 false，但两者含义完全不同（一个是缺工具，
+  /// 一个是目录没初始化），不能共用一句「不是 Git 仓库」。
+  gitAvailable?: boolean;
   isGitRepository: boolean;
   repositoryRoot: string | null;
   branch: string | null;
@@ -46,6 +51,21 @@ type GitSummary = {
 type Action = "stage" | "unstage" | "discard" | "discard_all" | "commit" | "fetch" | "pull" | "push" | "merge" | "continue" | "abort" | "set_remote_url" | "create_tag" | "delete_tag" | "push_tag" | "push_tags" | "summarize" | `bump_${VersionUpgradeLevel}`;
 
 const SAVED_CREDENTIAL_MASK = "••••••••";
+
+type InstallPlatform = "windows" | "mac" | "linux";
+
+/** 各平台的 Git 安装指引。服务端渲染时 `navigator` 不存在，回落到 linux 文案。 */
+function currentPlatform(): InstallPlatform {
+  if (isWindowsPlatform()) return "windows";
+  if (isMacPlatform()) return "mac";
+  return "linux";
+}
+
+function installHintFor(platform: InstallPlatform): string {
+  if (platform === "windows") return "git.missingWindowsHint";
+  if (platform === "mac") return "git.missingMacHint";
+  return "git.missingLinuxHint";
+}
 
 function fileName(filePath: string): string {
   return filePath.split(/[\\/]/).pop() ?? filePath;
@@ -71,10 +91,14 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
   const [error, setError] = useState<string | null>(null);
   const [checkedUpdate, setCheckedUpdate] = useState(false);
   const [desktop, setDesktop] = useState(false);
+  // 首帧服务端渲染没有 `navigator`，先用 linux 文案占位，挂载后立刻改成真实平台。
+  // 这段只在 git 不可用时的安装提示里用到，改文案不会影响布局。
+  const [platform, setPlatform] = useState<InstallPlatform>("linux");
   const [versionPreview, setVersionPreview] = useState<{ level: VersionUpgradeLevel; data: VersionUpgradePreview } | null>(null);
   const [versionResult, setVersionResult] = useState<string | null>(null);
   const versionDialogRef = useRef<HTMLDivElement>(null);
   useEffect(() => { setDesktop(window.__PI_WEB_DESKTOP__ === true); }, []);
+  useEffect(() => { setPlatform(currentPlatform()); }, []);
   useEffect(() => { if (versionPreview) versionDialogRef.current?.focus(); }, [versionPreview]);
 
   // Prefill the credential form from the encrypted store so users can tell at a
@@ -345,8 +369,15 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
         <main className="git-panel-body" inert={Boolean(versionPreview)}>
           {error && <div role="alert" className="git-alert">{error}{sshAuthFailed && <div className="git-alert-detail">{t("git.sshKeyAuthFailed")}</div>}</div>}
           {!summary && !error && <div className="git-hint">{t("git.loadingRepository")}</div>}
-          {summary && !summary.isGitRepository && <div className="git-hint">{t("git.notRepository")}</div>}
-          {summary?.isGitRepository && <>
+          {summary?.gitAvailable === false && <div className="git-hint" role="alert">
+            <strong style={{ display: "block", marginBottom: 6 }}>{t("git.missingTitle")}</strong>
+            <span style={{ display: "block" }}>{t("git.missingBody")}</span>
+            <span style={{ display: "block", marginTop: 6, color: "var(--text-dim)" }}>
+              {t(installHintFor(platform))}
+            </span>
+          </div>}
+          {summary?.gitAvailable !== false && summary && !summary.isGitRepository && <div className="git-hint">{t("git.notRepository")}</div>}
+          {summary?.gitAvailable !== false && summary?.isGitRepository && <>
             <div className="git-summary">
               <span className="git-summary-label">{t("git.branch")}</span>
               <strong className="git-summary-value" title={summary.branch ?? undefined}>{summary.branch ?? t("git.detachedHead")}</strong>

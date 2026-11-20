@@ -11,7 +11,9 @@
 //!
 //! 手机访问（局域网反向代理 + Cloudflare 隧道）原样保留，见 [`mobile`]。
 
-use std::process::{Child, Command, Stdio};
+use std::process::Child;
+#[cfg(unix)]
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -49,6 +51,9 @@ fn safe_external_url(raw: &str) -> Result<String, String> {
     let url = raw.trim();
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(format!("只允许打开 http/https 链接：{url}"));
+    }
+    if url.contains('\0') {
+        return Err("链接不能包含空字符".into());
     }
     Ok(url.to_string())
 }
@@ -128,33 +133,45 @@ fn open_release_url(url: String) -> Result<(), String> {
     open_url(&safe_external_url(&url)?)
 }
 
+#[cfg(unix)]
 fn open_url(url: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut command = Command::new("open");
-        command.arg(url);
-        command
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
     };
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        // `start` 是 cmd 内建命令，必须经由 cmd /C 调用。
-        let mut command = Command::new("cmd");
-        command.args(["/C", "start", "", url]);
-        command
-    };
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut command = {
-        let mut command = Command::new("xdg-open");
-        command.arg(url);
-        command
-    };
-    command
+    toiler_server::process::command(opener)
+        .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("打开链接失败：{error}"))
+}
+
+#[cfg(windows)]
+fn open_url(url: &str) -> Result<(), String> {
+    use std::ptr::null;
+    use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+
+    // 让系统把链接交给默认浏览器，不再经过 `cmd /C start`。
+    let url: Vec<u16> = url.encode_utf16().chain([0]).collect();
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            null(),
+            url.as_ptr(),
+            null(),
+            null(),
+            SW_SHOWNORMAL,
+        )
+    } as isize;
+    if result > 32 {
+        Ok(())
+    } else {
+        Err(format!("打开链接失败：ShellExecuteW 返回 {result}"))
+    }
 }
 
 /// 顶栏高度（逻辑点）。与前端 `CHAT_TOP_BAR_HEIGHT` 是同一个值，
@@ -536,24 +553,7 @@ fn show_fatal(app: &tauri::AppHandle, message: &str) {
 // 子进程工具（tunnel.rs 用）
 // ---------------------------------------------------------------------------
 
-#[cfg(unix)]
-pub(crate) fn configure_process_group(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    command.process_group(0);
-}
-
-#[cfg(windows)]
-pub(crate) fn configure_process_group(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
-}
-
-#[cfg(windows)]
-const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-/// 先礼后兵：SIGTERM 一组 → 超时 SIGKILL 整组。
+/// 先礼后兵：请求整个进程组退出，超时后强制清理。
 pub(crate) fn terminate_process(child: &mut Child, timeout: Duration) {
     request_graceful_shutdown(child);
     let deadline = Instant::now() + timeout;
@@ -577,7 +577,7 @@ fn request_graceful_shutdown(child: &Child) {
 
 #[cfg(windows)]
 fn request_graceful_shutdown(child: &Child) {
-    let _ = hidden_command("taskkill")
+    let _ = toiler_server::process::command("taskkill")
         .args(["/PID", &child.id().to_string(), "/T"])
         .status();
 }
@@ -591,27 +591,10 @@ fn force_kill(child: &mut Child) {
 
 #[cfg(windows)]
 fn force_kill(child: &mut Child) {
-    let _ = hidden_command("taskkill")
+    let _ = toiler_server::process::command("taskkill")
         .args(["/PID", &child.id().to_string(), "/T", "/F"])
         .status();
     let _ = child.kill();
-}
-
-/// Windows 隐藏命令行窗口，其它平台使用普通进程。
-///
-/// 只在 Windows 分支被调用（`taskkill`），非 Windows 构建里自然未使用。
-/// 原来版本升级桥（已改为纯 Rust）也复用它，所以现在只有 Windows 用得上。
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let mut command = Command::new(program);
-        command.creation_flags(CREATE_NO_WINDOW);
-        command
-    }
-    #[cfg(not(windows))]
-    Command::new(program)
 }
 
 #[cfg(test)]
@@ -624,6 +607,7 @@ mod tests {
         assert!(safe_external_url("http://127.0.0.1:3000").is_ok());
         assert!(safe_external_url("file:///etc/passwd").is_err());
         assert!(safe_external_url("javascript:alert(1)").is_err());
+        assert!(safe_external_url("https://example.com/\0path").is_err());
     }
 
     #[test]

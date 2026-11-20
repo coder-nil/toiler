@@ -128,7 +128,7 @@ pub async fn reveal(
 
 /// 执行一次打开动作，超时即 kill（对应 pi 的 `timeout: 1e4, windowsHide: true`）。
 async fn run_opener(program: &str, args: &[String]) -> std::io::Result<()> {
-    let mut child = tokio::process::Command::new(program)
+    let mut child = crate::process::tokio_command(program)
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

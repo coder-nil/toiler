@@ -62,3 +62,7 @@ pulldown-cmark = { version = "0.13.6", default-features = false, features = ["ht
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# 仅 Windows 测试用：检测后台命令有没有弹出可见控制台窗口
+# （`process.rs` 的 `windows_hidden_commands_do_not_open_console`）。
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

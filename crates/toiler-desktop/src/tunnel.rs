@@ -23,13 +23,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::{configure_process_group, terminate_process};
+use crate::terminate_process;
 
 const CONFIG_POLL_INTERVAL: Duration = Duration::from_millis(400);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -294,7 +294,8 @@ impl TunnelBlock {
 }
 
 /// 从运行态文件里读出上次记录的子进程号（纯函数，便于单测）。
-pub fn read_runtime_pid(raw: &str) -> Option<u32> {
+#[cfg(unix)]
+fn read_runtime_pid(raw: &str) -> Option<u32> {
     let value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
     let pid = value.get("pid").and_then(serde_json::Value::as_u64)?;
     if pid == 0 || pid > u32::MAX as u64 {
@@ -309,7 +310,8 @@ pub fn read_runtime_pid(raw: &str) -> Option<u32> {
 /// 一直挂着（而且下一个实例会把 `pid` 字段覆盖掉，再也找不到它）。
 ///
 /// 只处理**确实是孤儿**的进程：PID 会被操作系统复用，所以必须同时核验命令行里有
-/// `cloudflared`、且父进程已经是 1（被 launchd 收养）。别的实例还活着的子进程不动。
+/// `cloudflared`、且父进程已经是 1。别的实例还活着的子进程不动。
+#[cfg(unix)]
 fn reap_orphaned_child(runtime_path: &Path) {
     let Ok(raw) = std::fs::read_to_string(runtime_path) else {
         return;
@@ -326,15 +328,15 @@ fn reap_orphaned_child(runtime_path: &Path) {
     if parse_process_field(&process_field(pid, "ppid="), true).as_deref() != Some("1") {
         return;
     }
-    #[cfg(unix)]
     unsafe {
         libc::kill(pid as i32, libc::SIGTERM);
     }
 }
 
 /// `ps -p <pid> -o <field>` 的单行输出；进程不存在时是空字符串。
+#[cfg(unix)]
 fn process_field(pid: u32, field: &str) -> String {
-    let output = std::process::Command::new("ps")
+    let output = toiler_server::process::command("ps")
         .args(["-p", &pid.to_string(), "-o", field])
         .output();
     match output {
@@ -344,7 +346,8 @@ fn process_field(pid: u32, field: &str) -> String {
 }
 
 /// `ppid=` 的输出就是父进程号；`command=` 的输出末尾自带换行，都要先去掉。
-pub fn parse_process_field(raw: &str, expect_numeric: bool) -> Option<String> {
+#[cfg(unix)]
+fn parse_process_field(raw: &str, expect_numeric: bool) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -475,13 +478,12 @@ fn spawn_tunnel(binary: &Path, plan: &SpawnPlan, port: u16) -> Result<TunnelChil
         SpawnPlan::Quick => quick_args(port),
         SpawnPlan::Named { generated_config } => named_args(generated_config),
     };
-    let mut command = Command::new(binary);
+    let mut command = toiler_server::process::grouped_command(binary);
     command
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    configure_process_group(&mut command);
     let mut child = command
         .spawn()
         .map_err(|error| format!("could not start cloudflared: {error}"))?;
@@ -569,7 +571,8 @@ pub fn start(
         .name("public-tunnel".to_string())
         .spawn(move || {
             let _ = std::fs::create_dir_all(&tunnel_dir);
-            // 先清上一次留下的孤儿，避免两个 cloudflared 同时控着同一个公网入口。
+            // 查 PPID=1 的逻辑只适用于 Unix；Windows 不该启动 PATH 上的 `ps.exe`。
+            #[cfg(unix)]
             reap_orphaned_child(&runtime_path);
             let mut active: Option<TunnelChild> = None;
             let mut running_signature: Option<RunningSignature> = None;
@@ -854,6 +857,7 @@ mod tests {
         assert!(named.contains(&"/tmp/cloudflared.yml".to_string()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn reads_the_recorded_child_pid_defensively() {
         assert_eq!(read_runtime_pid(r#"{"pid":92921}"#), Some(92921));
@@ -863,6 +867,7 @@ mod tests {
         assert_eq!(read_runtime_pid("not json"), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn parses_ps_output_for_the_orphan_check() {
         assert_eq!(parse_process_field("  1\n", true).as_deref(), Some("1"));

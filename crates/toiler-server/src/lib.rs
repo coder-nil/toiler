@@ -16,6 +16,7 @@ pub mod mobile_view;
 pub mod models_json;
 pub mod oneshot;
 pub mod paths;
+pub mod process;
 pub mod projects;
 pub mod qoder_cn;
 pub mod reasoning_summary;

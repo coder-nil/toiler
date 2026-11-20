@@ -295,7 +295,7 @@ fn time_zone_name(zone_abbrev: Option<&str>) -> String {
 /// 不直接读写注册表：`tzutil` 是官方命令行入口，不需要开额外的依赖或 FFI。
 #[cfg(windows)]
 fn platform_time_zone() -> Option<String> {
-    let output = std::process::Command::new("tzutil")
+    let output = crate::process::command("tzutil")
         .arg("/g")
         .stdin(std::process::Stdio::null())
         .output()

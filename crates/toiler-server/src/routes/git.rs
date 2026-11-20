@@ -340,6 +340,10 @@ pub async fn worktrees_list(
         let is_git = !list.is_empty();
         let current = gitsvc::current_worktree_path(&list, Path::new(&cwd));
         json!({
+            // 本机有没有 git。侧边栏靠它决定底部 Git 按钮要不要出现：
+            // 没装 git 时 `isGit` 永远是 false，若只看 `isGit` 按钮就永远不会
+            // 出现，用户也就看不到面板里那句「请先安装 Git」。
+            "gitAvailable": gitsvc::git_available(),
             "projectRoot": root,
             "projectKey": crate::paths::project_key(&root),
             "isGit": is_git,

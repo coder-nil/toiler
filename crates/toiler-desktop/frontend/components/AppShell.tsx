@@ -174,6 +174,14 @@ export function AppShell() {
    */
   const [gitPanelCwd, setGitPanelCwd] = useState<string | null>(null);
   const [activeProjectIsGit, setActiveProjectIsGit] = useState<boolean | null>(null);
+  /**
+   * 本机有没有 git。`null` = 还没探测出来。
+   *
+   * 没装 git 时 `activeProjectIsGit` 永远是 false，如果只看那个字段，底部 Git
+   * 按钮就永远不会出现，用户也就没有渠道看到面板里那句「请先安装 Git」。所以
+   * 入口条件写成「是仓库或没装 git」，两种情况都能打开面板看说明。
+   */
+  const [gitAvailable, setGitAvailable] = useState<boolean | null>(null);
   const [projectTrust, setProjectTrust] = useState<ProjectTrustStatus | null>(null);
   const [projectTrustDialogOpen, setProjectTrustDialogOpen] = useState(false);
   const [projectTrustBusy, setProjectTrustBusy] = useState(false);
@@ -1193,7 +1201,8 @@ export function AppShell() {
   const windowTitle = activeCwdName ? `${activeCwdName} - Toiler` : "Toiler";
 
   // Git 面板的目标仓库：默认跟随当前项目；从文件浏览器的子项目行打开时指向该子仓库。
-  const gitPanelTargetCwd = gitPanelCwd ?? (activeProjectIsGit === true ? activeCwd : null);
+  // 没装 git 时也传当前目录：面板不会去调用 git，只用这个路径当头部的上下文。
+  const gitPanelTargetCwd = gitPanelCwd ?? (activeProjectIsGit === true || gitAvailable === false ? activeCwd : null);
 
   const closeGitPanel = useCallback(() => {
     setGitPanelOpen(false);
@@ -1216,8 +1225,13 @@ export function AppShell() {
     // an already-open panel mounted until Git detection resolves explicitly
     // to a non-repository result — unless the panel is looking at a sub-project
     // repository, which is a repository regardless of the enclosing project.
-    if (activeProjectIsGit === false && gitPanelCwd === null) setGitPanelOpen(false);
-  }, [activeProjectIsGit, gitPanelCwd]);
+    //
+    // 没装 git 时 `activeProjectIsGit` 也是 false，但那个面板正是用来告诉用户
+    // 「先安装 Git」的，不能因为它不是仓库就自动关掉。
+    if (activeProjectIsGit === false && gitPanelCwd === null && gitAvailable !== false) {
+      setGitPanelOpen(false);
+    }
+  }, [activeProjectIsGit, gitPanelCwd, gitAvailable]);
 
   // 换项目后不再沿用上一个项目里的子仓库，避免面板指向已不可见/已删除的目录。
   useEffect(() => {
@@ -1257,7 +1271,10 @@ export function AppShell() {
         onAtMentions={handleAtMentions}
         onBackgroundTaskDone={handleBackgroundTaskDone}
         onRunningSessionIdsChange={handleRunningSessionIdsChange}
-        onProjectGitStateChange={setActiveProjectIsGit}
+        onProjectGitStateChange={(isGit, available) => {
+          setActiveProjectIsGit(isGit);
+          if (available !== undefined) setGitAvailable(available);
+        }}
         onGenerateTitle={(sessionId) => void handleAutoName(sessionId)}
         titleGenerationStatus={autoNameStatus.kind === "idle" ? null : autoNameStatus}
         appUpdate={appUpdate}
@@ -1308,7 +1325,7 @@ export function AppShell() {
           icon: React.ReactNode;
           iconOnly?: boolean;
           color?: string;
-        }[]).filter(({id}) => id !== "git" || activeProjectIsGit === true).map(({
+        }[]).filter(({id}) => id !== "git" || activeProjectIsGit === true || gitAvailable === false).map(({
                                                                                   id,
                                                                                   label,
                                                                                   title,
