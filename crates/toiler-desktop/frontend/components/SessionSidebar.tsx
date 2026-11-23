@@ -2255,53 +2255,57 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                 <span>{t("files.explorer")}</span>
               </button>
             )}
-            {!gitPanelOpen && <div className={styles.sectionActions}>
-              {explorerOpen && (
+            <div className={styles.sectionActions}>
+              {gitPanelOpen ? (
+                <div className={styles.gitRefreshSlot} ref={setGitRefreshTarget} />
+              ) : (
+                <>
+                  {explorerOpen && (
+                    <ToolbarIconButton
+                      onClick={() => fileExplorerRef.current?.setHideDotDirs((v) => !v)}
+                      title={hideDotDirs ? t("files.showHiddenFiles") : t("files.hideHiddenFiles")}
+                      pressed={hideDotDirs}
+                    >
+                      {hideDotDirs ? <EyeOff size={14} strokeWidth={ICON_STROKE} /> : <Eye size={14} strokeWidth={ICON_STROKE} />}
+                    </ToolbarIconButton>
+                  )}
+                  {explorerOpen && changesCount > 0 && (
+                    <ToolbarIconButton
+                      onClick={() => setChangesCollapsed((v) => !v)}
+                      title={t("sidebar.changedFiles", { count: changesCount })}
+                      pressed={!changesCollapsed}
+                    >
+                      <GitCommitHorizontal size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+                    </ToolbarIconButton>
+                  )}
+                  <ToolbarIconButton
+                    onClick={() => {
+                      setExplorerRefreshTick((tick) => tick + 1);
+                      refreshExplorer();
+                    }}
+                    title={t("sidebar.refreshExplorer")}
+                  >
+                    <RotateCw
+                      key={explorerRefreshTick}
+                      className={explorerRefreshTick > 0 ? REFRESH_SPIN_CLASS : undefined}
+                      size={14}
+                      strokeWidth={ICON_STROKE}
+                      aria-hidden="true"
+                    />
+                  </ToolbarIconButton>
+                </>
+              )}
+              {showExplorerGitButton && (
                 <ToolbarIconButton
-                  onClick={() => fileExplorerRef.current?.setHideDotDirs((v) => !v)}
-                  title={hideDotDirs ? t("files.showHiddenFiles") : t("files.hideHiddenFiles")}
-                  pressed={hideDotDirs}
+                  onClick={toggleGitPanel}
+                  title={t("common.git")}
+                  pressed={gitPanelOpen}
+                  buttonRef={explorerGitButtonRef}
                 >
-                  {hideDotDirs ? <EyeOff size={14} strokeWidth={ICON_STROKE} /> : <Eye size={14} strokeWidth={ICON_STROKE} />}
+                  <GitBranch size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
                 </ToolbarIconButton>
               )}
-              {explorerOpen && changesCount > 0 && (
-                <ToolbarIconButton
-                  onClick={() => setChangesCollapsed((v) => !v)}
-                  title={t("sidebar.changedFiles", { count: changesCount })}
-                  pressed={!changesCollapsed}
-                >
-                  <GitCommitHorizontal size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
-                </ToolbarIconButton>
-              )}
-              <ToolbarIconButton
-                onClick={() => {
-                  setExplorerRefreshTick((tick) => tick + 1);
-                  refreshExplorer();
-                }}
-                title={t("sidebar.refreshExplorer")}
-              >
-                <RotateCw
-                  key={explorerRefreshTick}
-                  className={explorerRefreshTick > 0 ? REFRESH_SPIN_CLASS : undefined}
-                  size={14}
-                  strokeWidth={ICON_STROKE}
-                  aria-hidden="true"
-                />
-              </ToolbarIconButton>
-            </div>}
-            {gitPanelOpen && <div className={styles.gitRefreshSlot} ref={setGitRefreshTarget} />}
-            {showExplorerGitButton && (
-              <ToolbarIconButton
-                onClick={toggleGitPanel}
-                title={t("common.git")}
-                pressed={gitPanelOpen}
-                className={styles.explorerGitButton}
-                buttonRef={explorerGitButtonRef}
-              >
-                <GitBranch size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
-              </ToolbarIconButton>
-            )}
+            </div>
           </div>
           {/* 保留已展开的目录，切回文件树时不重新挂载。 */}
           {explorerOpen && (

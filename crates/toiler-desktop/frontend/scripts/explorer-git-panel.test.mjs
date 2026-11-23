@@ -18,10 +18,10 @@ test("Git 开关移到文件浏览器，底部和文件浏览器不再显示旧�
   assert.doesNotMatch(shell, /<GitPanel\b|translate\("common\.git"\)/);
 });
 
-test("Git 打开后复用文件浏览器标题栏，刷新紧邻开关，不再显示关闭按钮", () => {
+test("Git 开关与文件或 Git 刷新共用同一组显隐工具栏，不再显示关闭按钮", () => {
   assert.ok(explorer);
   assert.match(explorer, /gitPanelOpen \? \(\s*<h2[^>]*gitHeading[^>]*>\s*<GitBranch[^>]*\/>\s*<span>\{t\("common\.git"\)\}<\/span>/);
-  assert.match(explorer, /gitRefreshSlot\} ref=\{setGitRefreshTarget\} \/>\}\s*\{showExplorerGitButton &&/);
+  assert.match(explorer, /<div className=\{styles\.sectionActions\}>\s*\{gitPanelOpen \? \(\s*<div className=\{styles\.gitRefreshSlot\} ref=\{setGitRefreshTarget\} \/>\s*\) : \([\s\S]*?t\("sidebar\.refreshExplorer"\)[\s\S]*?<\/>\s*\)\}\s*\{showExplorerGitButton && \(\s*<ToolbarIconButton\s+onClick=\{toggleGitPanel\}/);
   assert.match(explorer, /refreshTarget=\{gitRefreshTarget\}/);
   assert.match(panel, /refreshTarget && createPortal\([\s\S]*?t\("git\.refreshStatus"\)[\s\S]*?refreshTarget,/);
   assert.doesNotMatch(panel, /<header|git\.close/);
