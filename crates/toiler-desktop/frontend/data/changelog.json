@@ -1,5 +1,41 @@
 [
   {
+    "version": "1.0.10",
+    "date": "2026-11-23",
+    "sections": [
+      {
+        "title": "Added",
+        "kind": "added",
+        "items": [
+          "feat(desktop): 支持在系统文件管理器中显示文件和目录（`59f6fa230a03`）：- 校验目标路径，拒绝手机和公网隧道请求，并在前端显示具体失败原因；- 补充文件定位接口和代理远端标记的回归测试；- 避免 Windows 后台 Git 命令弹出控制台；- 统一侧栏项目目录和分支选择框的圆角与阴影",
+          "feat(prompt): 在系统提示中加入首席工程师工作准则（`c30ee87b9da7`）：- 要求依据可核实的事实，按明确需求做最小充分改动，并在交付前验证并如实报告结果；- 测试中英文提示在未配置工具时均包含角色标准和通用准则",
+          "feat(sidebar): 改版桌面会话侧栏，支持按需展开搜索（`3cf335ecdef0`）：- 重排项目选择器、文件浏览器和会话列表，限制文件树占用高度；- 搜索展开时自动聚焦，按 Esc 或点击会话区外可关闭并清空；- 改善键盘与触屏操作，补充列表加载、错误和空状态反馈",
+          "feat(desktop): add interface zoom controls and refine topbar styling（`0047424415e6`）：- Support 50%–300% interface zoom with keyboard shortcuts and persistence；- Adjust macOS titlebar geometry and native window controls for zoom levels；- Refine desktop topbar button styling and add coverage tests",
+          "feat(agent): 优化草稿会话发布与提示词预览（`5ae24c0d00c1`）：- 草稿预览和斜杠建议不再创建会话；- 首条消息写入后发布会话并刷新列表；- 隐藏空草稿，支持前台恢复时刷新工作树；- 为代码块语言图标添加通用文件图标兜底"
+        ]
+      },
+      {
+        "title": "Changed",
+        "kind": "changed",
+        "items": [
+          "refactor(git): integrate Git panel into sidebar explorer（`f51a2e603f93`）：- Move Git panel from floating overlay into the explorer section；- Add branch sync status and shared refresh controls；- Simplify sidebar Git state and remove redundant settings toolbar logic",
+          "应用、npm、Tauri 和 Cargo 版本号统一为 `1.0.10`。"
+        ]
+      },
+      {
+        "title": "Fixed",
+        "kind": "fixed",
+        "items": [
+          "fix(session): 续聊优先恢复历史模型并同步输入框显示（`0f7f9b8621c8`）：- 历史模型不可用时回退到默认模型，新会话显式指定无效模型时返回 400；- 模型切换确认前保留草稿，避免消息发给旧模型；- 侧栏项目目录和分支选择框改用 1px 边框，移除阴影；- 补充模型恢复、回退和无效模型拒绝的回归测试",
+          "fix(desktop): 延迟窗口显示并修复 Windows 标题栏（`6aeb8b6a1f07`）：- 等待前端首屏就绪后显示窗口，并增加超时兜底；- 移除 Windows 系统标题栏样式，避免与自绘按钮重叠；- 按 Qoder CN OAuth 登录状态同步内置模型目录；- 修复凭据删除后的目录刷新并补充回归测试",
+          "fix(desktop): 修复 Windows 控制台闪窗和标题栏重绘，补充 Git 安装提示（`9c6cc13c9487`）：- 统一后台子进程的启动方式，并在 Windows 发布流程中运行无控制台窗口回归测试；- 通过 Windows Shell API 用默认浏览器打开链接；- 启动时缓存 Git 探测结果，缺失时保留面板入口并显示对应平台的安装指引，文件索引回退为目录扫描",
+          "fix(desktop): handle native window focus events（`7adfc74ac2db`）：- Add Tauri focus event subscription for desktop windows；- Clean up native listeners and pending animation frames；- Preserve DOM event fallback when native registration fails；- Add tests for native focus refresh and listener cleanup",
+          "fix(sidebar): 统一文件浏览器中 Git 开关与刷新按钮的显隐（`6949cb675c5e`）"
+        ]
+      }
+    ]
+  },
+  {
     "version": "1.0.9",
     "date": "2026-11-19",
     "sections": [
