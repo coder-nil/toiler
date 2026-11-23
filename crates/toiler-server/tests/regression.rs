@@ -1073,6 +1073,51 @@ async fn sessions_list_exposes_every_field_the_sidebar_reads() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// 侧栏与搜索隐藏旧版本留下的草稿，但按 id 仍能打开，且不改写旧文件。
+#[tokio::test]
+async fn history_hides_unnamed_empty_drafts_without_deleting_them() {
+    let root = fixture_root("hidden-draft");
+    let path = write_session(
+        &root,
+        &[
+            r#"{"type":"thinking_level_change","id":"t1","parentId":null,"timestamp":"2026-11-10T06:41:45.000Z","thinkingLevel":"high"}"#,
+        ],
+    );
+    let original = std::fs::read(&path).unwrap();
+    let stores = fixture_root("hidden-draft-stores");
+    let router = app_with_agent_dir(&root, &root, Some(&stores));
+    let listed = get(router.clone(), "/api/sessions?force=1").await.json();
+    assert_eq!(listed["sessions"], json!([]));
+    let searched = get(router.clone(), "/api/sessions/search?q=demo")
+        .await
+        .json();
+    assert_eq!(searched["matches"], json!([]));
+    assert_eq!(
+        get(router.clone(), "/api/mobile/state").await.json()["sessionId"],
+        Value::Null
+    );
+    let detail = get(router.clone(), "/api/sessions/sess-a").await.json();
+    assert_eq!(detail["info"]["messageCount"], 0);
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+
+    let renamed = call(
+        router.clone(),
+        "PATCH",
+        "/api/sessions/sess-a",
+        Some(r#"{"name":"特意保留"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(renamed.status, StatusCode::OK);
+    assert_eq!(
+        get(router, "/api/sessions").await.json()["sessions"][0]["name"],
+        "特意保留"
+    );
+    assert!(std::fs::read(&path).unwrap().starts_with(&original));
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(stores).unwrap();
+}
+
 #[tokio::test]
 async fn sessions_detail_carries_tree_context_and_paging() {
     let root = fixture_root("sessdetail");
@@ -2992,6 +3037,129 @@ fn app_with_two_models(sessions_root: &Path, cwd: &Path, agent_dir: &Path) -> ax
             toiler_server::trust::TrustStore::at(agent_dir.join("trust.json")),
         );
     routes::router(state)
+}
+
+/// 草稿的「系统提示词」预览只读，且使用与首轮运行完全一致的工具预设和语言。
+#[tokio::test]
+async fn draft_prompt_preview_does_not_create_a_session() {
+    let base = fixture_root("draft-preview");
+    let root = base.join("sessions");
+    let project = base.canonicalize().unwrap();
+    let router = app_with_two_models(&root, &project, &base);
+    let preferences = json!({"cwd": project, "uiLocale": "zh-CN", "toolNames": ["bash", "read"]});
+    let preview = call(
+        router.clone(),
+        "POST",
+        "/api/agent/draft/system-prompt",
+        Some(&preferences.to_string()),
+        &[],
+    )
+    .await;
+    assert_eq!(preview.status, StatusCode::OK, "{}", preview.text());
+    let mut chat = preferences.clone();
+    chat["chatMode"] = json!(true);
+    let chat_preview = call(
+        router.clone(),
+        "POST",
+        "/api/agent/draft/system-prompt",
+        Some(&chat.to_string()),
+        &[],
+    )
+    .await;
+    assert_eq!(chat_preview.json()["systemPrompt"], "");
+    assert!(!root.exists());
+    assert!(!base.join("work.sqlite").exists());
+    assert!(!base.join("settings.json").exists());
+
+    let mut ensure = preferences;
+    ensure["type"] = json!("ensure_session");
+    let created = call(
+        router.clone(),
+        "POST",
+        "/api/agent/new",
+        Some(&ensure.to_string()),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let created = created.json();
+    let sid = created["sessionId"].as_str().unwrap();
+    let state = call(
+        router,
+        "POST",
+        &format!("/api/agent/{sid}"),
+        Some(r#"{"type":"get_state"}"#),
+        &[],
+    )
+    .await;
+    let prompt = preview.json()["systemPrompt"].clone();
+    assert!(prompt.as_str().unwrap().contains("<tools>"));
+    assert_eq!(state.json()["data"]["systemPrompt"], prompt);
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// 首条消息写入后续用普通列表请求即可看到，不依赖手动刷新或上游模型回复。
+#[tokio::test]
+async fn first_message_publishes_a_previously_hidden_session() {
+    let base = fixture_root("draft-publish");
+    let root = base.join("sessions");
+    let project = base.canonicalize().unwrap();
+    // 只需验证 user 消息落盘，不请求真实供应商。
+    std::fs::write(base.join("models.json"), r#"{"providers":{"local":{"api":"openai-completions","apiKey":"test-key","baseUrl":"http://127.0.0.1:1/v1","models":[{"id":"test"}]}}}"#).unwrap();
+    let router = app_with_models_from_agent_dir(&root, &project, &base);
+    let body = json!({"cwd": project, "type": "ensure_session", "thinkingLevel": "high"});
+    let created = call(
+        router.clone(),
+        "POST",
+        "/api/agent/new",
+        Some(&body.to_string()),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let created = created.json();
+    let sid = created["sessionId"].as_str().unwrap();
+    assert_eq!(
+        get(router.clone(), "/api/sessions").await.json()["sessions"],
+        json!([])
+    );
+
+    let uri = format!("/api/agent/{sid}");
+    let request = Request::builder()
+        .uri(format!("{uri}/events"))
+        .header("host", "127.0.0.1:30141")
+        .body(Body::empty())
+        .unwrap();
+    let sse = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(sse.status(), StatusCode::OK);
+    let mut events = sse.into_body();
+    let prompt = call(
+        router.clone(),
+        "POST",
+        &uri,
+        Some(r#"{"type":"prompt","message":"首条消息"}"#),
+        &[],
+    )
+    .await;
+    assert_eq!(prompt.json()["data"]["accepted"], true);
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while let Some(frame) = events.frame().await {
+            if let Ok(data) = frame.unwrap().into_data() {
+                if String::from_utf8_lossy(&data).contains("session_published") {
+                    return;
+                }
+            }
+        }
+        panic!("流结束前未收到首条消息落盘通知");
+    })
+    .await
+    .expect("首条消息未发布");
+    let listed = get(router.clone(), "/api/sessions").await.json();
+    assert_eq!(listed["sessions"][0]["id"], sid);
+    assert_eq!(listed["sessions"][0]["firstMessage"], "首条消息");
+    call(router, "POST", &uri, Some(r#"{"type":"abort"}"#), &[]).await;
+    std::fs::remove_dir_all(base).unwrap();
 }
 
 /// 输入框推理级别选择与 `/api/agent/new`：最近选择在重启后恢复，

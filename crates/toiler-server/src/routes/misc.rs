@@ -161,7 +161,12 @@ pub async fn mobile_state(
     Query(params): Query<MobileParams>,
 ) -> Response {
     let running = state.live().running();
-    let sessions = state.sessions().list(false);
+    // 显式指定 id 仍可读取刚初始化的会话；自动选择时不拿空草稿当历史。
+    let sessions = if params.session.is_some() {
+        state.sessions().list(false)
+    } else {
+        state.sessions().history(false)
+    };
 
     let chosen: Option<Value> = if let Some(id) = params.session.as_deref() {
         sessions

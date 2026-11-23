@@ -60,11 +60,19 @@ pub struct LoadReport {
 }
 
 /// 追加写入器：只往后写，绝不重写已有字节。
-#[derive(Debug)]
 pub struct V3Appender {
     path: PathBuf,
     file: Mutex<Option<File>>,
     warnings: Mutex<Vec<String>>,
+    first_message_written: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl std::fmt::Debug for V3Appender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("V3Appender")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
 }
 
 impl V3Appender {
@@ -73,6 +81,7 @@ impl V3Appender {
             path,
             file: Mutex::new(None),
             warnings: Mutex::new(Vec::new()),
+            first_message_written: Mutex::new(None),
         }
     }
 
@@ -81,7 +90,7 @@ impl V3Appender {
     }
 
     /// 写一行（自动补 `\n`）。失败只记录，不打断对话。
-    fn append_line(&self, line: &str) {
+    fn append_line(&self, line: &str) -> bool {
         let mut guard = self.file.lock().expect("appender not poisoned");
         if guard.is_none() {
             match OpenOptions::new()
@@ -95,20 +104,19 @@ impl V3Appender {
                         .lock()
                         .expect("warnings")
                         .push(format!("打开 {} 失败：{e}", self.path.display()));
-                    return;
+                    return false;
                 }
             }
         }
-        if let Some(file) = guard.as_mut() {
-            if let Err(e) = file.write_all(line.as_bytes()) {
-                self.warnings
-                    .lock()
-                    .expect("warnings")
-                    .push(format!("写 {} 失败：{e}", self.path.display()));
-            } else {
-                let _ = file.flush();
-            }
+        let file = guard.as_mut().expect("会话文件已经打开");
+        if let Err(e) = file.write_all(line.as_bytes()).and_then(|()| file.flush()) {
+            self.warnings
+                .lock()
+                .expect("warnings")
+                .push(format!("写 {} 失败：{e}", self.path.display()));
+            return false;
         }
+        true
     }
 
     /// 把一条 entry 追加成 v3 行；v3 表达不了的类型只记录并跳过。
@@ -117,7 +125,16 @@ impl V3Appender {
             Ok(value) => {
                 let mut line = value.to_string();
                 line.push('\n');
-                self.append_line(&line);
+                if self.append_line(&line) && value["type"] == "message" {
+                    let callback = self
+                        .first_message_written
+                        .lock()
+                        .expect("first message")
+                        .take();
+                    if let Some(callback) = callback {
+                        callback();
+                    }
+                }
             }
             Err(V3Error::Unrepresentable { entry_type }) => {
                 self.warnings
@@ -246,6 +263,15 @@ impl V3SessionStorage {
 
     pub fn path(&self) -> &Path {
         self.appender.path()
+    }
+
+    /// 注册一次性通知，首条消息写入成功后才对外发布；设置条目不会触发。
+    pub fn on_first_message_written(&self, callback: impl FnOnce() + Send + 'static) {
+        *self
+            .appender
+            .first_message_written
+            .lock()
+            .expect("first message") = Some(Box::new(callback));
     }
 
     /// 加载统计（跳过了哪些行、有多少条目写不回 v3）。

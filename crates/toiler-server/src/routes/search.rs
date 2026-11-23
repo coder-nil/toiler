@@ -40,7 +40,7 @@ pub async fn search(
         .map(|v| v.clamp(1, 200) as usize)
         .unwrap_or(80);
 
-    let mut sessions = state.sessions().list(false);
+    let mut sessions = state.sessions().history(false);
     sessions.sort_by(|a, b| {
         let am = a.get("modified").and_then(Value::as_str).unwrap_or("");
         let bm = b.get("modified").and_then(Value::as_str).unwrap_or("");

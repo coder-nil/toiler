@@ -9,7 +9,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use rpi_ai::Model;
 use rpi_harness::types::HarnessTool;
 use rpi_tools::{
     create_bash_tool, create_edit_tool, create_find_tool, create_grep_tool, create_ls_tool,
@@ -25,10 +24,23 @@ use crate::desktop_tools::{
 /// （`withExtensionTools`），所以「只读」「默认」等预设不会把这三个关掉。
 pub const ALWAYS_ON_TOOLS: [&str; 3] = ["system_time", "task_progress", "ask_user"];
 
+/// 按注册表顺序筛选，桌面工具不受预设控制；未指定预设时全部启用。
+pub fn active_tool_names(
+    names: impl IntoIterator<Item = String>,
+    requested: Option<&[String]>,
+) -> Vec<String> {
+    names
+        .into_iter()
+        .filter(|name| {
+            requested.map_or(true, |requested| requested.contains(name))
+                || ALWAYS_ON_TOOLS.contains(&name.as_str())
+        })
+        .collect()
+}
+
 /// 返回 `(工具名, HarnessTool)`。
 pub fn build_tools(
     cwd: &str,
-    _model: &Model,
     ui: Arc<UiBridge>,
     tasks: Arc<TaskProgressStore>,
 ) -> Vec<(String, HarnessTool)> {

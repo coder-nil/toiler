@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { createJiti } from "jiti";
+
+const { subscribeToWindowForeground } = await createJiti(import.meta.url).import("../lib/window-foreground.ts");
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 const sidebar = await read("components/SessionSidebar.tsx");
@@ -41,4 +44,66 @@ test("分支选择框显示当前工作树的同步数字，Git 面板不重复�
   assert.ok(selector);
   assert.match(selector, /branchSync &&[\s\S]*?branchSync\.ahead[\s\S]*?branchSync\.behind/);
   assert.match(sidebar, /const refreshAfterGitChange = useCallback\(\(\) => \{\s*refreshExplorer\(\);\s*setWtRefreshKey/);
+  assert.match(sidebar, /subscribeToWindowForeground\(\(\) => \{ void loadWorktrees\(true\); \}\)/);
+});
+
+function foregroundWindow() {
+  const target = new EventTarget();
+  target.document = Object.assign(new EventTarget(), { visibilityState: "visible" });
+  const frames = new Map();
+  let nextFrame = 0;
+  target.requestAnimationFrame = (callback) => {
+    frames.set(++nextFrame, callback);
+    return nextFrame;
+  };
+  target.cancelAnimationFrame = (frame) => frames.delete(frame);
+  target.paint = () => {
+    for (const [frame, callback] of frames) {
+      frames.delete(frame);
+      callback();
+    }
+  };
+  target.setVisibility = (visibilityState) => {
+    target.document.visibilityState = visibilityState;
+    target.document.dispatchEvent(new Event("visibilitychange"));
+  };
+  return target;
+}
+
+test("回到前台时合并可见性和焦点事件，窗口未隐藏时重新聚焦也会刷新", () => {
+  const target = foregroundWindow();
+  let refreshes = 0;
+  const stop = subscribeToWindowForeground(() => refreshes++, target);
+
+  target.setVisibility("hidden");
+  target.dispatchEvent(new Event("focus"));
+  target.paint();
+  assert.equal(refreshes, 0);
+
+  target.setVisibility("visible");
+  target.dispatchEvent(new Event("focus"));
+  target.paint();
+  assert.equal(refreshes, 1);
+
+  target.dispatchEvent(new Event("focus"));
+  target.paint();
+  assert.equal(refreshes, 2);
+  stop();
+});
+
+test("刷新前再次隐藏或切换项目卸载订阅时，不再触发旧刷新", () => {
+  const target = foregroundWindow();
+  const stop = subscribeToWindowForeground(() => assert.fail("不应触发刷新"), target);
+
+  target.dispatchEvent(new Event("focus"));
+  target.setVisibility("hidden");
+  target.paint();
+
+  target.setVisibility("visible");
+  stop();
+  target.paint();
+  target.dispatchEvent(new Event("focus"));
+  target.setVisibility("hidden");
+  target.setVisibility("visible");
+  target.paint();
 });

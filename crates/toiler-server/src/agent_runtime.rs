@@ -104,11 +104,20 @@ impl LiveAgent {
         preferred: Option<(String, String)>,
         settings: &SettingsFile,
         trusted: bool,
+        on_first_message: Option<impl FnOnce() + Send + 'static>,
     ) -> Result<Arc<Self>> {
         let storage = V3SessionStorage::load(path)
             .with_context(|| format!("加载会话 {} 失败", path.display()))?;
         Self::start_with_storage(
-            id, path, storage, cwd, catalog, preferred, settings, trusted,
+            id,
+            path,
+            storage,
+            cwd,
+            catalog,
+            preferred,
+            settings,
+            trusted,
+            on_first_message,
         )
         .await
     }
@@ -124,7 +133,16 @@ impl LiveAgent {
         preferred: Option<(String, String)>,
         settings: &SettingsFile,
         trusted: bool,
+        on_first_message: Option<impl FnOnce() + Send + 'static>,
     ) -> Result<Arc<Self>> {
+        let (events, _rx) = broadcast::channel(EVENT_BUFFER);
+        if let Some(notify) = on_first_message {
+            let events = events.clone();
+            storage.on_first_message_written(move || {
+                notify();
+                let _ = events.send(json!({"type": "session_published"}));
+            });
+        }
         let session = Session::new(Arc::new(storage), None);
 
         // 调用方已按会话历史与全局偏好解析；目录变化时不能用别的模型静默替换。
@@ -138,13 +156,12 @@ impl LiveAgent {
                 .ok_or_else(|| anyhow::anyhow!("models.json 里没有可用模型"))?
         }
         .clone();
-        let (events, _rx) = broadcast::channel(EVENT_BUFFER);
         let tap = Arc::new(EventTap::new(events.clone()));
 
         // 桌面自带工具的通道与状态：`ask_user` 的问答往返、`task_progress` 的展示。
         let ui = UiBridge::new(events.clone());
         let tasks = TaskProgressStore::new(ui.clone());
-        let tools = crate::tools::build_tools(cwd, &model, ui.clone(), tasks.clone());
+        let tools = crate::tools::build_tools(cwd, ui.clone(), tasks.clone());
         let tool_names: Vec<String> = tools.iter().map(|(name, _)| name.clone()).collect();
         // 任务列表从 transcript 恢复：pi 在 `session_start` 时做同一件事。
         tasks.restore(restore_tasks(path, None));
@@ -788,7 +805,10 @@ impl LiveAgent {
                         .collect()
                 })
                 .unwrap_or_default();
-            ordered_active_tools(&tools, &requested)
+            crate::tools::active_tool_names(
+                tools.iter().map(|tool| tool.tool.schema().name.clone()),
+                Some(&requested),
+            )
         };
 
         self.harness.set_tools(tools, Some(active.clone())).await?;
@@ -829,7 +849,10 @@ impl LiveAgent {
             .unwrap_or_default();
 
         let tools = self.harness.get_tools().await?;
-        let ordered = ordered_active_tools(&tools, &requested);
+        let ordered = crate::tools::active_tool_names(
+            tools.iter().map(|tool| tool.tool.schema().name.clone()),
+            Some(&requested),
+        );
         self.harness.set_tools(tools, Some(ordered.clone())).await?;
 
         self.prompt_inputs
@@ -858,24 +881,6 @@ impl LiveAgent {
         self.running.store(false, Ordering::Relaxed);
         let _ = self.lane.abort().await;
     }
-}
-
-/// 按注册表顺序算出该激活哪些工具。
-///
-/// 顺序沿用注册表（即 pi 的默认工具顺序），前端传的顺序不影响提示词。
-/// 桌面工具（`system_time` / `task_progress` / `ask_user`）不受预设控制：
-/// pi 的 `set_tools` 用 `withExtensionTools` 把它们加回激活集合。
-fn ordered_active_tools(
-    tools: &[rpi_harness::types::HarnessTool],
-    requested: &[String],
-) -> Vec<String> {
-    tools
-        .iter()
-        .map(|tool| tool.tool.schema().name.clone())
-        .filter(|name| {
-            requested.contains(name) || crate::tools::ALWAYS_ON_TOOLS.contains(&name.as_str())
-        })
-        .collect()
 }
 
 /// 不支持的偏好只对当前模型回退，不覆盖用户原来的选择。

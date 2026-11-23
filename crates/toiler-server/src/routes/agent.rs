@@ -16,6 +16,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures::Stream;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -168,6 +169,55 @@ pub async fn running(State(state): State<AppState>, _trusted: Trusted) -> Respon
         axum::http::HeaderValue::from_static("no-store"),
     );
     response
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftSystemPrompt {
+    cwd: String,
+    tool_names: Option<Vec<String>>,
+    ui_locale: Option<String>,
+    #[serde(default)]
+    chat_mode: bool,
+}
+
+/// 草稿预览不建会话、不更新偏好；提示词使用与运行时相同的工具注册表和组装规则。
+pub async fn draft_system_prompt(
+    State(state): State<AppState>,
+    _trusted: Trusted,
+    Json(draft): Json<DraftSystemPrompt>,
+) -> Response {
+    use crate::routes::sessions::error_response;
+    use crate::system_prompt::{Locale, PromptInputs};
+
+    let path = std::path::Path::new(&draft.cwd);
+    if !path.is_absolute() {
+        return error_response(StatusCode::BAD_REQUEST, "cwd must be an absolute directory");
+    }
+    state.sync_allowed_roots();
+    if !state.roots().allows(path) || !state.roots().allows_real(path) {
+        return error_response(StatusCode::FORBIDDEN, "Access denied");
+    }
+    if !path.is_dir() {
+        return error_response(StatusCode::BAD_REQUEST, "cwd must be a directory");
+    }
+    if draft.chat_mode {
+        return Json(json!({"systemPrompt": ""})).into_response();
+    }
+
+    let cwd = crate::paths::simplified(&draft.cwd);
+    let trusted = crate::trust::status(state.project_trust(), &cwd).trusted;
+    let (events, _receiver) = tokio::sync::broadcast::channel(1);
+    let ui = crate::desktop_tools::UiBridge::new(events);
+    let tasks = crate::desktop_tools::TaskProgressStore::new(ui.clone());
+    let tools = crate::tools::build_tools(&cwd, ui, tasks);
+    let names = crate::tools::active_tool_names(
+        tools.into_iter().map(|(name, _)| name),
+        draft.tool_names.as_deref(),
+    );
+    let inputs = PromptInputs::load(&cwd, &names, &crate::paths::toiler_home(), trusted).await;
+    Json(json!({"systemPrompt": inputs.compose(Locale::parse(draft.ui_locale.as_deref()))}))
+        .into_response()
 }
 
 /// `POST /api/agent/new` —— 建会话、登记项目、顺带执行 body 里的命令。
@@ -472,6 +522,18 @@ async fn ensure_agent_with_model(
     // 项目是否已信任：决定项目技能要不要参与系统提示词的 `<skills>` 段与
     // `/skill:` 展开，与 `/api/skills` 的 `projectResourcesLoaded` 同一语义。
     let trusted = crate::trust::status(state.project_trust(), &cwd).trusted;
+    let on_first_message = session
+        .as_ref()
+        .filter(|s| s.message_count() == 0)
+        .map(|_| {
+            // 活会话属于 AppState，不能反向强持有它。
+            let inner = Arc::downgrade(&state.inner);
+            move || {
+                if let Some(inner) = inner.upgrade() {
+                    inner.sessions.invalidate();
+                }
+            }
+        });
     let started = LiveAgent::start(
         id,
         &path,
@@ -480,6 +542,7 @@ async fn ensure_agent_with_model(
         preferred,
         state.settings(),
         trusted,
+        on_first_message,
     )
     .await;
     state.live().clear_starting(id);

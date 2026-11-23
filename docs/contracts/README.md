@@ -61,7 +61,9 @@
 }
 ```
 
-排序：`modified` 倒序（字符串比较）。
+排序：`modified` 倒序（字符串比较）。会话列表和搜索不显示无消息、无名称且不是分叉的草稿；
+旧文件不删除，仍可通过 id 读取。首条消息写入 v3 文件后使列表缓存失效，并在会话 SSE 上发送
+`{"type":"session_published"}`，让侧栏无需等待模型回复即可刷新。
 
 ## GET /api/sessions/[id]
 
@@ -565,6 +567,7 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
 | `GET /api/agent/{id}` | ✅ | `{running}` / `{running, state}` |
 | `GET /api/agent/{id}/events` | ✅ | SSE，裁剪规则与 pi 逐条对齐 |
 | `POST /api/agent/new` | ✅ | 建 v3 会话 + 登记项目 + 执行 body 里的命令；`{success,sessionId,data,model,thinkingLevel}`。body 的 `toolNames`（前端工具预设，默认 `read/bash/edit/write`，桌面工具始终启用）、`uiLocale` 与 `chatMode`（普通对话模式：第一轮就不带系统提示词）也在建会话时应用 |
+| `POST /api/agent/draft/system-prompt` | ✅ | Toiler 扩展：只读预览，接收 `{cwd,toolNames?,uiLocale?,chatMode?}`，返回 `{systemPrompt}`。仅接受允许根内的绝对目录；与运行时共用工具筛选和提示词组装，不建会话、不登记项目、不保存偏好。 |
 | `GET /api/agent/running` | ✅ | `{runningSessionIds, pendingUiSessionIds}`（pi 的 `56429.am()`） |
 | `GET /api/files/{*path}` | ✅ | 六种 `type` 全实现（`list`/`read`/`download`/`meta`/`preview`/`watch`），`Range` 206/416，SSE 命名事件 `connected`/`change` |
 | `PUT /api/files/{*path}` | ✅ | `{content, allowEmpty}`；空覆盖 409 `empty_overwrite_blocked`；256KB 上限 |

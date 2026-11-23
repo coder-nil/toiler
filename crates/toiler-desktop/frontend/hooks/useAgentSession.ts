@@ -830,18 +830,31 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [isNew, locale, newSessionCwd, toolPreset, chatMode]);
 
-  // Opening the System panel is also allowed to initialize an otherwise dormant
-  // session. This is deliberately a non-prompt command: it creates no message
-  // or model run, but lets users inspect the exact prompt before sending one.
   const loadSystemPrompt = useCallback(async () => {
-    const sid = sessionIdRef.current ?? await ensureNewSession();
-    if (!sid) return;
+    const sid = sessionIdRef.current;
+    if (!sid) {
+      if (!newSessionCwd) return;
+      const response = await fetch("/api/agent/draft/system-prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cwd: newSessionCwd,
+          toolNames: getToolNamesForPreset(toolPreset),
+          uiLocale: locale,
+          chatMode: chatMode === "chat",
+        }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const draft = await response.json() as { systemPrompt: string };
+      if (sessionHookMountedRef.current && !sessionIdRef.current) setSystemPrompt(draft.systemPrompt);
+      return;
+    }
 
     await sendAgentCommand(sid, { type: "set_ui_locale", locale });
     const state = await sendAgentCommand<AgentStateResponse>(sid, { type: "get_state" });
     if (!sessionHookMountedRef.current || sessionIdRef.current !== sid) return;
     setSystemPrompt(state.systemPrompt ?? "");
-  }, [ensureNewSession, locale]);
+  }, [chatMode, locale, newSessionCwd, toolPreset]);
 
   useEffect(() => {
     const sid = sessionIdRef.current;
@@ -856,7 +869,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [locale]);
 
   const loadSlashCommands = useCallback(async () => {
-    const sid = sessionIdRef.current ?? await ensureNewSession();
+    // 内置建议由输入框提供，键入 `/` 不应为草稿创建会话。
+    const sid = sessionIdRef.current;
     if (!sid) {
       setSlashCommands([]);
       return [] as SlashCommandInfo[];
@@ -874,7 +888,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       setSlashCommandsLoading(false);
     }
-  }, [ensureNewSession]);
+  }, []);
 
   const cancelEventStreamGrace = useCallback(() => {
     eventStreamGraceGenerationRef.current += 1;
@@ -1253,6 +1267,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         }
         break;
       }
+      case "session_published":
+        onSessionListRefresh?.();
+        break;
       case "agent_start":
         cancelEventStreamGrace();
         sdkAgentActiveRef.current = true;
@@ -1497,7 +1514,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         setExtensionDialog((current) => (current?.id === event.id ? null : current));
         break;
     }
-  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, notifyAgentEnd, notifyPromptStage, scheduleEventStreamClose, scrollToBottom, settleUiStage]);
+  }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, notifyAgentEnd, notifyPromptStage, onSessionListRefresh, scheduleEventStreamClose, scrollToBottom, settleUiStage]);
   handleAgentEventRef.current = handleAgentEvent;
 
   const handleSend = useCallback(async (
@@ -1590,11 +1607,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
         if (!sid) throw new Error("Unable to create a session for the prompt");
         sentSessionId = sid;
-        // 会话文件在 `/api/agent/new` 返回时就已落盘，侧边栏已经能列出它。
-        // 这里立刻推进到会话列表，不等模型回第一段文本（那个位置在 bundle
-        // 后面，会让刚发出的会话在列表里迟到好几秒）。`promoteNewSession` 幂等，
-        // 下面 prompt 后的那一次调用会直接 return。
-        promoteNewSession(1, message);
         try {
           const checkpoint = await fetch("/api/checkpoints", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create", sessionId: sid, cwd: newSessionCwd }) }).then((r) => r.ok ? r.json() : null);
           checkpointIdRef.current = checkpoint?.id ?? null;
@@ -1613,10 +1625,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           message,
           ...(piImages?.length ? { images: piImages } : {}),
         });
-        // 条目在 `promoteNewSession` 时就已经进了列表，但那时文件里只有 header，
-        // 所以显示成「0 条消息 / (no messages)」。user 消息在 `prompt` 命令里
-        // 同步落盘（模型还没回），这里补一次刷新就换成真实标题与条数。
-        onSessionListRefresh?.();
+        // 请求被拒绝就保持草稿。侧栏在后端首条消息写入时收到发布通知。
+        promoteNewSession(1, message);
       } else if (session) {
         sentSessionId = session.id;
         try {
@@ -1683,7 +1693,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       finishDispatch();
       if (promptDispatchRef.current === dispatchFinished) promptDispatchRef.current = null;
     }
-  }, [isNew, locale, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, onSessionListRefresh, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, reconcileAgentState, restoreSubmission]);
+  }, [isNew, locale, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, composerDraftKey, reconcileAgentState, restoreSubmission]);
 
   const handleRetryPrompt = useCallback(() => {
     const prompt = retryablePromptRef.current;
@@ -1700,13 +1710,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       const sid = sessionIdRef.current ?? session?.id ?? await ensureNewSession();
       if (!sid) throw new Error("Unable to create a session for the shell command");
-      // 与 prompt 同理：会话文件已经存在就立刻上列表，不等命令跑完。
-      promoteNewSession(1, inputText);
       await sendAgentCommand(sid, {
         type: "bash",
         command,
         excludeFromContext,
       });
+      promoteNewSession(1, inputText);
       await loadSession(sid);
       onSessionListRefresh?.();
     } catch (e) {
@@ -1949,7 +1958,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       return { handled: true };
     }
 
-    const sid = sessionIdRef.current ?? await ensureNewSession();
     const complete = (result: BuiltinSlashCommandResult): BuiltinSlashCommandResult => {
       if (!result.handled) return result;
       if (result.error) {
@@ -1961,6 +1969,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     };
 
     try {
+      // 查询或操作已有上下文的命令不需要为草稿建档；未知命令留给实际发送流程。
+      const sid = sessionIdRef.current ?? (commandName === "name" && args ? await ensureNewSession() : null);
       switch (commandName) {
         case "compact": {
           // 手动 compact 是阻塞 POST，会与正在进行的运行撞车。
@@ -1992,8 +2002,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         }
 
         case "name": {
-          if (!sid) return complete({ handled: true, error: "No active session to name" });
           if (!args) return complete({ handled: true, error: "Usage: /name <name>" });
+          if (!sid) return complete({ handled: true, error: "No active session to name" });
           await sendAgentCommand(sid, { type: "set_session_name", name: args });
           if (await loadSession(sid)) promoteNewSession();
           return complete({ handled: true, message: `Session renamed to ${args}` });

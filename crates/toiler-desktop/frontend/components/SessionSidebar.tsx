@@ -15,6 +15,7 @@ import {
   workspaceKeyOf,
 } from "@/lib/workspace-memory";
 import { getFileName } from "@/lib/file-paths";
+import { subscribeToWindowForeground } from "@/lib/window-foreground";
 import { CHAT_TOP_BAR_HEIGHT } from "@/lib/panel-layout";
 import type { SessionSearchMatch } from "@/lib/session-search";
 import { useI18n } from "@/hooks/useI18n";
@@ -931,17 +932,17 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       setWorktreeLoadingCwd(null);
       return;
     }
-    let cancelled = false;
-    setWorktreeLoadingCwd(selectedCwd);
-    fetch(`/api/worktrees?cwd=${encodeURIComponent(selectedCwd)}`)
-      .then((r) => r.json())
-      .then((d: { projectRoot?: string; projectKey?: string; isGit?: boolean; gitAvailable?: boolean; isTopLevel?: boolean; currentWorktreePath?: string | null; branchSync?: BranchSync | null; worktrees?: WorktreeEntry[]; branches?: string[]; remoteBranches?: string[]; error?: string }) => {
-        if (cancelled) return;
-        setWorktreeLoadingCwd(null);
-        if (d.error || !d.projectRoot) {
-          setWorktreeState(null);
-          return;
-        }
+    let request: AbortController | undefined;
+    const loadWorktrees = async (quiet: boolean) => {
+      request?.abort();
+      const { signal } = (request = new AbortController());
+      if (!quiet) setWorktreeLoadingCwd(selectedCwd);
+      try {
+        const response = await fetch(`/api/worktrees?cwd=${encodeURIComponent(selectedCwd)}`, { signal, cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const d: Partial<Omit<WorktreeState, "forCwd">> & { error?: string } = await response.json();
+        if (signal.aborted) return;
+        if (d.error || !d.projectRoot) throw new Error(d.error);
         setWorktreeState({
           forCwd: selectedCwd,
           projectRoot: d.projectRoot,
@@ -956,14 +957,19 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           branches: d.branches ?? [],
           remoteBranches: d.remoteBranches ?? [],
         });
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setWorktreeLoadingCwd(null);
-          setWorktreeState(null);
-        }
-      });
-    return () => { cancelled = true; };
+      } catch {
+        // 前台刷新失败时保留当前项目已有的计数，避免徽标闪没。
+        if (!signal.aborted) setWorktreeState((state) => quiet && state?.forCwd === selectedCwd ? state : null);
+      } finally {
+        if (!signal.aborted) setWorktreeLoadingCwd(null);
+      }
+    };
+    void loadWorktrees(false);
+    const unsubscribe = subscribeToWindowForeground(() => { void loadWorktrees(true); });
+    return () => {
+      unsubscribe();
+      request?.abort();
+    };
   }, [selectedCwd, wtRefreshKey, refreshKey]);
 
   const explorerCwd = selectedCwd ?? selectedCwdProp;

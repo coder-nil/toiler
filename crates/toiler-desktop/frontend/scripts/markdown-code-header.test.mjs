@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import postcss from "postcss";
 import { createJiti } from "jiti";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
-const jiti = createJiti(import.meta.url);
+const jiti = createJiti(import.meta.url, {
+  alias: { "@": fileURLToPath(new URL("../", import.meta.url)) },
+  jsx: { runtime: "automatic" },
+});
+const { MarkdownCodeLang } = await jiti.import("../components/MarkdownCodeLang.tsx");
 const { codeLanguageIconFile } = await jiti.import("../lib/language-icons.ts");
 const { resolveFileIconName } = await jiti.import("../lib/file-icon-names.ts");
 
@@ -97,11 +104,20 @@ test("围栏语言到文件图标的映射都能落到真实存在的 SVG 上", 
   }
 });
 
-test("没有对应文件图标的语言不加图标，也不落到通用文件图标", () => {
-  // ```text / ```diff / ```mermaid 这类没有文件形态的语言：头部只留文字。
-  for (const language of ["", "text", "diff", "mermaid", "log", "makefile"]) {
-    assert.equal(codeLanguageIconFile(language), null, `${language} 不该有图标映射`);
+test("无专用图标的围栏显示通用图标，同时保留语言标签", () => {
+  for (const language of ["", "text", "diff", "mermaid", "unknown-lang", "constructor"]) {
+    const html = renderToStaticMarkup(createElement(MarkdownCodeLang, { language }));
+    assert.match(html, /catppuccin\/latte\/_file\.svg/);
+    assert.match(html, /catppuccin\/mocha\/_file\.svg/);
+    assert.ok(html.endsWith(`</span>${language || "text"}</span>`));
   }
+});
+
+test("已知语言继续显示专用图标", () => {
+  const html = renderToStaticMarkup(createElement(MarkdownCodeLang, { language: "TS" }));
+  assert.match(html, /catppuccin\/latte\/typescript\.svg/);
+  assert.match(html, /catppuccin\/mocha\/typescript\.svg/);
+  assert.ok(html.endsWith("</span>TS</span>"));
 });
 
 test("语言标签的图标与文字同行，并用 Catppuccin 原色", () => {

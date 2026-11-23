@@ -70,6 +70,10 @@ pub fn router(state: AppState) -> Router {
             get(crate::routes::agent_extra::bash_output),
         )
         .route("/api/agent/new", post(crate::routes::agent::new_session))
+        .route(
+            "/api/agent/draft/system-prompt",
+            post(crate::routes::agent::draft_system_prompt),
+        )
         .route("/api/agent/running", get(crate::routes::agent::running))
         .route(
             "/api/agent/running/events",

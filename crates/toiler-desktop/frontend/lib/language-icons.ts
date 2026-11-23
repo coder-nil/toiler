@@ -3,9 +3,7 @@
  *
  * 为什么绕一层「文件名」而不是直接给图标名：文件面板、TabBar、聊天提及用的是
  * 同一套 `getFileIcon(name)`（按扩展名 / 特殊文件名查 `public/icons/catppuccin`）。
- * 把围栏语言翻译成文件名，代码块就能命中同一份映射表，不用维护第二份图标清单；
- * 反过来，图标表里没有的语言（xml、c、makefile…）自然就落空，头部只显示文字，
- * 这比塞一个通用文件图标更不容易误导读代码的人。
+ * 把围栏语言翻译成文件名，代码块就能命中同一份映射表，不用维护第二份图标清单。
  *
  * 同一个语言会有多个围栏写法（```ts / ```typescript / ```TS），键一律用小写；
  * 值写成「能真实存在于磁盘上的文件名」，这样 `Dockerfile` 这类按特殊名匹配的
@@ -68,14 +66,8 @@ const CODE_LANGUAGE_FILES: Record<string, string> = {
   docker: "Dockerfile",
 };
 
-/**
- * 返回该围栏语言对应的文件名；图标表里没有这门语言时返回 `null`。
- *
- * 只做一次查表，不做「猜扩展名」的兜底：`getFileIcon` 对未知扩展名会给通用文件
- * 图标，那个兜底在这里会把 `text`、`diff` 也画成文件，等于每条代码块都带图标。
- */
+/** 返回该围栏语言对应的文件名；无映射时交由渲染层使用通用图标。 */
 export function codeLanguageIconFile(language: string | null | undefined): string | null {
   const key = (language ?? "").trim().toLowerCase();
-  if (!key) return null;
-  return CODE_LANGUAGE_FILES[key] ?? null;
+  return Object.hasOwn(CODE_LANGUAGE_FILES, key) ? CODE_LANGUAGE_FILES[key] : null;
 }

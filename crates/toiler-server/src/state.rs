@@ -655,11 +655,8 @@ impl AppState {
                 }
             }
         }
-        for project in self.projects().list().unwrap_or_default() {
-            seed.push(PathBuf::from(&project.project_root));
-            seed.push(PathBuf::from(&project.cwd));
-        }
-        if let Ok(Some((_, root))) = self.projects().selected() {
+        seed.extend(self.projects().paths_read_only().unwrap_or_default());
+        if let Some((_, root)) = self.projects().selected_read_only() {
             seed.push(PathBuf::from(root));
         }
         self.roots().seed(seed);

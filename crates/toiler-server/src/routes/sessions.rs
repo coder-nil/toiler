@@ -30,7 +30,7 @@ pub async fn list(
     Query(params): Query<ListParams>,
 ) -> Response {
     let force = params.force.as_deref() == Some("1");
-    let sessions = state.sessions().list(force);
+    let sessions = state.sessions().history(force);
     let updated_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)

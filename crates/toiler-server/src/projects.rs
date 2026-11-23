@@ -144,6 +144,23 @@ impl ProjectStore {
         Ok(rows.filter_map(Result::ok).collect())
     }
 
+    /// 授权检查只需要路径，不能因读取草稿预览而建库或迁移表。
+    pub(crate) fn paths_read_only(&self) -> Result<Vec<PathBuf>> {
+        if !self.db.is_file() {
+            return Ok(Vec::new());
+        }
+        let conn =
+            Connection::open_with_flags(&self.db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let mut stmt = conn.prepare("SELECT project_root, cwd FROM added_projects")?;
+        let rows = stmt.query_map([], |row| {
+            Ok([
+                PathBuf::from(paths::simplified(&row.get::<_, String>(0)?)),
+                PathBuf::from(paths::simplified(&row.get::<_, String>(1)?)),
+            ])
+        })?;
+        Ok(rows.filter_map(Result::ok).flatten().collect())
+    }
+
     /// 加入 / 更新项目（父目录变化时以新值为准）。
     ///
     /// 三个路径参数先过 [`paths::simplified`]：路由层可能把 `canonicalize` 的

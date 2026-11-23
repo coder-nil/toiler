@@ -40,22 +40,10 @@ export function getFileIcon(name: string, size = 14): React.ReactNode {
 }
 
 /**
- * 代码块头部用：围栏语言 → 文件图标，映射不到返回 `null`。
- *
- * 与 `getFileIcon` 的区别只在兜底：文件面板里未知扩展名必须画点什么（否则整行
- * 缩进会塌），而代码块头部没有图标是正常态（```text、```diff、```mermaid），
- * 塞一个通用文件图标反而让人以为那是个真文件。
- *
- * 图标本身复用 `.catppuccin-file-icon`，与文件面板、TabBar、聊天提及里用的是同一
- * 份 SVG；唯一的区别是配色：`globals.css` 里那条 `@supports` 遮罩规则把文件树
- * 的图标统一涂成 `--text-dim`（不抢读），而代码块头部保留 Catppuccin 原色，因为
- * 那里的图标是辨别语言的锥点。尺寸不走内联 px，而是按 13px 传给 `size`，与
- * header 的 12px 字号匹配。
+ * 代码块优先复用文件面板的语言图标，没有专用图标时使用通用文件图标。
+ * 代码块头部保留 Catppuccin 原色，便于区分已知语言。
  */
 export function getCodeLanguageIcon(language: string | null | undefined, size = 13): React.ReactNode {
   const file = codeLanguageIconFile(language);
-  if (!file) return null;
-
-  const icon = resolveFileIconName(file);
-  return icon ? <CatppuccinIcon name={icon} size={size} /> : null;
+  return file ? getFileIcon(file, size) : <GenericFileIcon size={size} />;
 }

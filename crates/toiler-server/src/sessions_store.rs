@@ -361,10 +361,16 @@ pub fn normalize_path(path: &str) -> String {
     }
 }
 
+#[derive(Default)]
+struct ListCache {
+    generation: u64,
+    snapshot: Option<(Instant, Vec<Value>)>,
+}
+
 /// 会话列表（带 30 秒缓存，复刻 pi 的 `dQ`）。
 pub struct SessionList {
     root: PathBuf,
-    cache: Mutex<Option<(Instant, Vec<Value>)>>,
+    cache: Mutex<ListCache>,
     /// 扫描互斥：并发请求（例如界面首屏同时发两个请求）只扫一遍，
     /// 后来的直接命中前一个算出的缓存，不重复读 500+ 个会话文件。
     scan_lock: Mutex<()>,
@@ -374,7 +380,7 @@ impl SessionList {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
-            cache: Mutex::new(None),
+            cache: Mutex::new(ListCache::default()),
             scan_lock: Mutex::new(()),
         }
     }
@@ -397,9 +403,28 @@ impl SessionList {
                 return items;
             }
         }
+        let generation = self.cache.lock().expect("cache").generation;
         let items = self.scan();
-        *self.cache.lock().expect("cache") = Some((Instant::now(), items.clone()));
+        let mut cache = self.cache.lock().expect("cache");
+        // 首条消息可能在扫描期间写入，不让旧结果重新盖住写入时的失效通知。
+        if cache.generation == generation {
+            cache.snapshot = Some((Instant::now(), items.clone()));
+        }
         items
+    }
+
+    /// 历史列表和搜索不应列出只含模型/推理设置的草稿。显式命名或分叉的会话仍可见。
+    pub fn history(&self, force: bool) -> Vec<Value> {
+        self.list(force)
+            .into_iter()
+            .filter(|item| {
+                item["messageCount"].as_u64().is_some_and(|count| count > 0)
+                    || item["name"]
+                        .as_str()
+                        .is_some_and(|name| !name.trim().is_empty())
+                    || item["parentSessionId"].is_string()
+            })
+            .collect()
     }
 
     /// 命中缓存就返回副本（`force` 为 true 时一定不命中）。
@@ -408,7 +433,7 @@ impl SessionList {
             return None;
         }
         let guard = self.cache.lock().expect("cache");
-        let (at, items) = guard.as_ref()?;
+        let (at, items) = guard.snapshot.as_ref()?;
         if at.elapsed() < LIST_CACHE_TTL {
             Some(items.clone())
         } else {
@@ -418,7 +443,9 @@ impl SessionList {
 
     /// 失效缓存（写入 / 删除后调用，对应 pi 的 `mD()`）。
     pub fn invalidate(&self) {
-        *self.cache.lock().expect("cache") = None;
+        let mut cache = self.cache.lock().expect("cache");
+        cache.generation = cache.generation.wrapping_add(1);
+        cache.snapshot = None;
     }
 
     fn scan(&self) -> Vec<Value> {
