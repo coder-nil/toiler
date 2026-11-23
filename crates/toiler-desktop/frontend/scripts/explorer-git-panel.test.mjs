@@ -103,7 +103,61 @@ test("刷新前再次隐藏或切换项目卸载订阅时，不再触发旧刷�
   stop();
   target.paint();
   target.dispatchEvent(new Event("focus"));
-  target.setVisibility("hidden");
   target.setVisibility("visible");
   target.paint();
+});
+
+test("桌面主窗口的原生焦点事件不依赖 DOM 焦点、可见性或绘制", async () => {
+  const target = foregroundWindow();
+  target.__PI_WEB_DESKTOP__ = true;
+  let refreshes = 0;
+  let nativeFocus;
+  let unlistened = 0;
+  const stop = subscribeToWindowForeground(() => refreshes++, target, async (event, callback, options) => {
+    assert.equal(event, "tauri://focus");
+    assert.deepEqual(options.target, { kind: "Window", label: "main" });
+    nativeFocus = callback;
+    return () => { unlistened++; };
+  });
+  await Promise.resolve();
+  target.setVisibility("hidden");
+  nativeFocus();
+  assert.equal(refreshes, 1);
+  target.setVisibility("visible");
+  target.dispatchEvent(new Event("focus"));
+  target.paint();
+  assert.equal(refreshes, 1);
+
+  nativeFocus();
+  assert.equal(refreshes, 2);
+  stop();
+  nativeFocus();
+  assert.equal(refreshes, 2);
+  assert.equal(unlistened, 1);
+});
+
+test("桌面原生监听失败时仍能通过网页事件刷新", async () => {
+  const target = foregroundWindow();
+  target.__PI_WEB_DESKTOP__ = true;
+  let refreshes = 0;
+  const stop = subscribeToWindowForeground(() => refreshes++, target, async () => {
+    throw new Error("无法监听原生事件");
+  });
+  await Promise.resolve();
+  target.dispatchEvent(new Event("focus"));
+  target.paint();
+  assert.equal(refreshes, 1);
+  stop();
+});
+
+test("切换项目时清理尚未完成注册的原生监听", async () => {
+  const target = foregroundWindow();
+  target.__PI_WEB_DESKTOP__ = true;
+  let unlistened = false;
+  const stop = subscribeToWindowForeground(() => assert.fail("不应触发旧项目刷新"), target, async () => {
+    return () => { unlistened = true; };
+  });
+  stop();
+  await Promise.resolve();
+  assert.equal(unlistened, true);
 });
