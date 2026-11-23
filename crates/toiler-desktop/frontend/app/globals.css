@@ -1279,11 +1279,6 @@ html.toiler-native-titlebar body {
   --file-panel-surface: linear-gradient(to bottom,
     transparent var(--native-titlebar-height),
     var(--bg) var(--native-titlebar-height));
-  /* Git 面板是从右侧抽出（≥960px 时贴住文件面板）的独立一列，顶部同样
-     与三列标题带同高。不接这条渐变，它的标题栏就会在材质带上留一块实色。 */
-  --git-panel-surface: linear-gradient(to bottom,
-    transparent var(--native-titlebar-height),
-    var(--bg) var(--native-titlebar-height));
 }
 
 /* Windows 控制按钮位于 body 下，不在工作台内；成功启用材质时也要透出，
@@ -2647,111 +2642,22 @@ span.token.table {
   display: none;
 }
 
-.git-panel-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1100;
-  display: flex;
-  justify-content: flex-end;
-  pointer-events: none;
-  background: transparent;
-}
-
-.git-panel-dialog {
+.git-panel {
   position: relative;
   display: flex;
+  flex: 1;
   flex-direction: column;
-  width: 460px;
-  max-width: 100vw;
-  height: 100%;
-  flex-shrink: 0;
+  min-height: 0;
   overflow: hidden;
-  /* 原生材质可用时顶部一条透明（见 --git-panel-surface），否则仍是实色。 */
-  background: var(--git-panel-surface, var(--bg));
-  border-left: 1px solid var(--border);
-  /* 面板是从右边缘抽出来的，阴影只往左打，别用 --shadow-overlay（那是向下打的浮层阴影）。 */
-  box-shadow: -14px 0 32px -12px rgba(0, 0, 0, 0.3);
-  pointer-events: auto;
-  transition: margin-right 0.2s ease;
-}
-
-/* Dock the Git panel as a real split-layout panel immediately left of file-panel. */
-@media (min-width: 960px) {
-  .git-panel-overlay {
-    position: relative;
-    inset: auto;
-    z-index: 210;
-    width: min(460px, 38vw);
-    min-width: min(320px, 38vw);
-    height: 100%;
-    flex: 0 0 min(460px, 38vw);
-    overflow: hidden;
-    pointer-events: auto;
-  }
-  .git-panel-dialog {
-    width: 100%;
-    max-width: none;
-  }
-}
-
-/* ── Git 面板内部 ─────────────────────────────────────────────
-   面板分三层面：顶栏走 --titlebar-surface（外壳面，材质启用时透明）、内容
-   列走 --bg（内容面）、卡片与输入走 --bg-panel（控件填充）。所有颜色读 token
-   —— 之前状态色是写死的 #4ade80 / #ef4444 / #16a34a，同一份值在浅色主题下
-   要么过曝、要么（#16a34a 绿字）掉到 3:1 以下。
-   行内操作沿用 .project-row 的结论：图标按钮常驻、尺寸不随 hover 变化，
-   只有按钮自己被 hover / 键盘聚焦才换色（淡入会让人找不到按钮，撑高会
-   把列表推得发抖）。 */
-.git-panel-header {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  /* 与应用其它 26px 工具条按键同高；高度由组件内联写
-     （CHAT_TOP_BAR_HEIGHT + 安全区），内联的 padding-top 盖住这里的简写。 */
-  padding: 0 8px 0 14px;
-  /* 与侧栏 / 对话 / 文件面板同一套外壳面：材质启用时透明，让这条带子和
-     其它列的标题栏连成一片，而不是中间嵌一块实色。 */
-  background: var(--titlebar-surface, var(--bg-chrome));
-  /* 这条带子是拖拽区（data-tauri-drag-region="deep"）：光标保持箭头、
-     不吃文本选择，跟窗口外壳（.app-chrome）同一套规矩。否则路径文字上
-     显示可选中光标，按下去却在拖窗口。 */
-  cursor: default;
-  -webkit-user-select: none;
-  user-select: none;
-}
-
-.git-panel-header-icon {
-  flex-shrink: 0;
-  color: var(--text-muted);
-}
-
-.git-panel-title {
-  flex-shrink: 0;
-  color: var(--text);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: -0.005em;
-}
-
-/* 仓库路径：等宽、淡一档，窄面板里第一个被截断的就是它。 */
-.git-panel-path {
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  background: var(--sidebar-bg, var(--bg));
 }
 
 .git-panel-body {
   flex: 1;
   min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: 14px;
+  overflow: hidden auto;
+  overscroll-behavior-y: contain;
+  padding: 8px;
 }
 
 .git-hint {
@@ -2813,80 +2719,20 @@ span.token.table {
   gap: 4px;
 }
 
-/* 分支 / 同步摘要：标签列改成按内容自适应（原来写死 58px，中文本地化一长就换行）。 */
-.git-summary {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 7px 10px;
-  align-items: center;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-panel);
-}
-
-.git-summary-label {
-  color: var(--text-muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.git-summary-value {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-/* 「未设置上游」是提示而不是分支名，不跟着用 600 粗体。 */
 .git-summary-note {
   font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--text-muted);
 }
 
-.git-sync {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.git-sync-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 38px;
-  height: 22px;
-  padding: 0 7px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-full);
-  background: var(--bg);
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1;
-}
-
-.git-sync-chip[data-active="true"][data-tone="ahead"] {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  color: var(--accent);
-}
-
-.git-sync-chip[data-active="true"][data-tone="behind"] {
-  border-color: color-mix(in srgb, var(--star) 45%, var(--border));
-  background: color-mix(in srgb, var(--star) 12%, transparent);
-  color: var(--star);
-}
-
-/* 分区：只有相邻的两个分区之间画一条细线。摘要卡后面再顶一条横线是多余的。 */
 .git-section {
   margin-top: 16px;
   padding-top: 14px;
+}
+
+.git-panel-body > .git-section:first-child {
+  margin-top: 0;
+  padding-top: 0;
 }
 
 .git-section + .git-section {
@@ -2899,6 +2745,7 @@ span.token.table {
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
+  flex-wrap: wrap;
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 700;
@@ -2915,8 +2762,7 @@ span.token.table {
 
 .git-section-actions {
   display: flex;
-  align-items: center;
-  flex-shrink: 0;
+  flex-wrap: wrap;
   gap: 4px;
 }
 
@@ -3086,6 +2932,7 @@ span.token.table {
 
 .git-commit-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
   margin-top: 7px;
@@ -3241,8 +3088,9 @@ span.token.table {
   inset: 0;
   z-index: 10;
   display: grid;
-  align-content: center;
-  padding: 14px;
+  grid-template-rows: minmax(0, 1fr);
+  align-items: center;
+  padding: 8px;
   background: var(--bg-overlay, #0008);
 }
 
@@ -3328,12 +3176,12 @@ span.token.table {
 
 .git-confirm-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .git-panel-dialog,
   .git-btn,
   .git-icon-btn,
   .git-file-row,

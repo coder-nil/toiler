@@ -3680,6 +3680,65 @@ async fn real_project_root_is_detected_for_a_git_checkout() {
     let _: BTreeMap<String, Value> = BTreeMap::new();
 }
 
+#[tokio::test]
+async fn worktree_selector_reports_sync_counts_for_the_current_checkout() {
+    // 分支选择框依赖当前工作树的 branchSync，不能取主工作树的 HEAD。
+    let sandbox = fixture_root("branch-sync");
+    let store = sandbox.join("store");
+    let repo = sandbox.join("repo");
+    let linked = sandbox.join("linked");
+    std::fs::create_dir(&store).unwrap();
+    std::fs::create_dir(&repo).unwrap();
+    let git = |cwd: &Path, args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args(["-c", "commit.gpgSign=false"])
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", sandbox.join("gitconfig"))
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} 失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["commit", "--allow-empty", "-qm", "base"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-qb",
+            "feature",
+            linked.to_str().unwrap(),
+        ],
+    );
+    git(&repo, &["commit", "--allow-empty", "-qm", "main-only"]);
+    git(&linked, &["commit", "--allow-empty", "-qm", "feature-only"]);
+    git(&linked, &["branch", "--set-upstream-to=main"]);
+
+    let router = app_with_agent_dir(&store, &sandbox, Some(&store));
+    for (cwd, expected) in [
+        (&repo, Value::Null),
+        (&linked, json!({ "ahead": 1, "behind": 1 })),
+    ] {
+        let url = format!("/api/worktrees?cwd={}", url_encode(&cwd.to_string_lossy()));
+        let reply = get(router.clone(), &url).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+        let body = reply.json();
+        assert_eq!(body["isTopLevel"], true, "{body}");
+        assert_eq!(body.get("branchSync"), Some(&expected), "{body}");
+    }
+    std::fs::remove_dir_all(sandbox).unwrap();
+}
+
 // ============================================================================
 // 6) /api/skills —— 技能面板
 // ============================================================================

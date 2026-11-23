@@ -13,7 +13,6 @@ import { SettingsPanel } from "./SettingsPanel";
 import { AboutDialog } from "./AboutDialog";
 import { BranchNavigator, ConversationBranchesIcon } from "./BranchNavigator";
 import { SystemPromptPanel } from "./SystemPromptPanel";
-import { GitPanel } from "./GitPanel";
 import { useTheme, resolveTheme, setThemeState } from "@/hooks/useTheme";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -167,21 +166,6 @@ export function AppShell() {
   /** 版本信息（ⓘ）。侧边栏标题行与设置 → 常规 共用同一个对话框。 */
   const [aboutOpen, setAboutOpen] = useState(false);
   const [bannerEnabled, setBannerEnabledState] = useState(true);
-  const [gitPanelOpen, setGitPanelOpen] = useState(false);
-  /**
-   * Git 面板的仓库根。`null` = 跟随当前项目；一个项目里可以有多个各自带 `.git`
-   * 的子项目，此时它指向文件浏览器里那颗被点击的 Git 徽标所在的子目录。
-   */
-  const [gitPanelCwd, setGitPanelCwd] = useState<string | null>(null);
-  const [activeProjectIsGit, setActiveProjectIsGit] = useState<boolean | null>(null);
-  /**
-   * 本机有没有 git。`null` = 还没探测出来。
-   *
-   * 没装 git 时 `activeProjectIsGit` 永远是 false，如果只看那个字段，底部 Git
-   * 按钮就永远不会出现，用户也就没有渠道看到面板里那句「请先安装 Git」。所以
-   * 入口条件写成「是仓库或没装 git」，两种情况都能打开面板看说明。
-   */
-  const [gitAvailable, setGitAvailable] = useState<boolean | null>(null);
   const [projectTrust, setProjectTrust] = useState<ProjectTrustStatus | null>(null);
   const [projectTrustDialogOpen, setProjectTrustDialogOpen] = useState(false);
   const [projectTrustBusy, setProjectTrustBusy] = useState(false);
@@ -1200,44 +1184,6 @@ export function AppShell() {
   const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
   const windowTitle = activeCwdName ? `${activeCwdName} - Toiler` : "Toiler";
 
-  // Git 面板的目标仓库：默认跟随当前项目；从文件浏览器的子项目行打开时指向该子仓库。
-  // 没装 git 时也传当前目录：面板不会去调用 git，只用这个路径当头部的上下文。
-  const gitPanelTargetCwd = gitPanelCwd ?? (activeProjectIsGit === true || gitAvailable === false ? activeCwd : null);
-
-  const closeGitPanel = useCallback(() => {
-    setGitPanelOpen(false);
-    setGitPanelCwd(null);
-  }, []);
-
-  // 侧边栏分支行 / 底部工具条的 Git 按钮：总是切回当前项目自己的仓库。
-  const toggleGitPanel = useCallback(() => {
-    setGitPanelCwd(null);
-    setGitPanelOpen((open) => !open);
-  }, []);
-
-  const openRepositoryGitPanel = useCallback((repositoryPath: string) => {
-    setGitPanelCwd(repositoryPath);
-    setGitPanelOpen(true);
-  }, []);
-
-  useEffect(() => {
-    // `null` means the sidebar is still resolving the current project. Keep
-    // an already-open panel mounted until Git detection resolves explicitly
-    // to a non-repository result — unless the panel is looking at a sub-project
-    // repository, which is a repository regardless of the enclosing project.
-    //
-    // 没装 git 时 `activeProjectIsGit` 也是 false，但那个面板正是用来告诉用户
-    // 「先安装 Git」的，不能因为它不是仓库就自动关掉。
-    if (activeProjectIsGit === false && gitPanelCwd === null && gitAvailable !== false) {
-      setGitPanelOpen(false);
-    }
-  }, [activeProjectIsGit, gitPanelCwd, gitAvailable]);
-
-  // 换项目后不再沿用上一个项目里的子仓库，避免面板指向已不可见/已删除的目录。
-  useEffect(() => {
-    setGitPanelCwd(null);
-  }, [activeCwd]);
-
   useEffect(() => {
     const syncWindowTitle = () => {
       if (document.title !== windowTitle) document.title = windowTitle;
@@ -1271,10 +1217,6 @@ export function AppShell() {
         onAtMentions={handleAtMentions}
         onBackgroundTaskDone={handleBackgroundTaskDone}
         onRunningSessionIdsChange={handleRunningSessionIdsChange}
-        onProjectGitStateChange={(isGit, available) => {
-          setActiveProjectIsGit(isGit);
-          if (available !== undefined) setGitAvailable(available);
-        }}
         onGenerateTitle={(sessionId) => void handleAutoName(sessionId)}
         titleGenerationStatus={autoNameStatus.kind === "idle" ? null : autoNameStatus}
         appUpdate={appUpdate}
@@ -1282,101 +1224,44 @@ export function AppShell() {
         onAboutClick={() => setAboutOpen(true)}
         onHideSidebar={handleSidebarToggle}
         openDirectoryRequest={openDirectoryRequest}
-        onOpenGitPanel={toggleGitPanel}
-        onOpenRepositoryGitPanel={openRepositoryGitPanel}
-        gitPanelOpen={gitPanelOpen}
       />
-      <div style={{ padding: "8px", flexShrink: 0, display: "flex", justifyContent: "space-between", gap: 4 }}>
-        {([
-          {
-            id: "settings",
-            label: translate("common.settings"),
-            onClick: () => setSettingsOpen(true),
-            disabled: false,
-            icon: (
+      <div style={{ padding: "8px", flexShrink: 0, display: "flex" }}>
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          title={translate("common.settings")}
+          aria-label={translate("common.settings")}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6,
+            height: 32,
+            padding: "0 10px",
+            background: "transparent",
+            border: "1px solid transparent",
+            borderRadius: 6,
+            color: "var(--text-muted)",
+            cursor: "pointer",
+            fontSize: 12,
+            transition: "background 0.12s, color 0.12s",
+          }}
+          onMouseEnter={(event) => {
+            event.currentTarget.style.background = "var(--bg-hover)";
+            event.currentTarget.style.color = "var(--text)";
+          }}
+          onMouseLeave={(event) => {
+            event.currentTarget.style.background = "transparent";
+            event.currentTarget.style.color = "var(--text-muted)";
+          }}
+        >
                 <svg viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="9191" width="14" height="14">
                   <path
                       d="M537.6 919.893333h-52.48c-24.32 0-45.226667-17.493333-49.066667-41.813333l-12.8-76.8a296.96 296.96 0 0 1-53.76-22.186667l-64 44.373334c-20.053333 14.08-46.933333 11.52-64-5.546667l-37.12-37.12c-17.493333-17.066667-19.626667-44.373333-5.12-64.426667l44.8-62.72c-9.386667-17.066667-16.64-35.413333-22.613333-54.186666l-76.373333-13.653334c-23.466667-4.266667-40.96-24.746667-40.96-49.066666v-52.48c0-24.32 17.493333-45.226667 41.813333-49.066667l75.946667-12.8c5.546667-18.773333 13.226667-36.693333 22.613333-54.186667L200.106667 304.64c-14.08-20.053333-11.52-46.933333 5.546666-64l37.12-36.693333c17.066667-17.493333 44.373333-19.626667 64.426667-5.12l63.146667 45.226666c17.066667-8.96 34.986667-16.64 53.76-22.186666l12.373333-76.373334c3.84-24.32 24.746667-41.813333 49.493333-41.813333h52.053334c24.32 0 45.226667 17.493333 49.066666 41.386667l13.653334 77.226666c18.346667 5.546667 36.693333 13.226667 53.76 22.186667l63.146666-45.653333c20.053333-14.506667 47.36-11.946667 64.426667 5.12l37.12 36.693333c17.066667 17.066667 19.626667 44.373333 5.546667 64l-45.226667 64.853333c8.96 17.066667 16.213333 34.986667 22.186667 53.333334l77.226666 12.8c24.32 3.84 41.813333 24.746667 41.813334 49.493333v52.053333c0 24.32-17.493333 45.226667-41.386667 49.066667l-77.653333 13.653333c-5.546667 18.346667-12.8 36.266667-21.76 53.333334l45.653333 63.573333c14.506667 19.626667 12.373333 47.36-5.12 64.426667l-36.693333 37.12c-17.066667 17.066667-44.373333 19.626667-64 5.546666l-64.426667-45.226666c-17.066667 9.386667-34.986667 16.64-53.76 22.613333l-13.653333 77.226667c-4.266667 23.893333-25.173333 41.386667-49.066667 40.96z m-170.666667-197.546666l13.226667 8.106666c21.76 13.226667 45.226667 22.613333 69.973333 29.013334l15.36 3.84 17.92 107.093333s0.853333 1.706667 1.706667 1.706667h52.48s1.706667-0.853333 1.706667-1.706667l19.2-107.52 14.933333-3.84a247.893333 247.893333 0 0 0 69.546667-29.013333l13.226666-8.106667 89.6 63.146667h2.56l36.693334-36.693334s0.426667-1.706667 0-2.56l-64-88.746666 8.106666-13.653334c13.226667-21.333333 22.613333-44.8 29.013334-69.546666l3.84-14.933334 107.946666-18.773333s1.706667-0.853333 1.706667-1.706667V486.4s-0.853333-1.706667-1.706667-1.706667l-107.946666-17.493333-3.84-15.36a251.733333 251.733333 0 0 0-28.586667-69.12l-8.106667-13.226667 63.573334-90.026666v-2.56l-36.693334-36.693334s-1.706667-0.426667-2.56 0L657.066667 303.786667l-13.653334-8.106667a247.893333 247.893333 0 0 0-69.546666-29.013333l-14.933334-3.84-18.773333-107.52s-0.853333-1.706667-1.706667-1.706667H486.4s-1.706667 0.853333-1.706667 1.706667l-17.493333 107.093333-15.36 3.84c-24.746667 5.973333-48.213333 15.786667-69.546667 28.586667l-13.653333 8.106666-88.32-63.146666s-1.706667-0.426667-2.56 0l-37.12 37.12s-0.426667 1.706667 0 2.56l61.866667 89.173333-8.106667 13.226667c-13.226667 21.76-23.04 45.226667-29.44 69.973333l-3.84 15.36-106.24 17.92s-1.706667 0.853333-1.706667 1.706667v52.053333s0.853333 1.706667 1.706667 1.706667l106.666667 18.773333 3.413333 14.933333c5.973333 24.746667 15.786667 48.213333 29.013333 69.973334l8.106667 13.653333-63.146667 87.893333s-0.426667 1.706667 0 2.56l36.693334 37.12s1.706667 0.426667 2.56 0l89.173333-61.866666z m145.066667-58.453334c-84.053333 0-151.893333-68.266667-151.893333-151.893333s68.266667-151.893333 151.893333-151.893333 151.893333 68.266667 151.893333 151.893333c0 84.053333-67.84 151.893333-151.893333 151.893333z m0-256c-57.6 0-104.106667 46.506667-104.106667 104.106667 0 57.6 46.506667 104.106667 104.106667 104.106667 57.6 0 104.106667-46.506667 104.106667-104.106667 0-57.6-46.506667-104.106667-104.106667-104.106667z"
                       fill="#333F48" p-id="9192"/>
                 </svg>
-            ),
-          },
-          {
-            id: "git",
-            label: translate("common.git"),
-            onClick: toggleGitPanel,
-            disabled: !activeCwd && !selectedSession?.cwd && !newSessionCwd,
-            icon: (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                     strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <circle cx="6" cy="6" r="3"/>
-                  <circle cx="18" cy="18" r="3"/>
-                  <path d="M6 9v6a3 3 0 0 0 3 3h6"/>
-                  <path d="M18 15V9a3 3 0 0 0-3-3H9"/>
-                </svg>
-            ),
-          },
-        ] as {
-          id: string;
-          label: string;
-          title?: string;
-          onClick: () => void;
-          disabled: boolean;
-          icon: React.ReactNode;
-          iconOnly?: boolean;
-          color?: string;
-        }[]).filter(({id}) => id !== "git" || activeProjectIsGit === true || gitAvailable === false).map(({
-                                                                                  id,
-                                                                                  label,
-                                                                                  title,
-                                                                                  onClick,
-                                                                                  disabled,
-                                                                                  icon,
-                                                                                  iconOnly,
-                                                                                  color
-                                                                                }) => (
-            <button
-                key={id}
-                type="button"
-                onClick={onClick}
-                disabled={disabled}
-                title={title ?? label}
-                aria-label={title ?? label}
-                aria-pressed={id === "git" ? gitPanelOpen : undefined}
-                style={{
-                  flex: iconOnly ? "0 0 32px" : "0 0 auto",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                  height: 32,
-                  padding: "0 10px",
-                  background: id === "git" && gitPanelOpen ? "var(--bg-selected)" : "transparent",
-                  border: "1px solid transparent",
-                  borderRadius: 6,
-                  color: id === "git" && gitPanelOpen ? "var(--text)" : color ?? "var(--text-muted)",
-                  cursor: disabled ? "default" : "pointer",
-                  fontSize: 12,
-                  opacity: disabled ? 0.35 : 1,
-                  position: id === "git" && gitPanelOpen ? "relative" : undefined,
-                  zIndex: id === "git" && gitPanelOpen ? 1200 : undefined,
-                  transition: "background 0.12s, color 0.12s, border-color 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  if (!disabled) {
-                    e.currentTarget.style.background = "var(--bg-hover)";
-                    e.currentTarget.style.color = "var(--text)";
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = id === "git" && gitPanelOpen ? "var(--bg-selected)" : "transparent";
-                  e.currentTarget.style.color = id === "git" && gitPanelOpen ? "var(--text)" : color ?? "var(--text-muted)";
-                }}
-            >
-              {icon}
-              {!iconOnly && label}
-            </button>
-        ))}
+          {translate("common.settings")}
+        </button>
       </div>
     </>
   );
@@ -1973,7 +1858,7 @@ export function AppShell() {
           flexShrink: 0,
           paddingTop: "env(safe-area-inset-top)",
           paddingBottom: "env(safe-area-inset-bottom)",
-          zIndex: gitPanelOpen ? 1200 : 200,
+          zIndex: 200,
         } as React.CSSProperties}
       >
         {sidebarContent}
@@ -2424,13 +2309,6 @@ export function AppShell() {
           />
         ))}
       </div>
-
-      {gitPanelOpen && gitPanelTargetCwd && (
-        // One panel instance per repository: switching to another sub-project
-        // must not carry over the previous repository's commit draft, credential
-        // form, or discard dialog.
-        <GitPanel key={gitPanelTargetCwd} cwd={gitPanelTargetCwd} sessionId={selectedSession?.id ?? null} onClose={closeGitPanel} onChanged={handleExplorerRefresh} onOpenFile={handleOpenFile} />
-      )}
 
       <div
         aria-hidden="true"

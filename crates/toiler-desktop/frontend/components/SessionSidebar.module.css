@@ -150,6 +150,11 @@
   max-height: 40%;
 }
 
+.explorer[data-git-open="true"] {
+  /* 文件少时浏览器会收缩；Git 打开后预留独立滚动区，不挤占会话列表。 */
+  height: 40%;
+}
+
 .explorerScroll,
 .sessionList {
   min-height: 0;
@@ -187,6 +192,9 @@
     opacity: 0;
     pointer-events: none;
   }
+  .explorer .sectionActions:has(+ .explorerGitButton) {
+    inset-inline-end: calc(var(--sidebar-gutter) + var(--sidebar-control) + 2px);
+  }
 }
 
 .explorerTrigger {
@@ -211,6 +219,47 @@
 
 .explorerTrigger[aria-expanded="true"] .explorerChevron {
   transform: rotate(90deg);
+}
+
+.gitHeading {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.gitHeading svg {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.gitRefreshSlot {
+  display: flex;
+  flex: none;
+}
+
+.branchSync {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.branchSync > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.branchSync [data-direction="ahead"][data-active="true"] {
+  color: var(--accent);
+}
+
+.branchSync [data-direction="behind"][data-active="true"] {
+  color: var(--star);
 }
 
 .sessions {

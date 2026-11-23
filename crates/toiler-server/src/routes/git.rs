@@ -339,16 +339,22 @@ pub async fn worktrees_list(
         };
         let is_git = !list.is_empty();
         let current = gitsvc::current_worktree_path(&list, Path::new(&cwd));
+        let branch_sync = if info.is_top_level && current.is_some() {
+            // 主仓库只用于列举工作树；同步数字必须从当前工作树的 HEAD 计算。
+            let (upstream, ahead, behind) = gitsvc::upstream_status(Path::new(&cwd));
+            upstream.map(|_| json!({ "ahead": ahead, "behind": behind }))
+        } else {
+            None
+        };
         json!({
-            // 本机有没有 git。侧边栏靠它决定底部 Git 按钮要不要出现：
-            // 没装 git 时 `isGit` 永远是 false，若只看 `isGit` 按钮就永远不会
-            // 出现，用户也就看不到面板里那句「请先安装 Git」。
+            // 缺少 Git 时也需要保留安装提示入口，不能只靠 isGit 判断。
             "gitAvailable": gitsvc::git_available(),
             "projectRoot": root,
             "projectKey": crate::paths::project_key(&root),
             "isGit": is_git,
             "isTopLevel": info.is_top_level,
             "currentWorktreePath": current,
+            "branchSync": branch_sync,
             "worktrees": list.iter().map(|wt| json!({
                 "path": wt.path,
                 "branch": wt.branch,

@@ -1,12 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, GitBranch, Loader2, Minus, Plus, RefreshCw, Trash2, Undo2, Upload, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { Loader2, Minus, Plus, RefreshCw, Trash2, Undo2, Upload } from "lucide-react";
+import { createPortal } from "react-dom";
 import { useI18n } from "@/hooks/useI18n";
 import { readApiJson } from "@/lib/api-json";
 import { APPLICATION_VERSION } from "@/lib/changelog";
 import { nextTagName, sortTagsDescending } from "@/lib/git-tags";
-import { CHAT_TOP_BAR_HEIGHT } from "@/lib/panel-layout";
 import { isMacPlatform, isWindowsPlatform } from "@/lib/platform-key";
 import { revealNext } from "@/lib/typewriter";
 import { upgradeProjectVersion, VERSION_UPGRADE_LEVELS, type VersionUpgradeLevel, type VersionUpgradePreview } from "@/lib/version-upgrade";
@@ -29,7 +29,6 @@ type GitSummary = {
   /// 一个是目录没初始化），不能共用一句「不是 Git 仓库」。
   gitAvailable?: boolean;
   isGitRepository: boolean;
-  repositoryRoot: string | null;
   branch: string | null;
   upstream: string | null;
   ahead: number;
@@ -71,7 +70,17 @@ function fileName(filePath: string): string {
   return filePath.split(/[\\/]/).pop() ?? filePath;
 }
 
-export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { cwd: string; sessionId: string | null; onClose: () => void; onChanged: () => void; onOpenFile: (filePath: string, fileName: string, options?: { modeHint?: "diff" }) => void }) {
+interface GitPanelProps {
+  cwd: string;
+  sessionId: string | null;
+  refreshTarget: HTMLElement | null;
+  refreshButtonClassName: string;
+  onClose: () => void;
+  onChanged: () => void;
+  onOpenFile: (filePath: string, fileName: string, options?: { modeHint?: "diff" }) => void;
+}
+
+export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName, onClose, onChanged, onOpenFile }: GitPanelProps) {
   const { locale, t } = useI18n();
   const [summary, setSummary] = useState<GitSummary | null>(null);
   const [message, setMessage] = useState("");
@@ -96,7 +105,9 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
   const [platform, setPlatform] = useState<InstallPlatform>("linux");
   const [versionPreview, setVersionPreview] = useState<{ level: VersionUpgradeLevel; data: VersionUpgradePreview } | null>(null);
   const [versionResult, setVersionResult] = useState<string | null>(null);
+  const panelRef = useRef<HTMLElement>(null);
   const versionDialogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { panelRef.current?.focus({ preventScroll: true }); }, []);
   useEffect(() => { setDesktop(window.__PI_WEB_DESKTOP__ === true); }, []);
   useEffect(() => { setPlatform(currentPlatform()); }, []);
   useEffect(() => { if (versionPreview) versionDialogRef.current?.focus(); }, [versionPreview]);
@@ -320,53 +331,52 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
   // the raw stderr alone never tells the user what to do next.
   const sshAuthFailed = needsSshCredential && /permission denied \(publickey\)/i.test(error ?? "");
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !disabled) {
-        event.preventDefault();
-        event.stopPropagation();
-        if (versionPreview) {
-          setVersionPreview(null);
-        } else if (confirmingDiscardAll) {
-          setConfirmingDiscardAll(false);
-        } else if (confirmingDiscardFile) {
-          setConfirmingDiscardFile(null);
-        } else if (confirmingDeleteTag) {
-          setConfirmingDeleteTag(null);
-        } else if (editingRemote) {
-          setEditingRemote(false);
-          setRemoteDraft("");
-        } else {
-          onClose();
-        }
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown, true);
-    return () => document.removeEventListener("keydown", handleKeyDown, true);
-  }, [confirmingDiscardAll, confirmingDeleteTag, confirmingDiscardFile, disabled, editingRemote, onClose, versionPreview]);
+  const refreshFromToolbar = async () => {
+    try {
+      await refresh();
+      onChanged();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Escape" || event.defaultPrevented || disabled) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (versionPreview) {
+      setVersionPreview(null);
+    } else if (confirmingDiscardAll) {
+      setConfirmingDiscardAll(false);
+    } else if (confirmingDiscardFile) {
+      setConfirmingDiscardFile(null);
+    } else if (confirmingDeleteTag) {
+      setConfirmingDeleteTag(null);
+    } else if (editingRemote) {
+      setEditingRemote(false);
+      setRemoteDraft("");
+    } else {
+      onClose();
+    }
+  };
 
   return (
-    <div role="presentation" className="git-panel-overlay">
-      <section role="dialog" aria-label={t("common.git")} className="git-panel-dialog">
-        {/* 标题条与对话顶栏同高（CHAT_TOP_BAR_HEIGHT）：它是从右侧抽出来的浮层，
-            两条横线的 y 必须对得上，否则并排看就是错位的。高度仍是内联——安全区
-            只有内联的 paddingTop 能压住类里的 padding 简写。 */}
-        <header
-          className="git-panel-header"
-          inert={Boolean(versionPreview)}
-          // 标题条可拖窗口：面板贴右侧、头上一整条与对话顶栏同高，鼠标自然
-          // 会往那儿落。与 app-topbar 一样用 deep——裸属性只在直接点中这个
-          // 元素时生效，而这条带子里铺着图标、标题、路径、按钮。
-          data-tauri-drag-region="deep"
-          style={{ height: `calc(${CHAT_TOP_BAR_HEIGHT}px + env(safe-area-inset-top))`, paddingTop: "env(safe-area-inset-top)" }}
-        >
-          <GitBranch size={17} strokeWidth={2} className="git-panel-header-icon" aria-hidden="true" />
-          <strong className="git-panel-title">{t("common.git")}</strong>
-          <span className="git-panel-path" title={summary?.repositoryRoot ?? cwd}>{summary?.repositoryRoot ?? cwd}</span>
-          <button type="button" className="git-icon-btn" onClick={() => void refresh().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))} disabled={disabled} title={t("git.refreshStatus")} aria-label={t("git.refreshStatus")}><RefreshCw size={14} strokeWidth={2} aria-hidden="true" /></button>
-          <button type="button" className="git-icon-btn" onClick={onClose} disabled={disabled} title={t("git.close")} aria-label={t("git.close")}><X size={15} strokeWidth={2} aria-hidden="true" /></button>
-        </header>
-        <main className="git-panel-body" inert={Boolean(versionPreview)}>
+    <section ref={panelRef} tabIndex={-1} aria-label={t("common.git")} className="git-panel" onKeyDown={handleKeyDown}>
+        {/* 刷新入口在共享标题栏，禁用状态和错误仍由当前仓库的面板管理。 */}
+        {refreshTarget && createPortal(
+          <button
+            type="button"
+            className={refreshButtonClassName}
+            onClick={() => void refreshFromToolbar()}
+            disabled={disabled || Boolean(versionPreview)}
+            title={t("git.refreshStatus")}
+            aria-label={t("git.refreshStatus")}
+          >
+            <RefreshCw size={14} strokeWidth={1.8} aria-hidden="true" />
+          </button>,
+          refreshTarget,
+        )}
+        <div className="git-panel-body" inert={Boolean(versionPreview)}>
           {error && <div role="alert" className="git-alert">{error}{sshAuthFailed && <div className="git-alert-detail">{t("git.sshKeyAuthFailed")}</div>}</div>}
           {!summary && !error && <div className="git-hint">{t("git.loadingRepository")}</div>}
           {summary?.gitAvailable === false && <div className="git-hint" role="alert">
@@ -378,12 +388,6 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
           </div>}
           {summary?.gitAvailable !== false && summary && !summary.isGitRepository && <div className="git-hint">{t("git.notRepository")}</div>}
           {summary?.gitAvailable !== false && summary?.isGitRepository && <>
-            <div className="git-summary">
-              <span className="git-summary-label">{t("git.branch")}</span>
-              <strong className="git-summary-value" title={summary.branch ?? undefined}>{summary.branch ?? t("git.detachedHead")}</strong>
-              <span className="git-summary-label">{t("git.sync")}</span>
-              <span>{summary.upstream ? <SyncIndicator ahead={summary.ahead} behind={summary.behind} /> : <span className="git-summary-note">{t("git.noUpstream")}</span>}</span>
-            </div>
             {summary.upstream && summary.behind > 0 && !checkedUpdate && (
               <div className="git-note">
                 <span className="git-note-text">{t("git.availableUpdate", { count: summary.behind })}</span>
@@ -406,7 +410,7 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
             </div>
             <div className="git-section">
               <SectionTitle title={t("git.remote")} />
-              {summary.remote && !editingRemote && <div className="git-actions-row" style={{ marginBottom: 9 }}><div style={{ minWidth: 0, flex: 1, color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.45, overflowWrap: "anywhere" }}>{summary.remote}</div><ActionButton label={t("git.editRemote")} action="set_remote_url" busy={busy} onClick={() => { setRemoteDraft(summary.remote ?? ""); setEditingRemote(true); }} /></div>}
+              {summary.remote && !editingRemote && <div className="git-actions-row" style={{ marginBottom: 9 }}><ActionButton label={t("git.editRemote")} action="set_remote_url" busy={busy} onClick={() => { setRemoteDraft(summary.remote ?? ""); setEditingRemote(true); }} /></div>}
               {summary.remote && editingRemote && <form onSubmit={(event) => { event.preventDefault(); if (remoteDraft.trim()) void run("set_remote_url", { remoteUrl: remoteDraft }); }} className="git-actions-row" style={{ marginBottom: 10 }}><input className="git-input" value={remoteDraft} onChange={(event) => setRemoteDraft(event.target.value)} placeholder={t("git.remoteUrl")} title={t("git.remoteUrl")} autoFocus disabled={disabled} style={{ minWidth: 0, flex: 1 }} /><ActionButton label={t("git.cancelEditRemote")} action="set_remote_url" busy={busy} onClick={() => { setEditingRemote(false); setRemoteDraft(""); }} /><ActionButton label={t("git.saveRemote")} action="set_remote_url" busy={busy} disabled={!remoteDraft.trim()} onClick={() => void run("set_remote_url", { remoteUrl: remoteDraft })} /></form>}
               {(needsHttpsCredential || needsSshCredential) && <div className="git-field">
                 <div className="git-field-label">{t(needsHttpsCredential ? "git.httpsCredentials" : "git.sshCredentials")}{summary.hasSavedCredential ? ` · ${t("git.savedCredential")}` : ""}</div>
@@ -447,7 +451,7 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
                 ))}</div>}
             </div>
           </>}
-        </main>
+        </div>
         {versionPreview && summary?.isGitRepository && <div ref={versionDialogRef} tabIndex={-1} role="alertdialog" aria-modal="true" aria-label={t("git.versionUpgradeConfirm", { version: versionPreview.data.version })} className="git-version-confirm">
           <div className="git-confirm-panel">
             <p className="git-confirm-text">{t("git.versionUpgradeConfirm", { version: versionPreview.data.version })}</p>
@@ -462,26 +466,10 @@ export function GitPanel({ cwd, sessionId, onClose, onChanged, onOpenFile }: { c
         {confirmingDiscardFile && summary?.isGitRepository && <DiscardFileConfirmDialog filePath={confirmingDiscardFile} busy={busy} onCancel={() => setConfirmingDiscardFile(null)} onConfirm={() => { const filePath = confirmingDiscardFile; setConfirmingDiscardFile(null); void run("discard", { paths: [filePath] }); }} />}
         {confirmingDiscardAll && summary?.isGitRepository && <DiscardAllConfirmDialog summary={summary} untrackedPaths={untrackedPaths} busy={busy} onCancel={() => setConfirmingDiscardAll(false)} onConfirm={() => { setConfirmingDiscardAll(false); void run("discard_all"); }} />}
         {confirmingDeleteTag && summary?.isGitRepository && <DeleteTagConfirmDialog tag={confirmingDeleteTag} busy={busy} onCancel={() => setConfirmingDeleteTag(null)} onConfirm={() => { const tag = confirmingDeleteTag; setConfirmingDeleteTag(null); void run("delete_tag", { tag }); }} />}
-      </section>
-    </div>
+    </section>
   );
 }
 
-function SyncIndicator({ ahead, behind }: { ahead: number; behind: number }) {
-  const { t } = useI18n();
-  return (
-    <span className="git-sync">
-      <span role="img" aria-label={t("git.ahead", { count: ahead })} title={t("git.ahead", { count: ahead })} className="git-sync-chip" data-tone="ahead" data-active={ahead > 0}>
-        <ArrowUp size={12} strokeWidth={2.5} aria-hidden="true" />
-        <span>{ahead}</span>
-      </span>
-      <span role="img" aria-label={t("git.behind", { count: behind })} title={t("git.behind", { count: behind })} className="git-sync-chip" data-tone="behind" data-active={behind > 0}>
-        <ArrowDown size={12} strokeWidth={2.5} aria-hidden="true" />
-        <span>{behind}</span>
-      </span>
-    </span>
-  );
-}
 function SectionTitle({ title, action }: { title: string; action?: ReactNode }) {
   return <div className="git-section-title"><span className="git-section-title-text">{title}</span>{action && <div className="git-section-actions">{action}</div>}</div>;
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, ChevronRight, Eye, EyeOff, Folder, FolderPlus, GitBranch, GitCommitHorizontal, MessageSquare, PanelLeftClose, Pencil, Plus, RotateCw, Search, Speech, Star, Trash2, Upload, WandSparkles, X, Check, LoaderCircle } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, Folder, FolderPlus, GitBranch, GitCommitHorizontal, MessageSquare, PanelLeftClose, Pencil, Plus, RotateCw, Search, Speech, Star, Trash2, WandSparkles, X, Check, LoaderCircle } from "lucide-react";
 import type { SessionInfo } from "@/lib/types";
 import type { AppUpdateResponse } from "@/lib/api-types";
 import { loadExplorerOpen, saveExplorerOpen } from "@/lib/file-explorer-state";
@@ -22,6 +22,7 @@ import { AboutButton } from "./AboutDialog";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { FileExplorer, TreeLoadingSpinner, type FileExplorerHandle } from "./FileExplorer";
 import { BranchPicker } from "./BranchPicker";
+import { GitPanel } from "./GitPanel";
 import styles from "./SessionSidebar.module.css";
 
 const ICON_STROKE = 1.8;
@@ -48,6 +49,7 @@ function ToolbarIconButton({
   disabled,
   pressed,
   className,
+  buttonRef,
   children,
 }: {
   onClick: () => void;
@@ -55,10 +57,12 @@ function ToolbarIconButton({
   disabled?: boolean;
   pressed?: boolean;
   className?: string;
+  buttonRef?: React.Ref<HTMLButtonElement>;
   children: ReactNode;
 }) {
   return (
     <button
+      ref={buttonRef}
       type="button"
       onClick={onClick}
       disabled={disabled}
@@ -97,7 +101,6 @@ interface Props {
   /** Fired when sessions that are not currently selected finish running. */
   onBackgroundTaskDone?: (sessions: SessionInfo[]) => void;
   onRunningSessionIdsChange?: (ids: Set<string>) => void;
-  onProjectGitStateChange?: (isGit: boolean | null, gitAvailable?: boolean) => void;
   onGenerateTitle?: (sessionId: string) => void;
   titleGenerationStatus?: {
     sessionId: string;
@@ -111,17 +114,17 @@ interface Props {
   onAboutClick?: () => void;
   onHideSidebar?: () => void;
   openDirectoryRequest?: number;
-  /** 当前项目是 git 仓库且底部 tab 栏存在时，把 Git 面板入口放到分支这一行。 */
-  onOpenGitPanel?: () => void;
-  /** 文件浏览器里点子项目目录的 Git 徽标：以该仓库为根打开 Git 面板。 */
-  onOpenRepositoryGitPanel?: (repositoryPath: string) => void;
-  gitPanelOpen?: boolean;
 }
 
 interface WorktreeEntry {
   path: string;
   branch: string | null;
   isMain: boolean;
+}
+
+interface BranchSync {
+  ahead: number;
+  behind: number;
 }
 
 interface WorktreeState {
@@ -139,6 +142,7 @@ interface WorktreeState {
   isTopLevel: boolean;
   /** Canonical path of the checkout containing forCwd, resolved server-side. */
   currentWorktreePath: string | null;
+  branchSync: BranchSync | null;
   worktrees: WorktreeEntry[];
   branches: string[];
   remoteBranches: string[];
@@ -449,7 +453,7 @@ function PiWebTitle({ onAboutClick }: { onAboutClick?: () => void }) {
   );
 }
 
-export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onFileRenamed, canRenamePath, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onProjectGitStateChange, onGenerateTitle, titleGenerationStatus, appUpdate, onAppUpdateClick, onAboutClick, onHideSidebar, openDirectoryRequest, onOpenGitPanel, onOpenRepositoryGitPanel, gitPanelOpen }: Props) {
+export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, onFileRenamed, canRenamePath, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onBackgroundTaskDone, onRunningSessionIdsChange, onGenerateTitle, titleGenerationStatus, appUpdate, onAppUpdateClick, onAboutClick, onHideSidebar, openDirectoryRequest }: Props) {
   const { t } = useI18n();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -503,7 +507,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const wtDropdownRef = useRef<HTMLDivElement>(null);
   const [explorerOpen, setExplorerOpen] = useState(true);
   const [explorerKey, setExplorerKey] = useState(0);
-  const [explorerUploadBusy, setExplorerUploadBusy] = useState(false);
+  const [gitTarget, setGitTarget] = useState<{ explorerCwd: string; cwd: string } | null>(null);
+  const [gitRefreshTarget, setGitRefreshTarget] = useState<HTMLDivElement | null>(null);
   const [explorerLoading, setExplorerLoading] = useState(false);
   const [hideDotDirs, setHideDotDirsState] = useState(false);
   const [changesCount, setChangesCount] = useState(0);
@@ -519,6 +524,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   // running state; late /api/sessions responses must not overwrite it.
   const runningPollAuthoritativeRef = useRef(false);
   const fileExplorerRef = useRef<FileExplorerHandle>(null);
+  const explorerTriggerRef = useRef<HTMLButtonElement>(null);
+  const explorerGitButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreExplorerFocusRef = useRef(false);
+  const refreshExplorer = useCallback(() => {
+    if (onExplorerRefresh) onExplorerRefresh();
+    else setExplorerKey((key) => key + 1);
+  }, [onExplorerRefresh]);
 
   // The directory list shown in the selector is exactly the persisted records
   // in the app database (added_projects), so every entry can be removed
@@ -909,6 +921,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
   // Load worktrees for the current effective cwd
   const [wtRefreshKey, setWtRefreshKey] = useState(0);
+  const refreshAfterGitChange = useCallback(() => {
+    refreshExplorer();
+    setWtRefreshKey((key) => key + 1);
+  }, [refreshExplorer]);
   useLayoutEffect(() => {
     if (!selectedCwd) {
       setWorktreeState(null);
@@ -919,7 +935,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     setWorktreeLoadingCwd(selectedCwd);
     fetch(`/api/worktrees?cwd=${encodeURIComponent(selectedCwd)}`)
       .then((r) => r.json())
-      .then((d: { projectRoot?: string; projectKey?: string; isGit?: boolean; gitAvailable?: boolean; isTopLevel?: boolean; currentWorktreePath?: string | null; worktrees?: WorktreeEntry[]; branches?: string[]; remoteBranches?: string[]; error?: string }) => {
+      .then((d: { projectRoot?: string; projectKey?: string; isGit?: boolean; gitAvailable?: boolean; isTopLevel?: boolean; currentWorktreePath?: string | null; branchSync?: BranchSync | null; worktrees?: WorktreeEntry[]; branches?: string[]; remoteBranches?: string[]; error?: string }) => {
         if (cancelled) return;
         setWorktreeLoadingCwd(null);
         if (d.error || !d.projectRoot) {
@@ -935,6 +951,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           gitAvailable: d.gitAvailable ?? true,
           isTopLevel: d.isTopLevel ?? false,
           currentWorktreePath: d.currentWorktreePath ?? null,
+          branchSync: d.branchSync ?? null,
           worktrees: d.worktrees ?? [],
           branches: d.branches ?? [],
           remoteBranches: d.remoteBranches ?? [],
@@ -949,16 +966,36 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     return () => { cancelled = true; };
   }, [selectedCwd, wtRefreshKey, refreshKey]);
 
+  const explorerCwd = selectedCwd ?? selectedCwdProp;
+  const explorerGit = worktreeState?.forCwd === explorerCwd ? worktreeState : null;
+  const gitPanelCwd = gitTarget && gitTarget.explorerCwd === explorerCwd ? gitTarget.cwd : null;
+  const gitPanelOpen = gitPanelCwd !== null;
+  const explorerExpanded = explorerOpen || gitPanelOpen;
+  // 没装 Git 时仍提供入口，否则安装提示永远无法显示。
+  const canOpenProjectGit = explorerGit?.isGit === true || explorerGit?.gitAvailable === false;
+  const showExplorerGitButton = gitPanelOpen || canOpenProjectGit;
+
+  const closeGitPanelAndRestoreFocus = useCallback(() => {
+    restoreExplorerFocusRef.current = true;
+    setGitTarget(null);
+  }, []);
+  useLayoutEffect(() => {
+    if (gitPanelOpen || !restoreExplorerFocusRef.current) return;
+    restoreExplorerFocusRef.current = false;
+    (canOpenProjectGit ? explorerGitButtonRef : explorerTriggerRef).current?.focus();
+  }, [gitPanelOpen, canOpenProjectGit]);
+  const openRepositoryGitPanel = useCallback((cwd: string) => {
+    if (explorerCwd) setGitTarget({ explorerCwd, cwd });
+  }, [explorerCwd]);
+  const toggleGitPanel = () => {
+    if (gitPanelOpen) closeGitPanelAndRestoreFocus();
+    else if (explorerCwd) openRepositoryGitPanel(explorerCwd);
+  };
+
   useEffect(() => {
-    if (!selectedCwd || worktreeLoadingCwd === selectedCwd) {
-      onProjectGitStateChange?.(null);
-      return;
-    }
-    onProjectGitStateChange?.(
-      worktreeState?.forCwd === selectedCwd ? worktreeState.isGit : null,
-      worktreeState?.forCwd === selectedCwd ? worktreeState.gitAvailable : undefined,
-    );
-  }, [onProjectGitStateChange, selectedCwd, worktreeLoadingCwd, worktreeState]);
+    // 不把上一个项目的仓库或提交草稿带进新项目。
+    setGitTarget((target) => target?.explorerCwd === explorerCwd ? target : null);
+  }, [explorerCwd]);
 
   // Auto-select cwd and restore session from URL on first load
   useEffect(() => {
@@ -1363,7 +1400,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   );
   // Git 面板入口跟着 Git 按钮走：底部有那个按钮时才在这行也放一个，
   // 否则只是重复一个网页版没有的功能。
-  const showBranchGitButton = Boolean(showWorktreeSwitcher && onOpenGitPanel);
+  const showBranchGitButton = showWorktreeSwitcher;
   const worktreeGuide = selectedCwd
     && worktreeState?.isGit
     && selectedProject?.key === worktreeState.projectKey
@@ -1665,6 +1702,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             project share the same list anyway. */}
         {showWorktreeSwitcher && (() => {
           if (!worktreeState) return null;
+          // 工作树列表可以沿用上一次的响应，但切换时不能显示上一分支的同步数字。
+          const branchSync = worktreeState.forCwd === selectedCwd ? worktreeState.branchSync : null;
           const showWtFilter = worktreeState.worktrees.length + worktreeState.branches.length + worktreeState.remoteBranches.length >= 8;
           const visibleWorktrees = showWtFilter && wtFilter.trim()
             ? worktreeState.worktrees.filter((w) =>
@@ -1715,6 +1754,20 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   text={currentWorktree ? (currentWorktree.branch ?? displayCwd(currentWorktree.path, homeDir)) : "…"}
                   style={{ flex: 1, fontFamily: "var(--font-mono)", color: "var(--text)" }}
                 />
+                {branchSync && (
+                  <span className={styles.branchSync}>
+                    <span title={t("git.ahead", { count: branchSync.ahead })} data-direction="ahead" data-active={branchSync.ahead > 0}>
+                      <ArrowUp size={11} aria-hidden="true" />
+                      <span aria-hidden="true">{branchSync.ahead}</span>
+                      <span className="sr-only">{t("git.ahead", { count: branchSync.ahead })}</span>
+                    </span>
+                    <span title={t("git.behind", { count: branchSync.behind })} data-direction="behind" data-active={branchSync.behind > 0}>
+                      <ArrowDown size={11} aria-hidden="true" />
+                      <span aria-hidden="true">{branchSync.behind}</span>
+                      <span className="sr-only">{t("git.behind", { count: branchSync.behind })}</span>
+                    </span>
+                  </span>
+                )}
                 {worktreeState.worktrees.length > 1 && (
                   <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 10 }}>
                     {worktreeState.worktrees.length}
@@ -1763,7 +1816,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               {showBranchGitButton && (
               <button
                 type="button"
-                onClick={(event) => { event.stopPropagation(); onOpenGitPanel?.(); }}
+                onClick={(event) => { event.stopPropagation(); toggleGitPanel(); }}
                 title={t("common.git")}
                 aria-label={t("common.git")}
                 aria-pressed={gitPanelOpen === true}
@@ -2168,27 +2221,35 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         )}
       </header>
 
-      {(selectedCwdProp || selectedCwd) && (
-        <section className={styles.explorer} data-open={explorerOpen} aria-label={t("files.explorer")}>
+      {explorerCwd && (
+        <section className={styles.explorer} data-open={explorerExpanded} data-git-open={gitPanelOpen} aria-label={t(gitPanelOpen ? "common.git" : "files.explorer")}>
           <div className={styles.sectionBar}>
-            <button
-              type="button"
-              className={styles.explorerTrigger}
-              onClick={() => setExplorerOpen((open) => {
-                const next = !open;
-                saveExplorerOpen(next);
-                return next;
-              })}
-              aria-expanded={explorerOpen}
-            >
-              {explorerOpen && explorerLoading ? (
-                <TreeLoadingSpinner size={12} label={t("files.loading")} />
-              ) : (
-                <ChevronRight size={13} strokeWidth={ICON_STROKE} className={styles.explorerChevron} aria-hidden="true" />
-              )}
-              <span>{t("files.explorer")}</span>
-            </button>
-            <div className={styles.sectionActions}>
+            {gitPanelOpen ? (
+              <h2 className={`${styles.sectionHeading} ${styles.gitHeading}`}>
+                <GitBranch size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+                <span>{t("common.git")}</span>
+              </h2>
+            ) : (
+              <button
+                type="button"
+                ref={explorerTriggerRef}
+                className={styles.explorerTrigger}
+                onClick={() => {
+                  const next = !explorerOpen;
+                  setExplorerOpen(next);
+                  saveExplorerOpen(next);
+                }}
+                aria-expanded={explorerOpen}
+              >
+                {explorerOpen && explorerLoading ? (
+                  <TreeLoadingSpinner size={12} label={t("files.loading")} />
+                ) : (
+                  <ChevronRight size={13} strokeWidth={ICON_STROKE} className={styles.explorerChevron} aria-hidden="true" />
+                )}
+                <span>{t("files.explorer")}</span>
+              </button>
+            )}
+            {!gitPanelOpen && <div className={styles.sectionActions}>
               {explorerOpen && (
                 <ToolbarIconButton
                   onClick={() => fileExplorerRef.current?.setHideDotDirs((v) => !v)}
@@ -2207,20 +2268,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   <GitCommitHorizontal size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
                 </ToolbarIconButton>
               )}
-              {explorerOpen && (
-                <ToolbarIconButton
-                  onClick={() => fileExplorerRef.current?.openUploadPicker()}
-                  disabled={explorerUploadBusy}
-                  title={t("sidebar.uploadFilesTitle")}
-                >
-                  <Upload size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
-                </ToolbarIconButton>
-              )}
               <ToolbarIconButton
                 onClick={() => {
                   setExplorerRefreshTick((tick) => tick + 1);
-                  if (onExplorerRefresh) onExplorerRefresh();
-                  else setExplorerKey((k) => k + 1);
+                  refreshExplorer();
                 }}
                 title={t("sidebar.refreshExplorer")}
               >
@@ -2232,21 +2283,33 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   aria-hidden="true"
                 />
               </ToolbarIconButton>
-            </div>
+            </div>}
+            {gitPanelOpen && <div className={styles.gitRefreshSlot} ref={setGitRefreshTarget} />}
+            {showExplorerGitButton && (
+              <ToolbarIconButton
+                onClick={toggleGitPanel}
+                title={t("common.git")}
+                pressed={gitPanelOpen}
+                className={styles.explorerGitButton}
+                buttonRef={explorerGitButtonRef}
+              >
+                <GitBranch size={14} strokeWidth={ICON_STROKE} aria-hidden="true" />
+              </ToolbarIconButton>
+            )}
           </div>
+          {/* 保留已展开的目录，切回文件树时不重新挂载。 */}
           {explorerOpen && (
-            <div className={styles.explorerScroll}>
+            <div className={styles.explorerScroll} hidden={gitPanelOpen}>
               <FileExplorer
                 ref={fileExplorerRef}
-                cwd={selectedCwd ?? selectedCwdProp!}
+                cwd={explorerCwd}
                 onOpenFile={onOpenFile ?? (() => {})}
                 onFileRenamed={onFileRenamed}
                 canRenamePath={canRenamePath}
                 refreshKey={explorerKey}
                 onAtMention={onAtMention}
                 onAtMentions={onAtMentions}
-                onOpenRepositoryGitPanel={onOpenRepositoryGitPanel}
-                onUploadBusyChange={setExplorerUploadBusy}
+                onOpenRepositoryGitPanel={openRepositoryGitPanel}
                 onLoadingChange={setExplorerLoading}
                 changesCollapsed={changesCollapsed}
                 onChangesCountChange={setChangesCount}
@@ -2254,6 +2317,18 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                 onHideDotDirsChange={setHideDotDirsState}
               />
             </div>
+          )}
+          {gitPanelCwd && (
+            <GitPanel
+              key={gitPanelCwd}
+              cwd={gitPanelCwd}
+              sessionId={selectedSessionId}
+              refreshTarget={gitRefreshTarget}
+              refreshButtonClassName={styles.iconButton}
+              onClose={closeGitPanelAndRestoreFocus}
+              onChanged={refreshAfterGitChange}
+              onOpenFile={onOpenFile ?? (() => {})}
+            />
           )}
         </section>
       )}

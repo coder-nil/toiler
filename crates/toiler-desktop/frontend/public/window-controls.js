@@ -4,8 +4,7 @@
   function mount() {
     document.documentElement.classList.add("toiler-custom-titlebar");
     var style = document.createElement("style");
-    /* 贴右侧的顶栏与 Git 浮层避让窗口控制区；居中的设置弹窗保留自身边距。 */
-    var inset = ".toiler-custom-titlebar:not(:has(.right-panel-open)) .app-topbar,.toiler-custom-titlebar .right-panel-open .app-file-panel-titlebar,.toiler-custom-titlebar .git-panel-header{box-sizing:border-box;padding-right:138px}";
+    var inset = ".toiler-custom-titlebar:not(:has(.right-panel-open)) .app-topbar,.toiler-custom-titlebar .right-panel-open .app-file-panel-titlebar{box-sizing:border-box;padding-right:138px}";
     /* 窗口按钮高于普通界面浮层（500），但必须被模态蒙版（1000 起）遮挡并拦截点击。 */
     style.textContent = inset + ".toiler-window-controls{--toiler-control-color:#1f1f1f;position:fixed;top:0;right:0;display:flex;height:42px;z-index:900;background:var(--bg-chrome,var(--bg,#202020));color:var(--toiler-control-color);user-select:none}.dark .toiler-window-controls{--toiler-control-color:#fff}.toiler-window-controls button{display:flex;align-items:center;justify-content:center;width:46px;border:0;background:transparent;color:inherit;cursor:default;transition:background-color 120ms ease,color 120ms ease}.toiler-window-controls button:hover{background:color-mix(in srgb,currentColor 10%,transparent)}.dark .toiler-window-controls button:hover{background:color-mix(in srgb,currentColor 12%,transparent)}.toiler-window-controls .close:hover{background:#c42b1c;color:#fff}.toiler-window-controls button:active{background:color-mix(in srgb,currentColor 18%,transparent)}.dark .toiler-window-controls button:active{background:color-mix(in srgb,currentColor 20%,transparent)}.toiler-window-controls .close:active{background:#a82016;color:#fff}.toiler-window-controls button:focus-visible{outline:2px solid var(--accent,#58a6ff);outline-offset:-2px}";
     document.head.appendChild(style);

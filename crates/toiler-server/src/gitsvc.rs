@@ -703,18 +703,7 @@ pub fn full_status_with_store(cwd: &Path, store: &CredentialStore) -> Value {
     let branch = run_git(&root, &["branch", "--show-current"], STATUS_TIMEOUT)
         .ok()
         .filter(|s| !s.is_empty());
-    let upstream = run_git(
-        &root,
-        &[
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{upstream}",
-        ],
-        STATUS_TIMEOUT,
-    )
-    .ok()
-    .filter(|s| !s.is_empty());
+    let (upstream, ahead, behind) = upstream_status(&root);
     let remote = run_git(&root, &["remote", "get-url", "origin"], STATUS_TIMEOUT)
         .ok()
         .filter(|s| !s.is_empty());
@@ -731,24 +720,6 @@ pub fn full_status_with_store(cwd: &Path, store: &CredentialStore) -> Value {
             .as_deref()
             .and_then(|url| store.saved_username(url, kind))
     };
-
-    let (mut ahead, mut behind) = (0i64, 0i64);
-    if let Some(upstream) = upstream.as_deref() {
-        if let Ok(counts) = run_git(
-            &root,
-            &[
-                "rev-list",
-                "--left-right",
-                "--count",
-                &format!("HEAD...{upstream}"),
-            ],
-            STATUS_TIMEOUT,
-        ) {
-            let mut parts = counts.split_whitespace();
-            ahead = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-            behind = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-        }
-    }
 
     json!({
         "gitAvailable": true,
@@ -779,6 +750,34 @@ pub fn full_status_with_store(cwd: &Path, store: &CredentialStore) -> Value {
         "changes": changes,
         "untrackedPaths": untracked_paths(&root),
     })
+}
+
+/// 当前工作树相对已跟踪上游的状态。分支选择框不需要 diff 或凭据，也不主动联网。
+pub fn upstream_status(cwd: &Path) -> (Option<String>, u64, u64) {
+    let upstream = run_git(
+        cwd,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+        STATUS_TIMEOUT,
+    )
+    .ok()
+    .filter(|s| !s.is_empty());
+    let counts = upstream.as_ref().and_then(|_| {
+        run_git(
+            cwd,
+            &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+            STATUS_TIMEOUT,
+        )
+        .ok()
+    });
+    let mut counts = counts.as_deref().unwrap_or_default().split_whitespace();
+    let ahead = counts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let behind = counts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    (upstream, ahead, behind)
 }
 
 fn branches(root: &Path, prefix: &str) -> Vec<String> {

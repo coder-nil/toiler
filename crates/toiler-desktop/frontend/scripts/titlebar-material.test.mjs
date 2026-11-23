@@ -199,7 +199,7 @@ test("透明 CSS 只由原生成功能力类开启，Windows 控制区不留实�
   assert.doesNotMatch(css, /html\.pi-overlay-chrome body\s*\{\s*background: transparent;/);
   /* 侧栏有自己的一档浅色底（--sidebar-bg），渐变必须引它而不是 --bg-chrome，
      否则桌面窗口的侧栏会比浏览器里深一档。 */
-  for (const [surface, color] of [["workspace", "bg"], ["sidebar", "sidebar-bg"], ["file-panel", "bg"], ["git-panel", "bg"]]) {
+  for (const [surface, color] of [["workspace", "bg"], ["sidebar", "sidebar-bg"], ["file-panel", "bg"]]) {
     assert.ok(block.includes(`--${surface}-surface: linear-gradient(to bottom,\n    transparent var(--native-titlebar-height),\n    var(--${color}) var(--native-titlebar-height))`));
   }
   const layout = await read("../lib/panel-layout.ts");
@@ -218,14 +218,9 @@ test("三列标题区保留背景回退、窗口拖动与按钮交互入口", ()
   assert.match(shell, /className="app-chrome app-file-panel-titlebar" data-tauri-drag-region="deep"/);
 });
 
-test("Git 面板标题栏与其它列共用材质带，正文仍为实色", async () => {
-  const header = css.match(/\n\.git-panel-header\s*\{([^}]+)\}/)?.[1];
-  assert.ok(header);
-  assert.match(header, /background: var\(--titlebar-surface, var\(--bg-chrome\)\);/);
-  const dialog = css.match(/\n\.git-panel-dialog\s*\{([^}]+)\}/)?.[1];
-  assert.ok(dialog);
-  assert.match(dialog, /background: var\(--git-panel-surface, var\(--bg\)\);/);
-  // 标题栏高度与其它列一致，否则材质带上会露出半截实色。
-  const panel = (await read("../components/GitPanel.tsx")).replace(/\s+/g, " ");
-  assert.match(panel, /className="git-panel-header"[^>]*height: `calc\(\$\{CHAT_TOP_BAR_HEIGHT\}px \+ env\(safe-area-inset-top\)\)`/);
+test("嵌入侧栏的 Git 面板不继承原生标题栏材质或拖动区", async () => {
+  assert.doesNotMatch(css, /--git-panel-surface/);
+  assert.match(css, /\.git-panel\s*\{[^}]*background: var\(--sidebar-bg, var\(--bg\)\)/);
+  const panel = await read("../components/GitPanel.tsx");
+  assert.doesNotMatch(panel, /CHAT_TOP_BAR_HEIGHT|data-tauri-drag-region/);
 });

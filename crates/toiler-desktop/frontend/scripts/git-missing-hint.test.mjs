@@ -8,34 +8,11 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 
 const read = (relative) => readFile(join(root, relative), "utf8");
 
-/**
- * 这些断言守的是「没装 Git 时用户能不能看到安装提示」这条链路。
- *
- * 它很容易被无意破坏：底部 Git 按钮原本只在 `activeProjectIsGit === true`
- * 时出现，而没装 Git 时那个值必然是 false —— 于是按钮消失、面板打不开、
- * `git.missingTitle` 那段文案永远不会渲染，整个提示功能等于没做。
- * 同理，那个「不是仓库就自动关面板」的 effect 也会把提示面板立刻关掉。
- */
-test("没装 Git 时底部 Git 入口仍然出现", async () => {
-  const shell = await read("components/AppShell.tsx");
-  const line = shell
-    .split("\n")
-    .find((text) => text.includes('id !== "git"'));
-  assert.ok(line, "找不到底部工具条的 git 过滤条件");
-  assert.match(
-    line,
-    /gitAvailable === false/,
-    "入口条件必须包含「没装 git」，否则用户看不到安装提示"
-  );
-});
-
-test("没装 Git 时 Git 面板不会被自动关闭", async () => {
-  const shell = await read("components/AppShell.tsx");
-  assert.match(
-    shell,
-    /activeProjectIsGit === false && gitPanelCwd === null && gitAvailable !== false/,
-    "自动关闭面板的条件必须排除「没装 git」的情况"
-  );
+/** 缺少 Git 时，文件浏览器仍要保留安装提示的入口。 */
+test("没装 Git 时文件浏览器仍有 Git 入口", async () => {
+  const sidebar = await read("components/SessionSidebar.tsx");
+  assert.match(sidebar, /const canOpenProjectGit = explorerGit\?\.isGit === true \|\| explorerGit\?\.gitAvailable === false/);
+  assert.match(sidebar, /showExplorerGitButton && \(\s*<ToolbarIconButton\s+onClick=\{toggleGitPanel\}/);
 });
 
 test("Git 面板对两种「不是仓库」给出不同提示", async () => {
@@ -51,14 +28,9 @@ test("Git 面板对两种「不是仓库」给出不同提示", async () => {
   );
 });
 
-test("侧边栏把 gitAvailable 一起上报", async () => {
+test("侧边栏读取 gitAvailable，缺省兼容旧响应", async () => {
   const sidebar = await read("components/SessionSidebar.tsx");
-  assert.match(sidebar, /gitAvailable: boolean/, "worktreeState 需要带 gitAvailable");
-  assert.match(
-    sidebar,
-    /onProjectGitStateChange\?\.\([\s\S]*?gitAvailable/,
-    "上报时必须带上 gitAvailable，否则 AppShell 无从判断"
-  );
+  assert.match(sidebar, /gitAvailable: d\.gitAvailable \?\? true/);
 });
 
 test("中英文都提供了安装指引文案", async () => {

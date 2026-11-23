@@ -102,10 +102,11 @@ test("文件预览标题栏空白可拖动，文件标签与操作按钮保持�
   assert.match(styles, /\.app-chrome,\s*\.app-chrome \*\s*\{[^}]*user-select:\s*none/);
 });
 
-test("Git 面板刷新和关闭按钮与顶栏一起避让窗口控制区", async () => {
+test("侧栏共享标题栏不为窗口控制区留白", () => {
   const { document } = fixture();
   const css = document.head.children[0].textContent;
-  assert.ok(css.includes(".toiler-custom-titlebar .git-panel-header{box-sizing:border-box;padding-right:138px}"));
+  assert.ok(!css.includes(".git-panel-header"));
+  assert.ok(!css.includes(".sectionBar"));
   assert.ok(css.includes("--toiler-control-color:#1f1f1f"));
   assert.ok(css.includes(".dark .toiler-window-controls{--toiler-control-color:#fff}"));
   assert.ok(css.includes("background:color-mix(in srgb,currentColor 10%,transparent)"));
@@ -113,11 +114,6 @@ test("Git 面板刷新和关闭按钮与顶栏一起避让窗口控制区", asyn
   assert.ok(css.includes(".toiler-window-controls .close:active{background:#a82016;color:#fff}"));
   assert.ok(!css.includes("color:var(--text,#eee)"));
   assert.ok(css.includes("transition:background-color 120ms ease,color 120ms ease"));
-  const panel = await readFile(new URL("../components/GitPanel.tsx", import.meta.url), "utf8");
-  const header = panel.slice(panel.indexOf("<header"), panel.indexOf("</header>"));
-  assert.ok(header.includes('className="git-panel-header"'));
-  assert.ok(header.includes('t("git.refreshStatus")'), "刷新按钮必须位于避让顶栏内");
-  assert.ok(header.includes('onClick={onClose}'), "关闭按钮必须位于避让顶栏内");
 });
 
 test("设置弹窗不继承主窗口控制区的右侧留白", async () => {

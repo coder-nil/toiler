@@ -612,7 +612,7 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
 | `GET /api/git/status?cwd=` | ✅ | `{isGitRepository,repositoryRoot,files[],additions,deletions}` |
 | `GET /api/git/diff?cwd=&path=` | ✅ | `{supported,status?,patch?}`；未跟踪文件会合成补丁 |
 | `POST /api/git/commit-message` | ✅ | NDJSON：`update` → `done`（失败 `error`）；用 `settings.json` 的默认模型 |
-| `GET/POST/DELETE /api/worktrees` | ✅ | 列出 / 新建（`action:"checkout"` 走切分支）/ 删除（脏工作区 409 + `dirty:true`） |
+| `GET/POST/DELETE /api/worktrees` | ✅ | 列出 / 新建（`action:"checkout"` 走切分支）/ 删除（脏工作区 409 + `dirty:true`）；GET 额外返回当前工作树分支相对本地上游引用的 `branchSync: {ahead,behind}`，没有上游或不是工作树根目录时为 `null`，不联网 |
 | `GET/PUT/PATCH/DELETE /api/projects` | ✅ | 用 toiler 自己的 `<appDir>/work.sqlite`（`~/.agents/toiler/work.sqlite`）；接口形状与 pi 一致，但**不再共库** |
 | `GET/POST /api/project-trust` | ✅ | `{requiresTrust,trusted}`；`trust.json` 与 pi 同格式 |
 | `GET /api/plugins?cwd=` | ⚠️ | 只读：列 `settings.json` 的 `packages` + 安装状态 + 包内资源；安装根只认 toiler 自己的 agent 目录（见差异 19） |
