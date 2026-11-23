@@ -119,7 +119,7 @@ jobs:
 
       - name: Windows 后台命令回归测试
         if: runner.os == 'Windows'
-        run: cargo test --locked --target ${{ matrix.target }} -p toiler-server --lib process::tests::
+        run: 'cargo test --locked --target ${{ matrix.target }} -p toiler-server --lib process::tests::'
 
       - name: 打包（tauri build）
         working-directory: crates/toiler-desktop
