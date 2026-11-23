@@ -11,10 +11,17 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{ns_string, NSPoint, NSRect, NSSize};
 
+use tauri::Manager;
+
+use crate::interface_zoom::InterfaceZoom;
+
 const EFFECT_ID: &str = "toiler-live-titlebar";
 
-fn titlebar_frame(bounds: NSRect, flipped: bool) -> NSRect {
-    let height = bounds.size.height.clamp(0.0, crate::TITLEBAR_HEIGHT);
+fn titlebar_frame(bounds: NSRect, flipped: bool, factor: f64) -> NSRect {
+    let height = bounds
+        .size
+        .height
+        .clamp(0.0, crate::TITLEBAR_HEIGHT * factor);
     let y = if flipped {
         bounds.origin.y
     } else {
@@ -60,7 +67,8 @@ pub fn update(
     native.setTitlebarAppearsTransparent(true);
     let content = native.contentView().ok_or("窗口没有 contentView")?;
     let effect = effect_view(&content)?;
-    let frame = titlebar_frame(content.bounds(), content.isFlipped());
+    let factor = window.state::<InterfaceZoom>().factor();
+    let frame = titlebar_frame(content.bounds(), content.isFlipped(), factor);
     effect.setFrame(frame);
     effect.setAutoresizingMask(
         NSAutoresizingMaskOptions::ViewWidthSizable
@@ -117,11 +125,17 @@ mod tests {
     fn titlebar_is_anchored_to_top_in_both_coordinate_systems() {
         let bounds = NSRect::new(NSPoint::new(7.0, 11.0), NSSize::new(800.0, 600.0));
         assert_eq!(
-            titlebar_frame(bounds, false).origin,
+            titlebar_frame(bounds, false, 1.0).origin,
             NSPoint::new(7.0, 569.0)
         );
-        assert_eq!(titlebar_frame(bounds, true).origin, NSPoint::new(7.0, 11.0));
-        assert_eq!(titlebar_frame(bounds, false).size, NSSize::new(800.0, 42.0));
+        assert_eq!(
+            titlebar_frame(bounds, true, 1.0).origin,
+            NSPoint::new(7.0, 11.0)
+        );
+        assert_eq!(
+            titlebar_frame(bounds, false, 1.0).size,
+            NSSize::new(800.0, 42.0)
+        );
     }
 
     #[test]
@@ -130,6 +144,7 @@ mod tests {
             let frame = titlebar_frame(
                 NSRect::new(NSPoint::ZERO, NSSize::new(width, height)),
                 false,
+                1.0,
             );
             assert_eq!(frame.size, NSSize::new(width, crate::TITLEBAR_HEIGHT));
             assert_eq!(frame.origin.y + frame.size.height, height);
@@ -137,9 +152,25 @@ mod tests {
     }
 
     #[test]
+    fn interface_zoom_changes_material_height_without_losing_top_alignment() {
+        let bounds = NSRect::new(NSPoint::ZERO, NSSize::new(800.0, 600.0));
+        for (factor, height) in [(0.5, 21.0), (1.0, 42.0), (1.5, 63.0), (3.0, 126.0)] {
+            for flipped in [false, true] {
+                let frame = titlebar_frame(bounds, flipped, factor);
+                assert_eq!(frame.size, NSSize::new(800.0, height));
+                assert_eq!(frame.origin.y, if flipped { 0.0 } else { 600.0 - height });
+            }
+        }
+    }
+
+    #[test]
     fn temporarily_empty_or_short_content_never_produces_negative_size() {
         for height in [0.0, 20.0, -1.0] {
-            let frame = titlebar_frame(NSRect::new(NSPoint::ZERO, NSSize::new(0.0, height)), false);
+            let frame = titlebar_frame(
+                NSRect::new(NSPoint::ZERO, NSSize::new(0.0, height)),
+                false,
+                3.0,
+            );
             assert_eq!(frame.origin.y, 0.0);
             assert!(frame.size.height >= 0.0 && frame.size.height <= height.max(0.0));
         }

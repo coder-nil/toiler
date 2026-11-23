@@ -18,6 +18,7 @@
     "core:window:allow-close",
     "allow-hide-startup-overlay",
     "allow-sync-titlebar-appearance",
+    "allow-adjust-interface-zoom",
     "allow-open-release-url",
     "allow-open-external-url",
     "allow-terminal-start",

@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
+mod interface_zoom;
 mod lan_proxy;
 mod mobile;
 #[cfg(target_os = "macos")]
@@ -239,6 +240,26 @@ fn place_traffic_lights(
 /// 首次显示后再摆一次：AppKit 会在窗口上屏时重排标题栏，建窗那一下设的会被盖掉。
 /// 两次都写日志，方便在 `/tmp/toiler-desktop.log` 里对票。
 #[cfg(target_os = "macos")]
+fn refresh_native_titlebar_geometry(window: &tauri::WebviewWindow) {
+    if let Err(error) = native_titlebar::update(window, None, false) {
+        tracing::debug!("更新实时标题栏布局失败：{error}");
+    }
+    if let Err(error) = align_traffic_lights(window) {
+        tracing::debug!("更新红绿灯位置失败：{error}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn align_traffic_lights(window: &tauri::WebviewWindow) -> Result<String, String> {
+    if window.is_fullscreen().map_err(|error| error.to_string())? {
+        // 全屏时不修改 AppKit 自己显示、隐藏或重建的窗口按钮。
+        return Ok("全屏，保留系统布局".into());
+    }
+    let factor = window.state::<interface_zoom::InterfaceZoom>().factor();
+    place_traffic_lights(window, TITLEBAR_HEIGHT * factor / 2.0)
+}
+
+#[cfg(target_os = "macos")]
 fn schedule_traffic_lights(app: &tauri::AppHandle) {
     let handle = app.clone();
     std::thread::spawn(move || {
@@ -249,7 +270,7 @@ fn schedule_traffic_lights(app: &tauri::AppHandle) {
             let inner = handle.clone();
             let _ = handle.run_on_main_thread(move || {
                 if let Some(window) = inner.get_webview_window("main") {
-                    match place_traffic_lights(&window, TITLEBAR_HEIGHT / 2.0) {
+                    match align_traffic_lights(&window) {
                         Ok(report) => tracing::info!("红绿灯（第 {attempt} 次）：{report}"),
                         Err(error) => tracing::warn!("红绿灯（第 {attempt} 次）失败：{error}"),
                     }
@@ -333,6 +354,7 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
            }}\
          }}, {{ once: true }});"
     );
+    script.push_str(include_str!("../frontend/public/interface-zoom.js"));
     if custom_titlebar {
         // 不依赖 React 布局：导航到独立导出页后仍要保留关闭/还原入口。
         script.push_str(include_str!("../frontend/public/window-controls.js"));
@@ -350,6 +372,8 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
         .min_inner_size(720.0, 520.0)
         // 不让原生标题栏抢在 WebView 的工作区首屏之前上屏。
         .visible(false)
+        // WebView2 默认快捷键会绕过状态同步，让红绿灯留白或材质带与页面失配。
+        .zoom_hotkeys_enabled(false)
         .initialization_script(script);
 
     // macOS：把系统标题栏换成覆盖式，红绿灯浮在内容上。
@@ -389,13 +413,13 @@ fn create_main_window(app: &tauri::AppHandle, server: &DesktopServer) -> Result<
         window.on_window_event(move |event| {
             if matches!(
                 event,
-                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+                tauri::WindowEvent::Resized(_)
+                    | tauri::WindowEvent::ScaleFactorChanged { .. }
+                    | tauri::WindowEvent::Focused(true)
             ) {
                 let inner = target.clone();
                 let _ = target.run_on_main_thread(move || {
-                    if let Err(error) = native_titlebar::update(&inner, None, false) {
-                        tracing::warn!("更新实时标题栏布局失败：{error}");
-                    }
+                    refresh_native_titlebar_geometry(&inner);
                 });
             }
         });
@@ -464,12 +488,14 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(ServerState(Mutex::new(None)))
         .manage(StartupWindow::default())
+        .manage(interface_zoom::InterfaceZoom::default())
         .manage(MobileAccess::default())
         .manage(terminal::TerminalState::default())
         .manage(seasonal_icon::SeasonalIconState::default())
         .invoke_handler(tauri::generate_handler![
             hide_startup_overlay,
             sync_titlebar_appearance,
+            interface_zoom::adjust_interface_zoom,
             open_release_url,
             open_external_url,
             terminal::terminal_start,

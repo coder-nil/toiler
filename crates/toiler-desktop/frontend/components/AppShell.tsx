@@ -1520,7 +1520,7 @@ export function AppShell() {
   const renderChatToolbarActions = (mobile: boolean) => {
     if (!mobile && !showChat) return null;
     return (
-      <div className="app-chrome" style={{ display: "flex", alignItems: "center", height: "100%", gap: 2, paddingRight: mobile ? 0 : 8 }}>
+      <div className="app-chrome app-topbar-actions" style={{ display: "flex", alignItems: "center", height: "100%", paddingRight: mobile ? 0 : 8 }}>
         <button
           type="button"
           onClick={() => {
@@ -1630,7 +1630,7 @@ export function AppShell() {
           }}
           data-mobile-toolbar-action={mobile ? "system" : undefined}
         >
-          <svg width={mobile ? 12 : 14} height={mobile ? 12 : 14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: systemPrompt ? "var(--accent)" : "currentColor", flexShrink: 0 }} aria-hidden="true">
+          <svg width={mobile ? 12 : 14} height={mobile ? 12 : 14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
             <polyline points="14 2 14 8 20 8" />
             <line x1="8" y1="13" x2="16" y2="13" />
@@ -1700,7 +1700,7 @@ export function AppShell() {
         aria-label={translate("session.title")}
         aria-pressed={activeTopPanel === "session"}
         aria-hidden={covered ? true : undefined}
-        className={mobile ? "mobile-session-stats" : undefined}
+        className={mobile ? "mobile-session-stats" : "app-topbar-stats"}
         data-mobile-toolbar-stats={mobile ? "true" : undefined}
         style={{
           marginLeft: mobile ? 0 : 4,
@@ -2493,11 +2493,10 @@ export function AppShell() {
             title={translate("files.hidePanel")}
             aria-label={translate("files.hidePanel")}
             className="app-toolbar-btn"
+            data-active="true"
             style={{
               marginRight: 8, flexShrink: 0, alignSelf: "center",
             }}
-            onMouseEnter={(event) => { event.currentTarget.style.color = "var(--accent)"; }}
-            onMouseLeave={(event) => { event.currentTarget.style.color = ""; }}
           >
             <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="15" y1="3" x2="15" y2="21" />

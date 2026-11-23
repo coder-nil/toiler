@@ -106,6 +106,13 @@ test("Git 面板刷新和关闭按钮与顶栏一起避让窗口控制区", asyn
   const { document } = fixture();
   const css = document.head.children[0].textContent;
   assert.ok(css.includes(".toiler-custom-titlebar .git-panel-header{box-sizing:border-box;padding-right:138px}"));
+  assert.ok(css.includes("--toiler-control-color:#1f1f1f"));
+  assert.ok(css.includes(".dark .toiler-window-controls{--toiler-control-color:#fff}"));
+  assert.ok(css.includes("background:color-mix(in srgb,currentColor 10%,transparent)"));
+  assert.ok(css.includes("background:#c42b1c;color:#fff"));
+  assert.ok(css.includes(".toiler-window-controls .close:active{background:#a82016;color:#fff}"));
+  assert.ok(!css.includes("color:var(--text,#eee)"));
+  assert.ok(css.includes("transition:background-color 120ms ease,color 120ms ease"));
   const panel = await readFile(new URL("../components/GitPanel.tsx", import.meta.url), "utf8");
   const header = panel.slice(panel.indexOf("<header"), panel.indexOf("</header>"));
   assert.ok(header.includes('className="git-panel-header"'));

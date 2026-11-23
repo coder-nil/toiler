@@ -23,6 +23,65 @@
   cursor: default;
 }
 
+/* Codex 风格的桌面顶栏：按钮是轻量的图标控件，不再像浏览器标签页一样有明显填充。 */
+.app-topbar-actions {
+  gap: 4px !important;
+}
+
+.app-topbar .app-toolbar-btn {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.app-topbar .app-toolbar-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  color: var(--text);
+}
+
+.app-topbar .app-toolbar-btn[data-active="true"] {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: var(--text);
+}
+
+.app-topbar .app-toolbar-btn:active:not(:disabled) {
+  background: color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.app-topbar-stats {
+  margin-left: 2px !important;
+  height: 28px !important;
+  padding: 0 7px !important;
+  border-radius: 6px !important;
+  color: var(--text-muted) !important;
+  transition: background-color 120ms ease, color 120ms ease !important;
+}
+
+.app-topbar-stats:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 10%, transparent) !important;
+  color: var(--text) !important;
+}
+
+.app-topbar-stats:active:not(:disabled) {
+  background: color-mix(in srgb, currentColor 16%, transparent) !important;
+}
+
+.app-toolbar-btn:disabled,
+.app-topbar-stats:disabled {
+  opacity: 0.38;
+}
+
+.app-topbar .app-toolbar-btn:focus-visible,
+.app-topbar-stats:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--text) 55%, transparent);
+  outline-offset: 1px;
+}
+
 /* 工具条按键：26px 高、圆角 6、无分隔线、无下划线指示器。
    选中态是一个填充块，不靠 accent 描边——之前那套
    border-right 竖线 + border-top 蓝色指示条就是浏览器标签页的语法。 */
@@ -98,18 +157,17 @@
 /* 覆盖式标题栏：红绿灯（约 52px 宽）+ 两侧留白。
    侧栏展开时顶栏本身就不在窗口最左侧，不需要再让位。 */
 .pi-overlay-chrome {
-  /* 外壳各层左侧让位（红绿灯区）。侧栏标题行的 padding 是内联写的，
-     所以它读这个变量而不是靠 CSS 覆盖。 */
-  --chrome-inset: 92px;
+  /* 红绿灯是原生按钮，尺寸不随 WebView 缩放；把固定逻辑点换算成页面 CSS 像素。 */
+  --chrome-inset: calc(92px / var(--toiler-interface-scale, 1));
 }
 
 /* 标题行在侧栏已经有 10px 内边距，所以它只需要补差值。 */
 .pi-overlay-chrome .app-sidebar-title-row {
-  padding-left: calc(var(--chrome-inset) - 10px);
+  padding-left: max(0px, calc(var(--chrome-inset) - 10px));
 }
 
 .pi-overlay-chrome .app-topbar[data-sidebar-open="false"] {
-  padding-left: 86px;
+  padding-left: calc(86px / var(--toiler-interface-scale, 1));
 }
 
 /* 「回到最新」浮在 [任务面板 + 输入框] 这一整块的上沿：
