@@ -3,14 +3,14 @@
 基于 [pi-rust (`rpi`)](https://crates.io/crates/rpi-harness) 的桌面编程工作台。
 `rpi` 作为**未修改的 crates.io 依赖**引入，升级只需改版本号。
 
-当前锁定 **rpi 0.21.2**（2026-11-09 发布）。从 0.6.2 升级到 0.21.2 零代码改动，
-四项验证在 0.21.2 下重新跑通。
+当前锁定 **rpi 0.25.0**：[`Cargo.lock`](Cargo.lock) 中的 `rpi-ai`、`rpi-agent`、
+`rpi-tools`、`rpi-harness` 均为 `0.25.0`。
 
 当前状态：**阶段 0–5 全部完成**（PoC → v3 会话层 → HTTP 服务 → 全部 route →
 Tauri 单进程 → 回归）。四项关键验证全部通过；560 个真实 pi 会话全量可读、
 可原地续聊，且 pi 自己能复读 toiler 追加过的文件。
 
-## 四项验证结论
+## 四项验证结论（rpi 0.21.2 历史记录）
 
 | # | 验证项 | 结果 |
 |---|---|---|
@@ -21,14 +21,18 @@ Tauri 单进程 → 回归）。四项关键验证全部通过；560 个真实 p
 
 ## 升级方式
 
+升级时统一修改根目录 [`Cargo.toml`](Cargo.toml) 的 `[workspace.dependencies]`。
+当前声明如下：
+
 ```toml
-# Cargo.toml
-rpi-ai = "0.21"        # ← 只改这里
-rpi-harness = "0.21"
+rpi-ai = "0.25"
+rpi-agent = "0.25"
+rpi-tools = "0.25"
+rpi-harness = "0.25"
 ```
 
 ```bash
-cargo update -p rpi-harness   # 拉新版本
+cargo update -p rpi-ai -p rpi-agent -p rpi-tools -p rpi-harness
 cargo build                   # 若 API 变了，编译器直接告诉你
 ```
 

@@ -36,9 +36,9 @@ test("Git 面板仅替换文件树的显示，并保留子仓库和差异预览�
   assert.match(sidebar, /gitTarget\.explorerCwd === explorerCwd \? gitTarget\.cwd : null/);
 });
 
-test("分支选择框显示当前工作树的同步数字，Git 面板不重复显示地址或分支摘要", () => {
-  assert.doesNotMatch(panel, /git-panel-path|className="git-summary"|\{summary\.remote\}<\/div>/);
-  assert.match(panel, /t\("git\.editRemote"\)/);
+test("Git 面板在远程区显示地址，分支同步数字仍由工作树选择框展示", () => {
+  assert.doesNotMatch(panel, /git-panel-path|className="git-summary"/);
+  assert.match(panel, /\{summary\.remote && !editingRemote && <div className="git-actions-row"[^\n]*flexWrap: "nowrap"[^\n]*>\s*<div className="git-remote-url" title=\{summary\.remote\}[^\n]*textOverflow: "ellipsis"[^\n]*>\{summary\.remote\}<\/div>\s*<div style=\{\{ flexShrink: 0 \}\}><ActionButton label=\{t\("git\.editRemote"\)\}/);
   assert.match(sidebar, /worktreeState\.forCwd === selectedCwd \? worktreeState\.branchSync : null/);
   const selector = sidebar.match(/<button\s+type="button"\s+aria-expanded=\{wtDropdownOpen\}[\s\S]*?<\/button>/)?.[0];
   assert.ok(selector);

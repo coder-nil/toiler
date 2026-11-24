@@ -410,7 +410,10 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
             </div>
             <div className="git-section">
               <SectionTitle title={t("git.remote")} />
-              {summary.remote && !editingRemote && <div className="git-actions-row" style={{ marginBottom: 9 }}><ActionButton label={t("git.editRemote")} action="set_remote_url" busy={busy} onClick={() => { setRemoteDraft(summary.remote ?? ""); setEditingRemote(true); }} /></div>}
+              {summary.remote && !editingRemote && <div className="git-actions-row" style={{ marginBottom: 9, flexWrap: "nowrap" }}>
+                <div className="git-remote-url" title={summary.remote} style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-dim)", fontFamily: "var(--font-mono, monospace)", fontSize: 12 }}>{summary.remote}</div>
+                <div style={{ flexShrink: 0 }}><ActionButton label={t("git.editRemote")} action="set_remote_url" busy={busy} onClick={() => { setRemoteDraft(summary.remote ?? ""); setEditingRemote(true); }} /></div>
+              </div>}
               {summary.remote && editingRemote && <form onSubmit={(event) => { event.preventDefault(); if (remoteDraft.trim()) void run("set_remote_url", { remoteUrl: remoteDraft }); }} className="git-actions-row" style={{ marginBottom: 10 }}><input className="git-input" value={remoteDraft} onChange={(event) => setRemoteDraft(event.target.value)} placeholder={t("git.remoteUrl")} title={t("git.remoteUrl")} autoFocus disabled={disabled} style={{ minWidth: 0, flex: 1 }} /><ActionButton label={t("git.cancelEditRemote")} action="set_remote_url" busy={busy} onClick={() => { setEditingRemote(false); setRemoteDraft(""); }} /><ActionButton label={t("git.saveRemote")} action="set_remote_url" busy={busy} disabled={!remoteDraft.trim()} onClick={() => void run("set_remote_url", { remoteUrl: remoteDraft })} /></form>}
               {(needsHttpsCredential || needsSshCredential) && <div className="git-field">
                 <div className="git-field-label">{t(needsHttpsCredential ? "git.httpsCredentials" : "git.sshCredentials")}{summary.hasSavedCredential ? ` · ${t("git.savedCredential")}` : ""}</div>
