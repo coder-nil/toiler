@@ -55,7 +55,12 @@ pub async fn status(
         Ok(path) => path,
         Err((status, message)) => return git_error(status, &message),
     };
-    match blocking_plain(move || gitsvc::full_status(&cwd)).await {
+    match blocking_plain(move || {
+        gitsvc::refresh_remote_refs(&cwd);
+        gitsvc::full_status(&cwd)
+    })
+    .await
+    {
         Ok(value) => Json(value).into_response(),
         Err(message) => git_error(500, &message),
     }
@@ -325,6 +330,7 @@ pub async fn worktrees_list(
     }
     let cwd = raw.to_string();
     match blocking_plain(move || {
+        gitsvc::refresh_remote_refs(Path::new(&cwd));
         let info = gitsvc::repo_info(&cwd);
         let root = info.project_root.clone();
         let path = PathBuf::from(&root);

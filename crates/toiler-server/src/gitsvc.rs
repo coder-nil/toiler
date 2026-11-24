@@ -752,7 +752,50 @@ pub fn full_status_with_store(cwd: &Path, store: &CredentialStore) -> Value {
     })
 }
 
-/// 当前工作树相对已跟踪上游的状态。分支选择框不需要 diff 或凭据，也不主动联网。
+/// 状态刷新时同步远程跟踪引用。失败时保留旧引用，仍返回可用的本地状态。
+pub fn refresh_remote_refs(cwd: &Path) {
+    let Some(root) = repository_root(cwd) else {
+        return;
+    };
+    let remote = run_git(
+        &root,
+        &[
+            "for-each-ref",
+            "--points-at=HEAD",
+            "--format=%(HEAD)%(upstream:remotename)",
+            "refs/heads",
+        ],
+        STATUS_TIMEOUT,
+    );
+    let Ok(remote) = remote else { return };
+    let Some(remote) = remote.lines().find_map(|line| {
+        line.strip_prefix('*')
+            .filter(|name| !name.is_empty() && *name != ".")
+    }) else {
+        return;
+    };
+    let lock = repo_lock(&root);
+    let Ok(_guard) = lock.try_lock() else { return };
+    let _ = run_git_with_env(
+        &root,
+        &[
+            "fetch",
+            "--no-prune",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--",
+            remote,
+        ],
+        STATUS_TIMEOUT,
+        &[
+            ("GCM_INTERACTIVE", "never".into()),
+            ("GIT_ASKPASS", String::new()),
+            ("SSH_ASKPASS_REQUIRE", "never".into()),
+        ],
+    );
+}
+
+/// 当前工作树相对已跟踪上游的状态。状态刷新前由调用方更新远程跟踪引用。
 pub fn upstream_status(cwd: &Path) -> (Option<String>, u64, u64) {
     let upstream = run_git(
         cwd,

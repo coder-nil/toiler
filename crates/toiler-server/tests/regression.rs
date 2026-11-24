@@ -3878,6 +3878,13 @@ async fn worktree_selector_reports_sync_counts_for_the_current_checkout() {
     };
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["commit", "--allow-empty", "-qm", "base"]);
+    let remote = sandbox.join("remote.git");
+    git(&sandbox, &["init", "--bare", remote.to_str().unwrap()]);
+    git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&repo, &["push", "-u", "origin", "main"]);
     git(
         &repo,
         &[
@@ -3891,10 +3898,15 @@ async fn worktree_selector_reports_sync_counts_for_the_current_checkout() {
     git(&repo, &["commit", "--allow-empty", "-qm", "main-only"]);
     git(&linked, &["commit", "--allow-empty", "-qm", "feature-only"]);
     git(&linked, &["branch", "--set-upstream-to=main"]);
+    // 直接向裸仓库推送，避免写入被测仓库的 origin/main。
+    git(
+        &linked,
+        &["push", remote.to_str().unwrap(), "HEAD:refs/heads/main"],
+    );
 
     let router = app_with_agent_dir(&store, &sandbox, Some(&store));
     for (cwd, expected) in [
-        (&repo, Value::Null),
+        (&repo, json!({ "ahead": 1, "behind": 1 })),
         (&linked, json!({ "ahead": 1, "behind": 1 })),
     ] {
         let url = format!("/api/worktrees?cwd={}", url_encode(&cwd.to_string_lossy()));
