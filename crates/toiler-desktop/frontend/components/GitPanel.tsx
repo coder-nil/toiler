@@ -104,7 +104,7 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
   // 这段只在 git 不可用时的安装提示里用到，改文案不会影响布局。
   const [platform, setPlatform] = useState<InstallPlatform>("linux");
   const [versionPreview, setVersionPreview] = useState<{ level: VersionUpgradeLevel; data: VersionUpgradePreview } | null>(null);
-  const [versionResult, setVersionResult] = useState<string | null>(null);
+  const [versionResult, setVersionResult] = useState<{ cwd: string; tag: string } | null>(null);
   const panelRef = useRef<HTMLElement>(null);
   const versionDialogRef = useRef<HTMLDivElement>(null);
   useEffect(() => { panelRef.current?.focus({ preventScroll: true }); }, []);
@@ -184,6 +184,12 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
       const res = await fetch("/api/git", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cwd, action, ...extra, ...(credential ? { credential, rememberCredential } : {}) }) });
       const data = await readApiJson<GitSummary>(res, { hint: t("git.serverErrorHint") });
       setSummary(data);
+      // 只在 Git 确认推送成功后清除对应版本标签的提示。
+      if (action === "push_tag" || action === "push_tags") {
+        setVersionResult((result) => result?.cwd === cwd &&
+          (action === "push_tag" ? extra.tag === result.tag : data.tags.includes(result.tag))
+          ? null : result);
+      }
       if (action === "commit") setMessage("");
       if (action === "create_tag") {
         setNewTag("");
@@ -218,7 +224,7 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
         setVersionPreview({ level, data });
       } else {
         setVersionPreview(null);
-        setVersionResult(t("git.versionUpgradeDone", { tag: data.tag }));
+        setVersionResult({ cwd, tag: data.tag });
         onChanged();
         await refresh();
       }
@@ -442,7 +448,7 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
                 {VERSION_UPGRADE_LEVELS.map((level) => <ActionButton key={level} label={t(`git.versionUpgrade.${level}`)} action={`bump_${level}`} busy={busy} disabled={!desktop || Boolean(summary.operation) || Boolean(versionPreview)} title={t(desktop ? "git.versionUpgradeHint" : "git.versionUpgradeDesktopOnly")} onClick={() => void versionUpgrade(level)} />)}
               </div>
               {!desktop && <div className="git-hint">{t("git.versionUpgradeDesktopOnly")}</div>}
-              {versionResult && <div role="status" className="git-note">{versionResult}</div>}
+              {versionResult?.cwd === cwd && <div role="status" className="git-note">{t("git.versionUpgradeDone", { tag: versionResult.tag })}</div>}
               {summary.tags.length === 0
                 ? <div className="git-hint">{t("git.noTags")}</div>
                 : <div className="git-file-list git-tag-list" role="region" aria-label={t("git.tags")} tabIndex={0}>{sortedTags.map((tag) => (
