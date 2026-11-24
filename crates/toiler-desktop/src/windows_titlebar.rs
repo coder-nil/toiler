@@ -7,11 +7,16 @@ use std::ptr::null_mut;
 
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, HWND, LPARAM, LRESULT, WPARAM,
+        ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, HWND, LPARAM, LRESULT, POINT,
+        WPARAM,
     },
-    Graphics::Dwm::{
-        DwmExtendFrameIntoClientArea, DwmIsCompositionEnabled, DwmSetWindowAttribute, DWMSBT_NONE,
-        DWMSBT_TRANSIENTWINDOW, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    Graphics::{
+        Dwm::{
+            DwmExtendFrameIntoClientArea, DwmIsCompositionEnabled, DwmSetWindowAttribute,
+            DWMSBT_NONE, DWMSBT_TRANSIENTWINDOW, DWMWA_SYSTEMBACKDROP_TYPE,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+        },
+        Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST},
     },
     System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD},
     UI::{
@@ -20,9 +25,9 @@ use windows_sys::Win32::{
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         WindowsAndMessaging::{
             GetWindowLongW, SetWindowLongW, SetWindowPos, SystemParametersInfoW, GWL_STYLE,
-            SPI_GETHIGHCONTRAST, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
-            SWP_NOSIZE, SWP_NOZORDER, WM_NCACTIVATE, WM_NCDESTROY, WM_NCPAINT, WM_STYLECHANGING,
-            WS_CAPTION,
+            MINMAXINFO, SPI_GETHIGHCONTRAST, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+            SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_GETMINMAXINFO, WM_NCACTIVATE, WM_NCDESTROY,
+            WM_NCPAINT, WM_STYLECHANGING, WS_CAPTION,
         },
     },
 };
@@ -33,6 +38,31 @@ fn without_caption(style: u32) -> u32 {
     style & !WS_CAPTION
 }
 
+fn monitor_info(hwnd: HWND) -> Option<MONITORINFO> {
+    let mut monitor = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: HWND 来自当前窗口；monitor 是大小正确的可写缓冲区。
+    unsafe {
+        let handle = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        (!handle.is_null() && GetMonitorInfoW(handle, &mut monitor) != 0).then_some(monitor)
+    }
+}
+
+fn apply_maximized_work_area(limits: &mut MINMAXINFO, monitor: &MONITORINFO) {
+    let work = monitor.rcWork;
+    // 最大化位置相对于当前显示器，而非虚拟桌面原点；左侧、上方副屏坐标可能为负。
+    limits.ptMaxPosition = POINT {
+        x: work.left - monitor.rcMonitor.left,
+        y: work.top - monitor.rcMonitor.top,
+    };
+    limits.ptMaxSize = POINT {
+        x: work.right - work.left,
+        y: work.bottom - work.top,
+    };
+}
+
 unsafe extern "system" fn custom_caption_proc(
     hwnd: HWND,
     message: u32,
@@ -41,13 +71,22 @@ unsafe extern "system" fn custom_caption_proc(
     id: usize,
     _data: usize,
 ) -> LRESULT {
-    // SAFETY: STYLESTRUCT 仅在处理对应消息时有效；不保存指针。其它消息传给 Tao。
+    // SAFETY: STYLESTRUCT 和 MINMAXINFO 仅在处理对应消息时有效；不保存指针。
     unsafe {
         match message {
             // Tao 已用 WM_NCCALCSIZE 把标题栏区域交给 WebView，不再让 Win32 重绘旧窗框。
             WM_NCPAINT => 0,
             // -1 只禁止 DefWindowProc 重绘，仍让 Tao 处理激活状态与焦点事件。
             WM_NCACTIVATE => DefSubclassProc(hwnd, message, wparam, -1),
+            WM_GETMINMAXINFO if lparam != 0 => {
+                // Tao 的 WM_NCCALCSIZE 只调整客户区，外框仍可能压住任务栏。
+                // 保留 Tao 计算的拖动缩放限制，只覆盖最大化位置和尺寸。
+                let result = DefSubclassProc(hwnd, message, wparam, lparam);
+                if let Some(monitor) = monitor_info(hwnd) {
+                    apply_maximized_work_area(&mut *(lparam as *mut MINMAXINFO), &monitor);
+                }
+                result
+            }
             WM_STYLECHANGING if wparam as i32 == GWL_STYLE && lparam != 0 => {
                 let result = DefSubclassProc(hwnd, message, wparam, lparam);
                 let styles = &mut *(lparam as *mut STYLESTRUCT);
@@ -236,6 +275,7 @@ pub fn clear(window: &tauri::WebviewWindow) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, SendMessageW, WS_MAXIMIZE, WS_MAXIMIZEBOX, WS_MINIMIZE,
         WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
@@ -264,6 +304,13 @@ mod tests {
             WM_NCPAINT => 42,
             WM_NCACTIVATE if lparam == -1 => 43,
             WM_NCACTIVATE => 44,
+            WM_GETMINMAXINFO if lparam != 0 => {
+                // SAFETY: 测试与系统都提供可写的 MINMAXINFO，模拟 Tao 设置拖动缩放限制。
+                let limits = unsafe { &mut *(lparam as *mut MINMAXINFO) };
+                limits.ptMinTrackSize = POINT { x: 720, y: 520 };
+                limits.ptMaxTrackSize = POINT { x: 3840, y: 2160 };
+                0
+            }
             // SAFETY: 其它消息沿原窗口回调链传递，不读取参数指针。
             _ => unsafe { DefSubclassProc(hwnd, message, wparam, lparam) },
         }
@@ -307,6 +354,40 @@ mod tests {
             for active in [0, 1] {
                 assert_eq!(SendMessageW(hwnd, WM_NCACTIVATE, active, 0), 43);
             }
+            // 真实消息链仍调用下层过程设置拖动限制，最大化外框则匹配系统工作区。
+            let mut limits = MINMAXINFO::default();
+            SendMessageW(
+                hwnd,
+                WM_GETMINMAXINFO,
+                0,
+                (&mut limits as *mut MINMAXINFO) as LPARAM,
+            );
+            let monitor = monitor_info(hwnd).expect("隐藏窗口必须关联到最近的显示器");
+            assert_eq!(
+                limits.ptMaxPosition.x + monitor.rcMonitor.left,
+                monitor.rcWork.left
+            );
+            assert_eq!(
+                limits.ptMaxPosition.y + monitor.rcMonitor.top,
+                monitor.rcWork.top
+            );
+            assert_eq!(
+                limits.ptMaxSize.x + monitor.rcWork.left,
+                monitor.rcWork.right
+            );
+            assert_eq!(
+                limits.ptMaxSize.y + monitor.rcWork.top,
+                monitor.rcWork.bottom
+            );
+            assert_eq!(
+                (limits.ptMinTrackSize.x, limits.ptMinTrackSize.y),
+                (720, 520)
+            );
+            assert_eq!(
+                (limits.ptMaxTrackSize.x, limits.ptMaxTrackSize.y),
+                (3840, 2160)
+            );
+
             // 模拟 Tao 在最大化或还原时重写样式，不把系统标题栏带回来。
             for state in [WS_MAXIMIZE, 0] {
                 let style = WS_CAPTION | WINDOW_FEATURES | state;
@@ -319,6 +400,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn maximized_extents_exclude_work_area_insets_on_a_secondary_monitor() {
+        // 副屏在主屏左上方：带负坐标的工作区仍要换算成相对副屏的偏移。
+        let mut monitor = MONITORINFO {
+            rcMonitor: RECT {
+                left: -1920,
+                top: -1080,
+                right: 0,
+                bottom: 0,
+            },
+            ..Default::default()
+        };
+        let mut limits = MINMAXINFO::default();
+        monitor.rcWork = RECT {
+            bottom: -48,
+            ..monitor.rcMonitor
+        };
+        apply_maximized_work_area(&mut limits, &monitor);
+        assert_eq!((limits.ptMaxPosition.x, limits.ptMaxPosition.y), (0, 0));
+        assert_eq!((limits.ptMaxSize.x, limits.ptMaxSize.y), (1920, 1032));
+
+        monitor.rcWork = RECT {
+            left: -1840,
+            top: -1040,
+            ..monitor.rcMonitor
+        };
+        apply_maximized_work_area(&mut limits, &monitor);
+        assert_eq!((limits.ptMaxPosition.x, limits.ptMaxPosition.y), (80, 40));
+        assert_eq!((limits.ptMaxSize.x, limits.ptMaxSize.y), (1840, 1040));
     }
 
     #[test]

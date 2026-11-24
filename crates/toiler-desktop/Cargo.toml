@@ -40,4 +40,4 @@ objc2-foundation = { version = "0.3", features = ["NSData"] }
 
 # Windows 仅使用官方 DWM/窗口/辅助功能/注册表接口；不启动子进程，不修改系统设置。
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Accessibility", "Win32_System_Registry"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Accessibility", "Win32_System_Registry"] }

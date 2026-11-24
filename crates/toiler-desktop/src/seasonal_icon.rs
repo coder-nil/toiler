@@ -62,9 +62,33 @@ fn apply(_app: &AppHandle, season: Season) -> Result<(), String> {
 fn apply(app: &AppHandle, season: Season) -> Result<(), String> {
     let icon = tauri::image::Image::from_bytes(season.png()).map_err(|error| error.to_string())?;
     for window in app.webview_windows().values() {
+        #[cfg(target_os = "windows")]
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?;
         window
             .set_icon(icon.clone())
             .map_err(|error| error.to_string())?;
+        #[cfg(target_os = "windows")]
+        sync_taskbar_icon(hwnd.0 as _)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn sync_taskbar_icon(hwnd: windows_sys::Win32::Foundation::HWND) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SendMessageW, ICON_BIG, ICON_SMALL, WM_GETICON, WM_SETICON,
+    };
+
+    // Tauri 在主线程同步设置小图标，任务栏则可读取大图标槽。
+    // 两个槽共用 Tao 持有的 HICON；WM_SETICON 不转移所有权，不销毁返回的旧句柄。
+    // SAFETY: hwnd 来自当前主线程上的有效窗口，这两条消息都不传缓冲区指针。
+    let icon = unsafe {
+        let icon = SendMessageW(hwnd, WM_GETICON, ICON_SMALL as _, 0);
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG as _, icon);
+        icon
+    };
+    if icon == 0 {
+        return Err("无法读取 Windows 窗口小图标".into());
     }
     Ok(())
 }
