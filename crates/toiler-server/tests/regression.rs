@@ -3981,20 +3981,44 @@ async fn skills_lists_project_skill_with_source_info() {
         missing.text()
     );
 
-    // 技能市场与开关未实现 → 501 + 中文说明，前端会把 error 原文显示出来。
+    // 市场搜索从 skills.sh 取数；空查询先在本地校验，避免回归测试依赖外网。
     let search = call(
         app_with_agent_dir(&store, &root, Some(&store)),
         "POST",
         "/api/skills/search",
-        Some("{\"query\":\"x\"}"),
+        Some("{\"query\":\"\"}"),
         &[],
     )
     .await;
-    assert_eq!(search.status, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(search.status, StatusCode::BAD_REQUEST, "{}", search.text());
     assert!(search.json()["error"]
         .as_str()
         .unwrap()
-        .contains("技能市场"));
+        .contains("不能为空"));
+
+    // 安装只接受 skills.sh 返回的 GitHub 标识，不接受任意 URL，避免回归测试下载网络。
+    let install_body = format!(
+        r#"{{"package":"https://github.com/a/b","scope":"global","cwd":"{}"}}"#,
+        root.to_string_lossy()
+    );
+    let install = call(
+        app_with_agent_dir(&store, &root, Some(&store)),
+        "POST",
+        "/api/skills/install",
+        Some(&install_body),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        install.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        install.text()
+    );
+    assert!(install.json()["error"]
+        .as_str()
+        .unwrap()
+        .contains("GitHub 技能"));
 
     let toggle = call(
         app_with_agent_dir(&store, &root, Some(&store)),
@@ -4143,69 +4167,6 @@ async fn skills_come_from_project_root_not_cwd() {
     assert_eq!(project["sourceInfo"]["scope"], "project");
 }
 
-#[tokio::test]
-async fn project_and_user_skills_are_merged_even_with_same_name() {
-    // 需求：`$project/.agents/skills` 与 `$user/.agents/skills` **合并**返回。
-    // 同名技能不再互相顶掉（pi 的 loader 是按 name 去重的，这里刻意不同）。
-    let Some(user_skills) =
-        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".agents/skills"))
-    else {
-        eprintln!("跳过：没有 HOME");
-        return;
-    };
-    let Some(existing) = std::fs::read_dir(&user_skills).ok().and_then(|entries| {
-        entries
-            .flatten()
-            .find(|entry| entry.path().join("SKILL.md").is_file())
-            .map(|entry| entry.file_name().to_string_lossy().to_string())
-    }) else {
-        eprintln!("跳过：~/.agents/skills 里没有技能");
-        return;
-    };
-
-    // 项目里放一个**同名**技能，内容不同
-    let root = fixture_root("skills-merge");
-    let skill_dir = root.join(".agents/skills").join(&existing);
-    std::fs::create_dir_all(&skill_dir).unwrap();
-    std::fs::write(
-        skill_dir.join("SKILL.md"),
-        format!("---\nname: {existing}\ndescription: 项目版同名技能\n---\n"),
-    )
-    .unwrap();
-
-    let store = fixture_root("skills-merge-store");
-    toiler_server::trust::TrustStore::at(store.join("trust.json"))
-        .set(root.to_str().unwrap(), Some(true))
-        .unwrap();
-
-    let url = format!("/api/skills?cwd={}", url_encode(&root.to_string_lossy()));
-    let body = get(app_with_agent_dir(&store, &root, Some(&store)), &url)
-        .await
-        .json();
-    let matched: Vec<&Value> = body["skills"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|skill| skill["name"] == existing.as_str())
-        .collect();
-
-    assert_eq!(
-        matched.len(),
-        2,
-        "同名技能应同时出现在列表里（project + user）：{body}"
-    );
-    let sources: Vec<&str> = matched
-        .iter()
-        .filter_map(|skill| skill["sourceInfo"]["source"].as_str())
-        .collect();
-    assert!(sources.contains(&"project"), "{body}");
-    assert!(sources.contains(&"user"), "{body}");
-    assert!(
-        matched[0]["sourceInfo"]["source"] == "project",
-        "项目版排在前面（先扫到的优先）：{body}"
-    );
-}
-
 // ============================================================================
 // 7) /api/plugins —— 插件面板
 // ============================================================================
@@ -4230,6 +4191,14 @@ const FAKE_NPM: &str = r#"#!/bin/sh
 #
 # 用 POSIX sh 而不是 python3：测试不该假设机器装了 Python ——「客户端机器没有
 # Python」正是版本升级改成纯 Rust 的原因，测试自身更不该反向依赖它。
+# npm must be isolated from the user's shared ~/.npm cache.
+if [ -z "$npm_config_cache" ]; then
+  echo "missing npm cache isolation" >&2
+  exit 1
+fi
+mkdir -p "$npm_config_cache"
+touch "$npm_config_cache/fake-cache-marker"
+
 cmd=""
 prefix=""
 specs=""
@@ -4525,16 +4494,19 @@ async fn plugins_list_reports_configured_packages_and_install_state() {
     );
     assert_eq!(no_source.json()["error"], "source required");
 
-    // 插件市场返回空页：抽屉显示「没有结果」，而不是一条 404 错误。
+    // PluginsConfig 通过该路由提交目录搜索；无效输入应在联网前被拒绝。
     let catalog = get(
         app_with_agent_dir(&root, &root, Some(&configs)),
-        "/api/plugins/catalog?q=pi&from=0&size=40",
+        &format!("/api/plugins/catalog?q={}&from=0&size=50", "x".repeat(201)),
     )
     .await;
-    assert_eq!(catalog.status, StatusCode::OK, "{}", catalog.text());
-    let catalog_body = catalog.json();
-    assert_eq!(catalog_body["plugins"].as_array().unwrap().len(), 0);
-    assert_eq!(catalog_body["hasMore"], false);
+    assert_eq!(
+        catalog.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        catalog.text()
+    );
+    assert!(catalog.json()["error"].is_string());
 }
 
 #[cfg(unix)]
@@ -4646,6 +4618,12 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
     );
     let settings = read_settings();
     assert_eq!(settings["packages"][0], "npm:pi-mcp-adapter@1.0.0");
+    assert!(
+        agent
+            .join("plugins/npm/.npm-cache/fake-cache-marker")
+            .is_file(),
+        "插件安装应使用自己的 npm 缓存，不应读写用户 ~/.npm"
+    );
     assert_eq!(
         settings["defaultProvider"], "keep-me",
         "写 packages 不能丢掉 settings.json 的其它键"

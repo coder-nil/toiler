@@ -2428,14 +2428,12 @@ export function ModelsConfig({ embedded = false, onClose, onSaved }: ModelsConfi
       onClick={(e) => { if (!embedded && e.target === e.currentTarget) onClose?.(); }}>
       <div style={{ width: embedded ? "100%" : isMobile ? "calc(100vw - 16px)" : 860, maxWidth: embedded ? "none" : "calc(100vw - 16px)", height: embedded ? "100%" : isMobile ? "calc(100dvh - 16px)" : "78vh", maxHeight: embedded ? "none" : "calc(100dvh - 16px)", background: "var(--bg)", border: embedded ? "none" : "1px solid var(--border)", borderRadius: embedded ? 0 : 10, display: "flex", flexDirection: "column", boxShadow: embedded ? "none" : "0 8px 32px rgba(0,0,0,0.18)", overflow: "hidden" }}>
 
-        {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-             <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>{t("common.models")}</span>
-            {/* 标题旁不再拼配置文件路径：占了宽度但没人会在这里读它。 */}
+        {!embedded && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+            <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>{t("common.models")}</span>
+            <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: "2px 6px" }}>×</button>
           </div>
-          {!embedded && <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: "2px 6px" }}>×</button>}
-        </div>
+        )}
 
         {/* Body */}
         <div style={{ flex: 1, display: "flex", flexDirection: isMobile ? "column" : "row", overflow: "hidden" }}>

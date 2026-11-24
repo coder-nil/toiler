@@ -404,6 +404,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const sessionRunningRef = useRef(Boolean(sessionRunning));
   const agentRunningRef = useRef(false);
   const sdkAgentActiveRef = useRef(false);
+  const agentStartGenerationRef = useRef(0);
+  const transcriptVersionRef = useRef(0);
   const rpcPromptPendingRef = useRef(false);
   const promptDispatchRef = useRef<Promise<void> | null>(null);
   const notifiedPromptRunIdRef = useRef(-1);
@@ -559,6 +561,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false) => {
     const runId = promptRunIdRef.current;
+    const transcriptVersion = ++transcriptVersionRef.current;
+    const isCurrentTranscript = () => sessionIdRef.current === sid
+      && promptRunIdRef.current === runId
+      && transcriptVersionRef.current === transcriptVersion;
     let messagesLoaded = false;
     try {
       if (showLoading) setLoading(true);
@@ -569,7 +575,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (loadedCount > SESSION_PAGE_SIZE) params.set("limit", String(loadedCount));
       const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}?${params}`);
       if (res.status === 404) {
-        if (showLoading) {
+        if (showLoading && isCurrentTranscript()) {
           setData(null);
           setActiveLeafId(null);
           setMessages([]);
@@ -583,12 +589,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json() as SessionData;
-      if (sessionIdRef.current !== sid || promptRunIdRef.current !== runId) return null;
+      // 上一轮结束时发出的快照可能比新一轮的 SSE 或新快照更晚返回，不能覆盖它们。
+      if (!isCurrentTranscript()) return null;
       const persistedMessages = d.context.messages;
       setData(d);
       setActiveLeafId(d.leafId);
       setMessages(persistedMessages);
-      setEntryIds(d.context.entryIds ?? []);
+      entryIdsRef.current = d.context.entryIds ?? [];
+      setEntryIds(entryIdsRef.current);
       setHasEarlierMessages(Boolean(d.paging?.hasEarlier));
       setTotalMessageCount(d.paging?.totalMessages ?? persistedMessages.length);
       messagesSessionIdRef.current = sid;
@@ -1111,10 +1119,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // Bail out before loadSession too: a stale finish for a previous run
     // must not overwrite the messages of the run currently streaming.
     if (promptRunIdRef.current !== runId) return;
+    const agentStartGeneration = agentStartGenerationRef.current;
     try {
       if (sid) await loadSession(sid);
     } finally {
-      if (promptRunIdRef.current !== runId) return;
+      if (sessionIdRef.current !== sid || promptRunIdRef.current !== runId
+        || agentStartGenerationRef.current !== agentStartGeneration) return;
       const promptWasPending = rpcPromptPendingRef.current;
       const agentWasActive = sdkAgentActiveRef.current;
       rpcPromptPendingRef.current = false;
@@ -1189,6 +1199,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const reconcileAgentState = useCallback(async (sid: string) => {
     if (!agentRunningRef.current || sessionIdRef.current !== sid) return;
     const runId = promptRunIdRef.current;
+    const agentStartGeneration = agentStartGenerationRef.current;
     try {
       const res = await fetch(`/api/agent/${encodeURIComponent(sid)}`);
       if (!res.ok) return;
@@ -1196,7 +1207,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // A slow response can straddle a run boundary (previous run finished
       // and the user already started the next one while this request was in
       // flight) — everything in it is stale, drop it.
-      if (sessionIdRef.current !== sid || promptRunIdRef.current !== runId) return;
+      if (sessionIdRef.current !== sid || promptRunIdRef.current !== runId
+        || agentStartGenerationRef.current !== agentStartGeneration) return;
       const state = data.state;
       // Mirror compaction state unconditionally: a missed compaction_end
       // would otherwise leave the "Stop compaction" UI stuck. No state
@@ -1270,19 +1282,27 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       case "session_published":
         onSessionListRefresh?.();
         break;
-      case "agent_start":
+      case "agent_start": {
         cancelEventStreamGrace();
+        agentStartGenerationRef.current += 1;
+        transcriptVersionRef.current += 1;
         sdkAgentActiveRef.current = true;
         agentRunningRef.current = true;
         setAgentRunning(true);
         setAgentPhase({ kind: "waiting_model" });
         dispatch({ type: "start" });
+        // 确认排队或引导时，上一轮可能已经结束。服务端会直接开新一轮，
+        // 首条用户消息已落盘，但不一定有 message_end，且这条路径没有乐观气泡。
+        const sid = sessionIdRef.current;
+        if (sid && !optimisticUserMessageKeyRef.current) void loadSession(sid);
         break;
+      }
       case "agent_end":
         // One logical prompt can emit multiple agent_end events before retrying,
         // compacting, or continuing messages queued by extension handlers.
         // Keep the stream open until prompt_done/agent_settled and the idle grace.
         if (!agentRunningRef.current) break;
+        optimisticUserMessageKeyRef.current = null;
         setAgentPhase(null);
         setRetryInfo(null);
         dispatch({ type: "end" });
@@ -1411,6 +1431,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (!agentRunningRef.current) break;
         if (isSystemMessageEvent(event)) break;
         const completed = event.message as AgentMessage | undefined;
+        if (completed) transcriptVersionRef.current += 1;
+        const alreadyPersisted = typeof event.messageId === "string" && entryIdsRef.current.includes(event.messageId);
         if (completed && completed.role === "user") {
           // Delivered steering/follow-up messages surface here as user
           // messages. The run's initial prompt also emits one, but handleSend
@@ -1421,7 +1443,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           const deliveredKey = userMessageKey(delivered);
           const optimisticKey = optimisticUserMessageKeyRef.current;
           optimisticUserMessageKeyRef.current = null;
-          setMessages((prev) => {
+          if (!alreadyPersisted) setMessages((prev) => {
             const last = prev[prev.length - 1];
             if (optimisticKey && last?.role === "user" && userMessageKey(last) === optimisticKey) {
               return optimisticKey === deliveredKey
@@ -1430,7 +1452,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             }
             return [...prev, delivered];
           });
-        } else if (completed) {
+        } else if (completed && !alreadyPersisted) {
           setMessages((prev) => [...prev, normalizeToolCalls(completed)]);
         }
         dispatch({ type: "end" });
@@ -2065,7 +2087,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       return;
     }
     const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
+    let promptRequestStarted = false;
     try {
+      // 后端会根据提交瞬间的状态决定入队还是开新一轮，必须先订阅，不能漏掉 agent_start。
+      await ensureEventsConnected(sid);
+      promptRequestStarted = true;
       const result = await sendAgentCommand<{ disposition?: "handled" | "queued" | "started" }>(sid, {
         type: "prompt",
         uiLocale: locale,
@@ -2079,17 +2105,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         addNotice({ type: "info", message: t("chat.steerHandledByExtension") });
       }
     } catch (e) {
+      // 连接未就绪时没有提交；POST 发出后只有明确被拒绝才回填，避免用户重复发送。
+      if (!promptRequestStarted || isPromptRejectedError(e)) restore();
+      if (isAgentEventStreamAbort(e)) return;
       console.error("Failed to submit streaming prompt:", e);
-      // A transport failure after dispatch is ambiguous: the server may have
-      // accepted the queued prompt before the response was lost. Restoring in
-      // that case would invite a duplicate turn.
-      if (isPromptRejectedError(e)) restore();
       addNotice({
         type: "error",
         message: e instanceof Error ? e.message : String(e),
       });
     }
-  }, [addNotice, composerDraftKey, handleSend, locale, restoreSubmission, t]);
+  }, [addNotice, composerDraftKey, ensureEventsConnected, handleSend, locale, restoreSubmission, t]);
 
   const handleSteer = useCallback(async (message: string, images?: AttachedImage[]) => {
     await sendStreamingPrompt(message, "steer", images);

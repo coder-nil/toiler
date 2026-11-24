@@ -49,7 +49,12 @@ bytes = "1"
 url = "2"
 # 前端产物在编译期嵌入二进制（阶段 4：不再带 node 运行时）
 include_dir = "0.7"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# `default-features=false` 会关闭 reqwest 默认的系统代理探测；显式打开后才能读取
+# macOS「系统设置 → 网络 → 代理」以及 HTTP_PROXY/HTTPS_PROXY。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "system-proxy"] }
+tar = "0.4"
+# Pi 官网目录是服务端渲染的 HTML；复用工作区已有的 HTML 解析器。
+dom_query = "0.29"
 # DOCX 预览：zip 容器里的 deflate 流（pi 用 mammoth，这里自己解 OOXML）
 flate2 = "1"
 # 手机配对地址：punycode ↔ Unicode 域名互转（与 pi 的 domainToASCII/Unicode 同源）

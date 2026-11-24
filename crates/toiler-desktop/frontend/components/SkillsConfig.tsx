@@ -1000,6 +1000,28 @@ export function SkillsConfig({
   }, []);
 
   const selectedSkill = skills.find((s) => s.filePath === selected) ?? null;
+  const refreshIndicator = refreshing && (
+    <span
+      role="status"
+      title={t("i18n.loading")}
+      aria-label={t("i18n.loading")}
+      style={{ display: "flex", color: "var(--text-muted)" }}
+    >
+      <svg
+        width="13"
+        height="13"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        style={{ animation: "spin 0.8s linear infinite" }}
+        aria-hidden="true"
+      >
+        <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+      </svg>
+    </span>
+  );
 
   return (
     <div
@@ -1033,61 +1055,39 @@ export function SkillsConfig({
           overflow: "hidden",
         }}
       >
-        {/* Header */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            padding: "12px 18px",
-            borderBottom: "1px solid var(--border)",
-            flexShrink: 0,
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span
-              style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}
-            >
-               {t("common.skills")}
-            </span>
-            {refreshing && (
-              <span
-                title={t("i18n.loading")}
-                aria-label={t("i18n.loading")}
-                style={{ display: "flex", color: "var(--text-muted)" }}
-              >
-                <svg
-                  width="13"
-                  height="13"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  style={{ animation: "spin 0.8s linear infinite" }}
-                  aria-hidden="true"
-                >
-                  <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-                </svg>
-              </span>
-            )}
-            {/* 标题旁不再挂当前项目路径（详见 PluginsConfig 的同名处理）。 */}
-          </div>
-          {!embedded && <button
-            onClick={onClose}
+        {!embedded && (
+          <div
             style={{
-              background: "none",
-              border: "none",
-              color: "var(--text-muted)",
-              cursor: "pointer",
-              fontSize: 20,
-              lineHeight: 1,
-              padding: "2px 6px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "12px 18px",
+              borderBottom: "1px solid var(--border)",
+              flexShrink: 0,
             }}
           >
-            ×
-          </button>}
-        </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>
+                {t("common.skills")}
+              </span>
+              {refreshIndicator}
+            </div>
+            <button
+              onClick={onClose}
+              style={{
+                background: "none",
+                border: "none",
+                color: "var(--text-muted)",
+                cursor: "pointer",
+                fontSize: 20,
+                lineHeight: 1,
+                padding: "2px 6px",
+              }}
+            >
+              ×
+            </button>
+          </div>
+        )}
 
         {!projectResourcesLoaded && (
           <div
@@ -1510,6 +1510,7 @@ export function SkillsConfig({
               </span>
             )}
           </div>
+          {embedded && refreshIndicator}
           {!embedded && <button
             onClick={onClose}
             style={{

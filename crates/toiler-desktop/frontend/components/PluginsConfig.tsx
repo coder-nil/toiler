@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sendAgentCommand } from "@/lib/agent-client";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import type { PluginCatalogEntry } from "@/lib/plugin-catalog";
@@ -9,6 +9,8 @@ import { useI18n } from "@/hooks/useI18n";
 
 type PluginScope = PluginPackageInfo["scope"];
 type PluginAction = "install" | "remove" | "update" | "disable" | "enable";
+const PI_CATALOG_URL = "https://pi.dev/packages";
+const CATALOG_PAGE_SIZE = 50;
 
 function shortenPath(path: string): string {
   return path.replace(/^\/(?:Users|home)\/[^/]+/, "~");
@@ -340,97 +342,63 @@ function PluginCatalogPanel({
   actionMessage: string | null;
   onInstall: (source: string) => void;
 }) {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [plugins, setPlugins] = useState<PluginCatalogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(false);
   const [nextFrom, setNextFrom] = useState(0);
   const [hasMore, setHasMore] = useState(false);
-  const [translatingNames, setTranslatingNames] = useState<Set<string>>(() => new Set());
+  const requestRef = useRef<AbortController | null>(null);
+  const search = query.trim();
 
-  const translateMissingDescriptions = useCallback(async (entries: PluginCatalogEntry[], signal?: AbortSignal) => {
-    const missing = entries.filter((entry) => locale === "zh-CN"
-      ? entry.descriptionLanguage !== "zh-CN" && !entry.descriptionZh
-      : entry.descriptionLanguage !== "en" && !entry.descriptionEn);
-    if (missing.length === 0) return;
-    const names = new Set(missing.map((entry) => entry.name));
-    setTranslatingNames((current) => new Set([...current, ...names]));
-    try {
-      const response = await fetch("/api/plugins/catalog/translate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          targetLanguage: locale,
-          plugins: missing.map(({ name, description }) => ({ name, description })),
-        }),
-        signal,
-      });
-      const data = await response.json() as {
-        translations?: Record<string, Pick<PluginCatalogEntry, "descriptionZh" | "descriptionZhSource" | "descriptionEn" | "descriptionEnSource">>;
-      };
-      if (!response.ok || !data.translations) return;
-      setPlugins((current) => current.map((plugin) => {
-        const translation = data.translations?.[plugin.name];
-        return translation ? { ...plugin, ...translation } : plugin;
-      }));
-    } catch (err) {
-      if (!(err instanceof DOMException && err.name === "AbortError")) {
-        console.warn("Failed to translate plugin descriptions:", err);
-      }
-    } finally {
-      setTranslatingNames((current) => new Set([...current].filter((name) => !names.has(name))));
-    }
-  }, [locale]);
-
-  const load = useCallback(async (from: number, append: boolean, signal?: AbortSignal) => {
-    if (append) setLoadingMore(true);
+  const load = useCallback(async (from: number, signal: AbortSignal) => {
+    if (from > 0) setLoadingMore(true);
     else setLoading(true);
-    setError(null);
+    setError(false);
     try {
-      const params = new URLSearchParams({ q: query, from: String(from), size: "40" });
+      const params = new URLSearchParams({ q: search, from: String(from), size: String(CATALOG_PAGE_SIZE) });
       const response = await fetch(`/api/plugins/catalog?${params.toString()}`, { signal });
-      const data = await response.json() as {
-        plugins?: PluginCatalogEntry[];
-        from?: number;
-        size?: number;
-        hasMore?: boolean;
-        error?: string;
-      };
-      if (!response.ok || data.error) throw new Error(data.error ?? `HTTP ${response.status}`);
-      const incoming = data.plugins ?? [];
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json() as { plugins: PluginCatalogEntry[]; hasMore: boolean };
+      if (signal.aborted) return;
       setPlugins((current) => {
-        if (!append) return incoming;
+        if (from === 0) return data.plugins;
         const seen = new Set(current.map((plugin) => plugin.name));
-        return [...current, ...incoming.filter((plugin) => !seen.has(plugin.name))];
+        return [...current, ...data.plugins.filter((plugin) => !seen.has(plugin.name))];
       });
-      const pageFrom = data.from ?? from;
-      setNextFrom(pageFrom + (data.size ?? 40));
-      setHasMore(Boolean(data.hasMore));
-      void translateMissingDescriptions(incoming, signal);
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      setError(err instanceof Error ? err.message : String(err));
+      setNextFrom(from + CATALOG_PAGE_SIZE);
+      setHasMore(data.hasMore);
+    } catch {
+      if (!signal.aborted) setError(true);
     } finally {
-      if (append) setLoadingMore(false);
-      else setLoading(false);
+      if (!signal.aborted) {
+        if (from > 0) setLoadingMore(false);
+        else setLoading(false);
+      }
     }
-  }, [query, translateMissingDescriptions]);
+  }, [search]);
 
   useEffect(() => {
     const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      setPlugins([]);
-      setNextFrom(0);
-      setHasMore(false);
-      void load(0, false, controller.signal);
-    }, query ? 260 : 0);
+    requestRef.current = controller;
+    setPlugins([]);
+    setHasMore(false);
+    setLoading(true);
+    setLoadingMore(false);
+    setError(false);
+    const timer = window.setTimeout(() => void load(0, controller.signal), search ? 260 : 0);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [load, query]);
+  }, [load, search]);
+
+  const loadPage = (from: number) => {
+    const signal = requestRef.current?.signal;
+    if (signal && !signal.aborted) void load(from, signal);
+  };
 
   const isInstalled = useCallback((plugin: PluginCatalogEntry) => installedPackages.some((pkg) => (
     pkg.packageName === plugin.name || pkg.source === plugin.source || pkg.source.startsWith(`${plugin.source}@`)
@@ -439,7 +407,10 @@ function PluginCatalogPanel({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 700 }}>
       <div>
-        <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>{t("i18n.discoverPlugins")}</div>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>{t("i18n.discoverPlugins")}</div>
+          <a href={PI_CATALOG_URL} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", fontSize: 12 }}>pi.dev/packages ↗</a>
+        </div>
         <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4, lineHeight: 1.45 }}>
           {t("i18n.pluginCatalogIntro")}
         </div>
@@ -456,7 +427,9 @@ function PluginCatalogPanel({
 
       <div style={{ position: "relative" }}>
         <input
+          type="search"
           value={query}
+          maxLength={200}
           onChange={(event) => setQuery(event.target.value)}
           placeholder={t("i18n.searchPlugins")}
           aria-label={t("i18n.searchPlugins")}
@@ -480,54 +453,37 @@ function PluginCatalogPanel({
       {actionMessage && <div role="status" style={{ fontSize: 12, color: "#16a34a" }}>{actionMessage}</div>}
       {actionError && <div role="alert" style={{ fontSize: 12, color: "#ef4444", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{actionError}</div>}
 
-      {loading ? (
-        <div style={{ padding: "20px 4px", color: "var(--text-muted)", fontSize: 12 }}>{t("i18n.pluginCatalogLoading")}</div>
-      ) : error ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#ef4444", fontSize: 12 }}>
-          <span style={{ overflowWrap: "anywhere" }}>{error}</span>
-          <button type="button" onClick={() => void load(0, false)} style={buttonStyle()}>{t("i18n.retry")}</button>
+      {error && (
+        <div role="alert" style={{ display: "flex", alignItems: "center", gap: 10, color: "#ef4444", fontSize: 12 }}>
+          <span>{t("i18n.pluginCatalogError")}</span>
+          {plugins.length === 0 && <button type="button" onClick={() => loadPage(0)} style={buttonStyle()}>{t("i18n.retry")}</button>}
         </div>
+      )}
+      {loading ? (
+        <div role="status" style={{ padding: "20px 4px", color: "var(--text-muted)", fontSize: 12 }}>{t("i18n.pluginCatalogLoading")}</div>
       ) : plugins.length === 0 ? (
-        <div style={{ padding: "20px 4px", color: "var(--text-dim)", fontSize: 12 }}>{t("i18n.noPluginMatches")}</div>
+        !error && <div role="status" style={{ padding: "20px 4px", color: "var(--text-dim)", fontSize: 12 }}>{t("i18n.noPluginMatches")}</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", borderTop: "1px solid var(--border)" }}>
           {plugins.map((plugin) => {
             const installed = isInstalled(plugin);
             const busy = busySource === plugin.source;
-            const localizedDescription = locale === "zh-CN"
-              ? plugin.descriptionLanguage === "zh-CN" ? plugin.description : plugin.descriptionZh
-              : plugin.descriptionLanguage === "en" ? plugin.description : plugin.descriptionEn;
-            const machineTranslated = locale === "zh-CN"
-              ? plugin.descriptionZhSource === "machine"
-              : plugin.descriptionEnSource === "machine";
-            const showOriginal = Boolean(localizedDescription && localizedDescription !== plugin.description);
             return (
               <div key={plugin.name} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "13px 0", borderBottom: "1px solid var(--border)" }}>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 650, color: "var(--text)" }}>{plugin.name}</span>
-                    {plugin.version && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>v{plugin.version}</span>}
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 650, color: "var(--text)", overflowWrap: "anywhere" }}>{plugin.name}</span>
                     <PluginUsageBadge plugin={plugin} />
                   </div>
-                  <div style={{ marginTop: 5, fontSize: 12, color: "var(--text)", lineHeight: 1.45 }}>
-                    {localizedDescription ?? (
-                      <span style={{ color: "var(--text-dim)" }}>
-                        {translatingNames.has(plugin.name) ? t("i18n.translatingDescription") : t("i18n.noLocalizedDescription")}
-                      </span>
-                    )}
-                    {machineTranslated && (
-                      <span style={{ marginLeft: 7, fontSize: 10, color: "var(--text-dim)" }}>{t("i18n.machineTranslated")}</span>
-                    )}
-                  </div>
-                  {showOriginal && (
-                    <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-muted)", lineHeight: 1.4 }}>
+                  {plugin.description && (
+                    <div style={{ marginTop: 5, fontSize: 12, color: "var(--text)", lineHeight: 1.45, overflowWrap: "anywhere" }}>
                       {plugin.description}
                     </div>
                   )}
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6, fontSize: 10, color: "var(--text-dim)" }}>
                     {plugin.publisher && <span>{plugin.publisher}</span>}
                     <a href={plugin.npmUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", textDecoration: "none" }}>npm ↗</a>
-                    {plugin.repositoryUrl && <a href={plugin.repositoryUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", textDecoration: "none" }}>source ↗</a>}
+                    {plugin.homepageUrl && <a href={plugin.homepageUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", textDecoration: "none" }}>Pi ↗</a>}
                   </div>
                 </div>
                 <button
@@ -543,8 +499,8 @@ function PluginCatalogPanel({
             );
           })}
           {hasMore && (
-            <button type="button" onClick={() => void load(nextFrom, true)} disabled={loadingMore} style={{ ...buttonStyle(loadingMore), alignSelf: "center", marginTop: 12 }}>
-              {loadingMore ? t("i18n.pluginCatalogLoading") : t("i18n.loadMorePlugins")}
+            <button type="button" onClick={() => loadPage(nextFrom)} disabled={loadingMore} style={{ ...buttonStyle(loadingMore), alignSelf: "center", marginTop: 12 }}>
+              {loadingMore ? t("i18n.pluginCatalogLoading") : error ? t("i18n.retry") : t("i18n.loadMorePlugins")}
             </button>
           )}
         </div>
@@ -600,34 +556,8 @@ function AddPluginPanel({
         <summary style={{ cursor: "pointer", color: "var(--text-muted)", fontSize: 12, fontWeight: 600 }}>{t("i18n.manualPluginInstall")}</summary>
         <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 14 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)" }}>
-            {t("i18n.addPlugin")}
-          </div>
-          <a
-            href="https://pi.dev/packages"
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
-              color: "var(--accent)",
-              fontSize: 12,
-              textDecoration: "none",
-              whiteSpace: "nowrap",
-            }}
-          >
-            <svg width="28" height="28" viewBox="0 0 800 800" aria-hidden="true" focusable="false" style={{ flexShrink: 0 }}>
-              <path
-                fill="#000"
-                fillRule="evenodd"
-                d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
-              />
-              <path fill="#000" d="M517.36 400H634.72V634.72H517.36Z" />
-            </svg>
-            pi.dev/packages
-          </a>
+        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)" }}>
+          {t("i18n.addPlugin")}
         </div>
         <div style={{ fontSize: 12, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
           {installLocation(scope, cwd)}
@@ -1065,37 +995,36 @@ export function PluginsConfig({
           overflow: "hidden",
         }}
       >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            padding: "12px 18px",
-            borderBottom: "1px solid var(--border)",
-            flexShrink: 0,
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "baseline", gap: 10, minWidth: 0 }}>
+        {!embedded && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "12px 18px",
+              borderBottom: "1px solid var(--border)",
+              flexShrink: 0,
+            }}
+          >
             <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>
               {t("common.plugins")}
             </span>
-            {/* 标题旁不再挂当前项目路径：左侧栏本来就常驻显示它，这里只是噪声。 */}
+            <button
+              onClick={onClose}
+              style={{
+                background: "none",
+                border: "none",
+                color: "var(--text-muted)",
+                cursor: "pointer",
+                fontSize: 20,
+                lineHeight: 1,
+                padding: "2px 6px",
+              }}
+            >
+              ×
+            </button>
           </div>
-          {!embedded && <button
-            onClick={onClose}
-            style={{
-              background: "none",
-              border: "none",
-              color: "var(--text-muted)",
-              cursor: "pointer",
-              fontSize: 20,
-              lineHeight: 1,
-              padding: "2px 6px",
-            }}
-          >
-            ×
-          </button>}
-        </div>
+        )}
 
         {!projectResourcesLoaded && (
           <div

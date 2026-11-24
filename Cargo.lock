@@ -883,6 +883,16 @@ dependencies = [
 
 [[package]]
 name = "core-foundation"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
+
+[[package]]
+name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
@@ -904,7 +914,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "064badf302c3194842cf2c5d61f56cc88e54a759313879cdf03abdd27d0c3b97"
 dependencies = [
  "bitflags 2.13.2",
- "core-foundation",
+ "core-foundation 0.10.1",
  "core-graphics-types",
  "foreign-types",
  "libc",
@@ -917,7 +927,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d44a101f213f6c4cdc1853d4b78aef6db6bdfa3468798cc1d9912f4735013eb"
 dependencies = [
  "bitflags 2.13.2",
- "core-foundation",
+ "core-foundation 0.10.1",
  "libc",
 ]
 
@@ -1256,6 +1266,7 @@ dependencies = [
  "cssparser 0.38.0",
  "foldhash",
  "html5ever 0.40.1",
+ "memchr",
  "precomputed-hash",
  "selectors 0.41.0",
  "tendril",
@@ -1515,6 +1526,16 @@ dependencies = [
  "libc",
  "thiserror 1.0.69",
  "winapi",
+]
+
+[[package]]
+name = "filetime"
+version = "0.2.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1255e7a9f1902190d4c10a75f2f7f495d3d3ce13e9ba26e6c48683a0f4dbed7"
+dependencies = [
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]
@@ -2218,9 +2239,11 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "socket2",
+ "system-configuration",
  "tokio",
  "tower-service",
  "tracing",
+ "windows-registry",
 ]
 
 [[package]]
@@ -5192,6 +5215,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "system-configuration"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a13f3d0daba03132c0aa9767f98351b3488edc2c100cda2d2ec2b04f3d8d3c8b"
+dependencies = [
+ "bitflags 2.13.2",
+ "core-foundation 0.9.4",
+ "system-configuration-sys",
+]
+
+[[package]]
+name = "system-configuration-sys"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
+
+[[package]]
 name = "system-deps"
 version = "6.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5212,7 +5256,7 @@ checksum = "d5777b06fe6435126ae8d816eba269e050e1e10d302cf5461e9c49eccabc3548"
 dependencies = [
  "bitflags 2.13.2",
  "block2",
- "core-foundation",
+ "core-foundation 0.10.1",
  "core-graphics",
  "crossbeam-channel",
  "dbus",
@@ -5253,6 +5297,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
+ "xattr",
 ]
 
 [[package]]
@@ -5703,6 +5758,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "cbc",
+ "dom_query 0.29.0",
  "flate2",
  "futures",
  "http-body-util",
@@ -5723,6 +5779,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tar",
  "toiler-session",
  "tokio",
  "tokio-util",
@@ -6654,6 +6711,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-registry"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
+dependencies = [
+ "windows-link 0.2.1",
+ "windows-result 0.4.1",
+ "windows-strings 0.5.1",
+]
+
+[[package]]
 name = "windows-result"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7050,6 +7118,16 @@ dependencies = [
  "libc",
  "once_cell",
  "pkg-config",
+]
+
+[[package]]
+name = "xattr"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
+dependencies = [
+ "libc",
+ "rustix",
 ]
 
 [[package]]

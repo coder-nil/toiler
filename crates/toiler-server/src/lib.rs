@@ -28,6 +28,7 @@ pub mod session_view;
 pub mod sessions_store;
 pub mod settings;
 pub mod skills;
+pub mod skills_market;
 pub mod state;
 pub mod system_prompt;
 pub mod tools;

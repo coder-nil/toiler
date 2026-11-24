@@ -104,18 +104,27 @@ pub fn router(state: AppState) -> Router {
             "/api/skills",
             get(crate::routes::skills::list).patch(crate::routes::skills::toggle_not_implemented),
         )
-        // 技能市场：pi 有搜索/安装，toiler 返回 501 + 中文说明（见 routes/skills.rs）
+        // 技能市场从 skills.sh 公开搜索接口取数，安装由 Rust 下载 GitHub 归档；不启动 Node。
         .route(
             "/api/skills/search",
-            post(crate::routes::skills::market_not_implemented),
+            post(crate::routes::skills::market_search),
         )
         .route(
             "/api/skills/install",
-            post(crate::routes::skills::market_not_implemented),
+            post(crate::routes::skills::market_install),
         )
-        .route("/api/skills/check", post(unsupported::skill_packages))
-        .route("/api/skills/update", post(unsupported::skill_packages))
-        .route("/api/skills/remove", post(unsupported::skill_packages))
+        .route(
+            "/api/skills/check",
+            post(crate::routes::skills::market_check),
+        )
+        .route(
+            "/api/skills/update",
+            post(crate::routes::skills::market_update),
+        )
+        .route(
+            "/api/skills/remove",
+            post(crate::routes::skills::market_remove),
+        )
         // ---- plugins ----
         // 只读列出 `settings.json` 里配置的包与安装状态（见 routes/plugins.rs）。
         // 少了这条路由，插件页会把静态兜底的 404 `{"error":"Not found"}` 当成一条插件画出来。

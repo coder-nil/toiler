@@ -177,12 +177,16 @@ pub fn project_root(cwd: &Path) -> PathBuf {
 /// `trusted` 是项目是否已被信任（`crate::trust::status(...).trusted`）：未信任时
 /// 项目技能整批不加载，与 pi 的 `projectTrusted` 开关同义。
 pub async fn load(cwd: &Path, trusted: bool) -> Skills {
+    load_dirs(cwd, dirs(cwd, trusted)).await
+}
+
+async fn load_dirs(cwd: &Path, dirs: Vec<SkillDir>) -> Skills {
     let env: Arc<dyn ExecutionEnv> = Arc::new(OsExecutionEnv::with_cwd(cwd.to_path_buf()));
     // 只按文件路径去重：同名技能是要保留两份的（项目版 + 全局版）。
     let mut seen_paths: HashSet<String> = HashSet::new();
     let mut out = Skills::default();
 
-    for dir in dirs(cwd, trusted) {
+    for dir in dirs {
         let target = dir.path.to_string_lossy().to_string();
         let loaded = load_skills(&env, std::slice::from_ref(&target)).await;
         for diagnostic in loaded.diagnostics {
@@ -271,6 +275,36 @@ mod tests {
                 dir.path
             );
         }
+    }
+
+    #[tokio::test]
+    async fn project_and_user_skills_are_merged_even_with_same_name() {
+        // 技能面板和系统提示词都用这份合并结果；不借用用户真实的技能目录。
+        let root =
+            std::env::temp_dir().join(format!("toiler-skill-merge-{}", uuid::Uuid::new_v4()));
+        let dirs = [("project", Origin::Project), ("global", Origin::User)]
+            .into_iter()
+            .map(|(scope, origin)| {
+                let path = root.join(scope).join(".agents/skills");
+                let skill_dir = path.join("demo");
+                std::fs::create_dir_all(&skill_dir).unwrap();
+                std::fs::write(
+                    skill_dir.join("SKILL.md"),
+                    format!("---\nname: demo\ndescription: {scope} 版同名技能\n---\n"),
+                )
+                .unwrap();
+                SkillDir { path, origin }
+            })
+            .collect();
+        let found = load_dirs(&root, dirs).await;
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(found.skills.len(), 2);
+        assert!(found
+            .skills
+            .iter()
+            .all(|loaded| loaded.skill.name == "demo"));
+        assert_eq!(found.skills[0].origin, Origin::Project);
+        assert_eq!(found.skills[1].origin, Origin::User);
     }
 
     #[test]

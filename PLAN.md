@@ -82,7 +82,8 @@ tree/paging/totalActiveMs 形状与 pi 一致；新会话里 `prompt` 触发的
   - `agent/{id}/bash-output`、`agent/running/events`
   - `sessions/{id}/context`、`sessions/{id}/export`、`entries/{id}/thinking`、`auto-name`
 - [x] `projectRoot` / `worktreeBranch` 改为真 git 探测（修掉阶段 2 的差异 1）
-- [x] 明确砍掉：mcp、plugins、skills 市场、models.dev 目录
+- [x] 技能市场：从 skills.sh 公开搜索接口加载结果，默认优先经 `gh-proxy.com` 下载 GitHub 技能归档，失败后回退 GitHub 原地址，Rust 安装到全局/项目目录（不依赖 Node）
+- [x] 明确砍掉：mcp、plugins、models.dev 目录
 
 **验收结果（真实数据 + 真实模型）**：
 
@@ -305,6 +306,6 @@ data 都凑不出来，`enabledModels` 里的 `apisets/*` 模式也就全部落�
 | 项 | 原因 |
 |---|---|
 | MCP 服务器管理 | rpi 无对应能力，自己做成本高于收益 |
-| TS 扩展 / 技能市场 | rpi 是 cdylib ABI，生态不兼容 |
+| TS 扩展加载 | rpi 是 cdylib ABI，生态不兼容；技能市场本身已通过 skills.sh 搜索与 GitHub 归档安装实现 |
 | models.dev 定价目录 | 可选，后补 |
 | OAuth 登录 | 当前配置不需要 |

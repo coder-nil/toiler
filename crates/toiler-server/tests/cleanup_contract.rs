@@ -42,6 +42,16 @@ impl Drop for Fixture {
 }
 
 async fn call(app: Router, method: &str, uri: &str, origin: Option<&str>) -> (StatusCode, Value) {
+    request(app, method, uri, origin, None).await
+}
+
+async fn request(
+    app: Router,
+    method: &str,
+    uri: &str,
+    origin: Option<&str>,
+    json: Option<&Value>,
+) -> (StatusCode, Value) {
     let mut request = Request::builder()
         .method(method)
         .uri(uri)
@@ -49,33 +59,34 @@ async fn call(app: Router, method: &str, uri: &str, origin: Option<&str>) -> (St
     if let Some(origin) = origin {
         request = request.header("origin", origin);
     }
-    let response = app
-        .oneshot(request.body(Body::empty()).unwrap())
-        .await
-        .unwrap();
+    let body = if let Some(json) = json {
+        request = request.header("content-type", "application/json");
+        Body::from(json.to_string())
+    } else {
+        Body::empty()
+    };
+    let response = app.oneshot(request.body(body).unwrap()).await.unwrap();
     let status = response.status();
     let body = response.into_body().collect().await.unwrap().to_bytes();
     (status, serde_json::from_slice(&body).unwrap())
 }
 
 #[tokio::test]
-async fn retained_pi_calls_return_explicit_unsupported_not_404() {
-    // useAgentSession 创建/完成 checkpoint；SkillsConfig 检查/更新/卸载技能。
-    // （`POST /api/files/reveal` 已经实现，契约在 `reveal_contract.rs`。）
+async fn checkpoint_calls_return_explicit_unsupported_not_404() {
+    // useAgentSession 创建/完成 checkpoint；`POST /api/files/reveal` 的契约另见 `reveal_contract.rs`。
     let fixture = Fixture::new();
-    for path in [
+    let (status, body) = call(fixture.app(), "POST", "/api/checkpoints", None).await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert!(body["error"].as_str().unwrap().contains("暂不支持"));
+    assert!(body.get("success").is_none());
+    let (status, _) = call(
+        fixture.app(),
+        "POST",
         "/api/checkpoints",
-        "/api/skills/check",
-        "/api/skills/update",
-        "/api/skills/remove",
-    ] {
-        let (status, body) = call(fixture.app(), "POST", path, None).await;
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{path}");
-        assert!(body["error"].as_str().unwrap().contains("暂不支持"));
-        assert!(body.get("success").is_none());
-        let (status, _) = call(fixture.app(), "POST", path, Some("https://evil.invalid")).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
-    }
+        Some("https://evil.invalid"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = call(
         fixture.app(),
         "GET",
@@ -93,6 +104,111 @@ async fn retained_pi_calls_return_explicit_unsupported_not_404() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn skills_management_requires_authorized_cwd_and_project_trust() {
+    let fixture = Fixture::new();
+    let project = fixture.0.join("project");
+    std::fs::create_dir_all(project.join(".agents/skills")).unwrap();
+    for action in ["check", "update", "remove"] {
+        let path = format!("/api/skills/{action}");
+        let body = json!({"cwd": project, "scope": "project", "package": "owner/repo@demo"});
+        let (status, _) = request(
+            fixture.app(),
+            "POST",
+            &path,
+            Some("https://evil.invalid"),
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+        let (status, reply) = request(fixture.app(), "POST", &path, None, Some(&body)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+        assert_eq!(reply["error"], "Project resources require trust");
+
+        let outside = json!({"cwd": fixture.0, "scope": "project", "package": "owner/repo@demo"});
+        let (status, reply) = request(fixture.app(), "POST", &path, None, Some(&outside)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+        assert_eq!(reply["error"], "Access denied");
+    }
+}
+
+#[tokio::test]
+async fn market_skill_can_be_removed_but_manual_skill_is_preserved() {
+    // SkillsConfig 使用 cwd、包标识和作用域卸载，并重新请求技能列表。
+    let fixture = Fixture::new();
+    let project = fixture.0.join("project");
+    std::fs::create_dir(project.join(".git")).unwrap();
+    let root = project.join(".agents/skills");
+    for name in ["demo", "manual"] {
+        std::fs::create_dir_all(root.join(name)).unwrap();
+        std::fs::write(
+            root.join(name).join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: 测试技能\n---\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        root.join("demo/.toiler-skill.json"),
+        json!({
+            "package": "owner/repo@demo", "scope": "project", "source": "owner/repo",
+            "sourceType": "github", "skillsShUrl": "https://skills.sh/owner/repo/demo",
+            "skillPath": "demo", "versionHash": "a".repeat(64), "canCheckForUpdates": false
+        })
+        .to_string(),
+    )
+    .unwrap();
+    TrustStore::at(fixture.0.join("trust.json"))
+        .set(project.to_str().unwrap(), Some(true))
+        .unwrap();
+    let cwd = project.join("src");
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("cwd", &cwd.to_string_lossy())
+        .finish();
+    let (status, list) = call(fixture.app(), "GET", &format!("/api/skills?{query}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let installed = list["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|skill| skill["install"]["package"] == "owner/repo@demo")
+        .unwrap();
+    assert_eq!(installed["install"]["canCheckForUpdates"], true);
+
+    for (package, expected) in [
+        ("owner/repo@../demo", StatusCode::BAD_REQUEST),
+        ("elsewhere/repo@demo", StatusCode::NOT_FOUND),
+        ("owner/repo@manual", StatusCode::NOT_FOUND),
+        ("owner/repo@demo", StatusCode::OK),
+        ("owner/repo@demo", StatusCode::NOT_FOUND),
+    ] {
+        let body = json!({"cwd": cwd, "scope": "project", "package": package});
+        let (status, reply) = request(
+            fixture.app(),
+            "POST",
+            "/api/skills/remove",
+            None,
+            Some(&body),
+        )
+        .await;
+        assert_eq!(status, expected, "{reply}");
+        if status == StatusCode::OK {
+            assert_eq!(reply, json!({"success": true}));
+        }
+    }
+    assert!(!root.join("demo").exists());
+    assert!(root.join("manual/SKILL.md").is_file());
+    let (status, checked) = request(
+        fixture.app(),
+        "POST",
+        "/api/skills/check",
+        None,
+        Some(&json!({"cwd": cwd, "scope": "project"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(checked, json!({"updates": []}));
 }
 
 #[tokio::test]

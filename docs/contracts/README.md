@@ -372,13 +372,7 @@ git-credentials` 五份文件，**不搬技能目录**。
 
 目录不存在不产生诊断（pi 会为它报 `list_failed`，toiler 直接跳过——「没装过项目技能」是常态）。
 
-pi 另有三个写侧/市场接口，toiler 都返回 `501 {"error":"…中文说明…"}`：
-
-| 方法 | pi 行为 |
-|---|---|
-| `POST /api/skills/search` | 技能市场搜索：`{query}` → `{results}` |
-| `POST /api/skills/install` | 安装技能包：`{package, scope, cwd}` |
-| `PATCH /api/skills` | 改写 `SKILL.md` 的 `disable-model-invocation`：`{filePath, disableModelInvocation}` → `{success:true}` |
+skills 市场接口由 Toiler 扩展实现：搜索读取 skills.sh 的公开 `/api/search`（当前为网站搜索页实际使用的接口），返回前端兼容的 `{results:[{package,installs,url}]}`。上游成功响应的响应体若意外中断，搜索会自动重试一次，两次请求共用 20 秒总时限；超时返回 504。安装仅接受 `owner/repo@skill` 形式的 GitHub 技能，默认优先通过 `https://gh-proxy.com/` 下载 GitHub 归档，失败后再尝试 GitHub 原地址；可用 `TOILER_GITHUB_MIRROR` / `TOILER_GH_PROXY` 自定义，设为 `off` 禁用。不启动 Node。skills.sh 官方 `/api/v1` 需要 Vercel OIDC，因此不直接依赖该接口。
 
 ## GET /api/models
 
@@ -535,8 +529,18 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
   权限每次重新检查；扫描有时间、条目数量和深度上限。
 - `GET/POST /api/checkpoints`：`501 {error:"…中文说明…"}`，尚无工作区文件快照或回滚。
   **不伪造 checkpoint id**；前端发送消息仍保留尽力而为的调用，不影响正常对话。
-- `POST /api/skills/check|update|remove`：`501 {error:"…中文说明…"}`。
-  Toiler 没有技能包安装元数据，不执行上游 `npx skills`，仍只加载本地技能。
+- `POST /api/skills/check`：`{cwd, package?, scope?}` →
+  `{updates:[{package,scope,state,currentVersion,latestVersion?,message?}]}`。不指定包或作用域时，
+  检查可见的 Toiler 安装记录（未信任的项目跳过）；同一仓库在一次检查中只下载一份归档。
+  比较技能目录内容哈希，而不是仓库提交号；单个上游失败时，该项返回 `state:"error"`，
+  不影响其他检查结果。
+- `POST /api/skills/update`：`{cwd,package,scope}` → `{success:true,package,scope,skill:{install}}`。
+  下载并完整写好新版才替换对应目录；失败不覆盖旧版，版本相同不重写。升级替换整个包目录，
+  不合并本地修改。新安装会记录归档中的技能路径，避免上游移除目标后误装同仓库的其他技能。
+- `POST /api/skills/remove`：`{cwd,package,scope}` → `{success:true}`，不联网，只删除对应的 Toiler
+  安装目录。升级和卸载都校验 `.toiler-skill.json` 中的来源、包名和作用域；手动技能、路径链接
+  和未信任的项目不允许修改。旧安装记录不必迁移即可检查、升级和卸载。
+  Toiler 的这些操作均不执行上游 `npx skills`。
 - `POST /api/files/reveal`：请求 `{filePath, sessionId?}`，成功 `{ok:true}`。
   判定顺序与 pi 一致：绝对路径 → 允许根词法包含或会话引用过该路径 → 目标存在
   → 非引用授权时再过 realpath 包含 → 交给系统文件管理器
@@ -575,9 +579,11 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
 | `POST /api/files/{*path}` | ✅ | `?type=upload-check` / `?type=upload&conflict=error\|overwrite\|skip`；25MB 单文件 / 100MB 总量；部分成功 207 |
 | `GET /api/models` | ✅ | `{models, modelList, defaultModel, thinkingLevels, thinkingLevelMaps, thinkingLevelPins, source}` 全对齐；`models` 是 `provider:id` 字典；`defaultModel` 与建会话共用 `AppState::default_model_ref()`，**必定是 `modelList` 里的一项**（见下方「`defaultModel` 必须在 `modelList` 里」） |
 | `GET /api/skills` | ⚠️ | 项目技能：`$project/.agents/skills`（项目根 = 最近 git 根，需已信任）；用户技能：`~/.agents/skills`；两组合并返回（同名不互相顶掉）。不扫 `~/.pi/agent/skills` / `~/.agents/toiler/skills`。pi 的 `skillPaths`/package 技能没有（无 package 系统），`usageCount` 与缓存也不提供（`cacheHit` 恒 false） |
-| `POST /api/skills/search` | ❌ | 501：技能市场（PLAN 已砍） |
-| `POST /api/skills/install` | ❌ | 501：技能市场（PLAN 已砍） |
-| `POST /api/skills/check\|update\|remove` | ❌ | 501：技能包管理未实现，只加载本地技能 |
+| `POST /api/skills/search` | ✅ | `{query}` → `{results:[{package,installs,url}]}`；数据来自 skills.sh 公开 `/api/search`，上游失败返回 502/504 |
+| `POST /api/skills/install` | ✅ | `{package:"owner/repo@skill",scope:"global"|"project",cwd}`；默认优先经 `gh-proxy.com` 下载 GitHub 归档，失败后回退 GitHub 原地址；校验路径与大小后安装到 `.agents/skills`，已有目录返回 409 |
+| `POST /api/skills/check` | ✅ | 单个或批量比较技能内容哈希，返回 `up-to-date` / `update-available` / `error` |
+| `POST /api/skills/update` | ✅ | 只升级指定作用域的 Toiler 安装，暂存新目录后替换，失败保留旧版 |
+| `POST /api/skills/remove` | ✅ | 离线卸载指定作用域的 Toiler 安装，不删除手动技能或链接目标 |
 | `PATCH /api/skills` | ❌ | 501：会改写用户目录的 `SKILL.md`，写侧暂不开放 |
 | `GET /api/mobile/state` | ✅ | 手机投影（`mobile_view`）：图片转 `[N images]` 占位、思考/工具入参截断、默认 30 条窗口 + 40 条内保留细节；实测 474KB → 54KB |
 | `GET /api/mobile/access` | ✅ | 读 `desktop-access.json` + 代理运行态 + 隧道运行态；`publicHostnameDisplay` 转 Unicode |
@@ -620,8 +626,8 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
 | `GET/POST /api/project-trust` | ✅ | `{requiresTrust,trusted}`；`trust.json` 与 pi 同格式 |
 | `GET /api/plugins?cwd=` | ⚠️ | 只读：列 `settings.json` 的 `packages` + 安装状态 + 包内资源；安装根只认 toiler 自己的 agent 目录（见差异 19） |
 | `POST /api/plugins` | ⚠️ | `install`/`remove`/`update`/`disable`/`enable` 全支持：npm 走本机 npm（`--legacy-peer-deps`，安装根 `<toilerHome>/plugins/npm`），启停改 `settings.json`；**git: 来源不支持**；找不到 npm → 500 + 中文提示。注意：装上的 TS 扩展 rpi 不会加载，功能不生效 |
-| `GET /api/plugins/catalog` | ⚠️ | 恒为空页（`{plugins:[],hasMore:false}`）：插件市场同技能市场，PLAN 明确不做 |
-| `POST /api/plugins/catalog/translate` | ⚠️ | 恒为 `{translations:{}}`：没有目录可翻 |
+| `GET /api/plugins/catalog?q=&from=&size=` | ⚠️ | 从 [Pi 官网目录](https://pi.dev/packages) 提取社区包；空 `q` 默认按月下载量排序，非空交给官网搜索。`from` 为偏移量（默认 0），`size` 默认 40、范围 1–50；返回 `{plugins,from,size,hasMore}`，上游失败返回 502，不伪装成无结果（差异 19） |
+| `POST /api/plugins/catalog/translate` | ⚠️ | 保留 `{translations:{}}` 兼容响应；目录展示作者原文，不请求翻译服务 |
 | `GET /api/mcp?cwd=&scope=&includeContent=` | ⚠️ | 读配置文件 → `{path,servers}`；`includeContent=1` 再带 `content` 原文（文件不存在时是 `{\n  "mcpServers": {}\n}\n`）。global 落在 `<configs>/mcp.json`（见差异 20） |
 | `PUT /api/mcp` | ⚠️ | `{cwd,scope,content}` → 校验 `mcpServers` 是对象后原子写回 → `{path,servers}`；项目作用域未信任 403 |
 | `POST /api/mcp` | ⚠️ | `{cwd,scope,presetId}` → 把内置 preset 的 `entry` 写进 `mcpServers` → `{path,serverName,added,servers}`；未知 preset 404 |
@@ -825,7 +831,9 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
     不做 `.gitignore` 过滤、不展开清单里的 glob、对象形态的过滤清单只认「空数组 = 该类型
     全禁用」。`totals` 只统计包内资源（不含 `settings.json` 顶层条目与自动发现目录）。
     少这条路由时插件页会拿到静态兜底的 404 `{"error":"Not found"}`，并把它当成
-    一条插件画出来——这就是「不显示已安装插件」的直接原因。
+    一条插件画出来——这就是「不显示已安装插件」的直接原因。添加页的目录另从
+    `pi.dev/packages` 服务端渲染的列表提取包名、简介、作者和月下载量，原样保留排序；
+    只返回结构化数据，不向前端转发官网 HTML 或脚本。目录收录不表示 Toiler 能加载 TS 扩展。
 20. **`/api/mcp` 只读写配置，不加载服务器**：pi 的 MCP 面板背后是
     `pi-mcp-adapter` 扩展（按配置起 stdio 进程或连 SSE，工具进会话）；toiler 只做
     文件那一半——`GET`/`PUT`/`POST` 都是读写 `mcp.json`，`/api/mcp/test` 只探端点

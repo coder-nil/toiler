@@ -237,7 +237,8 @@ if version != 4 {
 | 能力 | pi | rpi | 处理 |
 |---|---|---|---|
 | MCP | ✅ 内置 | ❌ | 自己实现，或砍掉 |
-| TS 扩展 / 插件市场 | ✅ | ❌（只有 Rust cdylib ABI） | 砍掉 |
+| TS 扩展 / 插件目录 | ✅ | ❌（只有 Rust cdylib ABI） | 添加插件页可浏览和搜索 [Pi 官网目录](https://pi.dev/packages) 的社区包；安装后不加载 TS 扩展 |
+| 技能市场 | ✅ | ❌ | 通过 skills.sh 搜索并从 GitHub 安装技能 |
 | models.dev 定价目录 | ✅ | ❌ | 砍掉 |
 | 供应商目录（44 家 provider） | ✅ provider 目录 | ❌ | 写死在 server 端：`builtin_providers.rs` |
 | OAuth 登录 | ✅ | 仅扩展内 | 只有 `qoder-cn` 自己实现了（见 `qoder_cn/`） |

@@ -37,7 +37,7 @@
 //! | 清单里的 glob 条目 | `*` `?` 展开 | 跳过该条目 |
 //! | `packages` 的对象形态（过滤清单） | 按模式逐文件决定启用 | 只认「数组为空 = 该类型全禁用」，非空数组不做模式匹配（按清单全量统计） |
 //! | `totals` | 包资源 + `settings.json` 顶层条目 + 自动发现目录 | 只统计包内资源 |
-//! | 插件市场 | `/api/plugins/catalog` 搜 npm、`/catalog/translate` 翻描述 | 空表（PLAN「明确不做的」里的技能/插件市场） |
+//! | 插件目录 | `/api/plugins/catalog` 搜 npm、`/catalog/translate` 翻描述 | 读取 Pi 官网目录，保留作者原文 |
 //!
 //! 只产出两条诊断，文案与 pi 逐字一致（`Package is configured but not installed yet.` /
 //! `Configured package path was not found.`）：前端把它们做成「N diagnostics」的悬停
@@ -54,6 +54,9 @@ use serde_json::{json, Map, Value};
 
 use crate::paths;
 use crate::state::AppState;
+
+mod catalog;
+pub use catalog::catalog;
 
 /// 一条 `packages` 条目的作用域。pi 内部叫 `user`，对外 JSON 里叫 `global`。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -145,14 +148,6 @@ pub struct ActionBody {
     action: Option<String>,
     source: Option<String>,
     scope: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CatalogQuery {
-    #[serde(default)]
-    from: Option<i64>,
-    #[serde(default)]
-    size: Option<i64>,
 }
 
 // ============================================================================
@@ -247,23 +242,7 @@ pub async fn command(State(state): State<AppState>, Json(body): Json<ActionBody>
     }
 }
 
-/// `GET /api/plugins/catalog`：pi 在这里搜索 npm 上的 pi 扩展包。
-///
-/// 市场明确不做（PLAN「明确不做的」），但也不能 404：前端打开「添加插件」抽屉时
-/// 会把响应当错误画出来。返回空页 = 抽屉显示「没有结果」。
-pub async fn catalog(Query(query): Query<CatalogQuery>) -> Response {
-    Json(json!({
-        "plugins": [],
-        "from": query.from.unwrap_or(0),
-        "size": query.size.unwrap_or(40),
-        "hasMore": false,
-    }))
-    .into_response()
-}
-
-/// `POST /api/plugins/catalog/translate`：pi 把英文描述翻成中文。
-///
-/// 没有目录可翻，返回空映射即可（前端拿不到条目就跳过翻译）。
+/// 保留 pi 的翻译接口形状；官网目录显示作者原文，不调用翻译服务。
 pub async fn catalog_translate() -> Response {
     Json(json!({ "translations": {} })).into_response()
 }
@@ -318,8 +297,8 @@ fn npm_root(scope: Scope, cwd: &Path, plugins_root: &Path) -> PathBuf {
     }
 }
 
-/// 装包时 `npm` 需要一个工程目录：建目录 + `.gitignore` + 最小 `package.json`
-/// （pi 的 `ensureNpmProject`，形状保持一致，便于两边对照）。
+/// 装包时 `npm` 需要一个工程目录：建目录 + `.gitignore` + 最小 `package.json`，并为 npm
+/// 准备独立缓存目录（pi 的 `ensureNpmProject`，形状保持一致，便于两边对照）。
 fn ensure_npm_project(dir: &Path) -> Result<(), Failure> {
     std::fs::create_dir_all(dir)?;
     let ignore_path = dir.join(".gitignore");
@@ -336,6 +315,15 @@ fn ensure_npm_project(dir: &Path) -> Result<(), Failure> {
         std::fs::write(&manifest_path, format!("{body}\n"))?;
     }
     Ok(())
+}
+
+/// npm 内容缓存放在插件安装根下，不复用用户的 `~/.npm`。
+///
+/// npm 的共享缓存一旦留下缺失的 content-addressed 文件，就会报
+/// `Invalid response body ... ENOENT`，而不是自动重新下载。插件安装不能因为用户
+/// 其他项目的一次中断而全部失败，所以每个作用域使用自己的缓存目录。
+fn npm_cache_dir(root: &Path) -> PathBuf {
+    root.join(".npm-cache")
 }
 
 /// 找到 npm 可执行文件。
@@ -405,10 +393,16 @@ fn missing_npm(detail: &str) -> Failure {
 const NPM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// 跑一次 npm，非零退出时把 stderr 尾部原样带回（`ETARGET` 这类信息对用户最有用）。
-async fn run_npm(npm: &Path, args: &[String]) -> Result<(), Failure> {
+///
+/// `npm_config_cache` 故意指向插件安装根下的专用缓存：不能让损坏的 `~/.npm` 缓存
+/// 污染插件安装，也不能在修复插件时删除用户其他项目共用的缓存。
+async fn run_npm(npm: &Path, args: &[String], cache_dir: &Path) -> Result<(), Failure> {
+    std::fs::create_dir_all(cache_dir)?;
     let mut command = crate::process::tokio_command(npm);
     command
         .args(args)
+        .env("npm_config_cache", cache_dir)
+        .env("npm_config_prefer_online", "true")
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
 
@@ -473,6 +467,7 @@ async fn install(
             let npm = npm_executable()?;
             let root = npm_root(scope, cwd, plugins_root);
             ensure_npm_project(&root)?;
+            let cache = npm_cache_dir(&root);
             let spec = npm_spec(source);
             run_npm(
                 &npm,
@@ -483,6 +478,7 @@ async fn install(
                     posix(&root),
                     "--legacy-peer-deps".into(),
                 ],
+                &cache,
             )
             .await?;
         }
@@ -517,6 +513,7 @@ async fn remove(
         // 目录不存在 = 从来没装过，跳过 npm，只清 settings（pi 的行为）。
         if root.is_dir() {
             let npm = npm_executable()?;
+            let cache = npm_cache_dir(&root);
             run_npm(
                 &npm,
                 &[
@@ -526,6 +523,7 @@ async fn remove(
                     posix(&root),
                     "--legacy-peer-deps".into(),
                 ],
+                &cache,
             )
             .await?;
         }
@@ -556,6 +554,7 @@ async fn update(
             let npm = npm_executable()?;
             let root = npm_root(scope, cwd, plugins_root);
             ensure_npm_project(&root)?;
+            let cache = npm_cache_dir(&root);
             let spec = if version.is_some() {
                 // 有范围（`^1.2.0`）就按配置的 spec 重装，npm 会解析到范围内的最新。
                 npm_spec(source)
@@ -571,6 +570,7 @@ async fn update(
                     posix(&root),
                     "--legacy-peer-deps".into(),
                 ],
+                &cache,
             )
             .await?;
         }
