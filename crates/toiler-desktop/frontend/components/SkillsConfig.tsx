@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
 import { readApiJson } from "@/lib/api-json";
+import { ExternalLink } from "./ExternalLink";
 import type {
   SkillInfo as Skill,
   SkillInstallScope,
@@ -205,10 +206,8 @@ function SkillDetail({
           >
             Source
           </span>
-          <a
+          <ExternalLink
             href={skill.install.skillsShUrl}
-            target="_blank"
-            rel="noreferrer"
             title={skill.install.skillsShUrl}
             style={{
               display: "flex",
@@ -231,7 +230,7 @@ function SkillDetail({
             >
               {skill.install.skillsShUrl.replace(/^https?:\/\//, "")} ↗
             </span>
-          </a>
+          </ExternalLink>
         </div>
       )}
 
@@ -664,10 +663,8 @@ function AddSkillPanel({
                       {r.installs}
                     </span>
                     {r.url && (
-                      <a
+                      <ExternalLink
                         href={r.url}
-                        target="_blank"
-                        rel="noreferrer"
                         style={{
                           fontSize: 12,
                           color: "var(--accent)",
@@ -675,7 +672,7 @@ function AddSkillPanel({
                         }}
                       >
                         skills.sh ↗
-                      </a>
+                      </ExternalLink>
                     )}
                   </div>
                 </div>
@@ -721,14 +718,12 @@ function AddSkillPanel({
             style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.8 }}
           >
             Search{" "}
-            <a
+            <ExternalLink
               href="https://skills.sh"
-              target="_blank"
-              rel="noreferrer"
               style={{ color: "var(--accent)", textDecoration: "none" }}
             >
               skills.sh
-            </a>{" "}
+            </ExternalLink>{" "}
             to discover and install skills for your agent.
           </div>
         )

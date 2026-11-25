@@ -6,6 +6,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import type { PluginCatalogEntry } from "@/lib/plugin-catalog";
 import type { PluginPackageInfo, PluginsResponse } from "@/lib/api-types";
 import { useI18n } from "@/hooks/useI18n";
+import { ExternalLink } from "./ExternalLink";
 
 type PluginScope = PluginPackageInfo["scope"];
 type PluginAction = "install" | "remove" | "update" | "disable" | "enable";
@@ -409,7 +410,7 @@ function PluginCatalogPanel({
       <div>
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>{t("i18n.discoverPlugins")}</div>
-          <a href={PI_CATALOG_URL} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", fontSize: 12 }}>pi.dev/packages ↗</a>
+          <ExternalLink href={PI_CATALOG_URL} style={{ color: "var(--accent)", fontSize: 12 }}>pi.dev/packages ↗</ExternalLink>
         </div>
         <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4, lineHeight: 1.45 }}>
           {t("i18n.pluginCatalogIntro")}
@@ -482,8 +483,8 @@ function PluginCatalogPanel({
                   )}
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6, fontSize: 10, color: "var(--text-dim)" }}>
                     {plugin.publisher && <span>{plugin.publisher}</span>}
-                    <a href={plugin.npmUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", textDecoration: "none" }}>npm ↗</a>
-                    {plugin.homepageUrl && <a href={plugin.homepageUrl} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", textDecoration: "none" }}>Pi ↗</a>}
+                    <ExternalLink href={plugin.npmUrl} style={{ color: "var(--accent)", textDecoration: "none" }}>npm ↗</ExternalLink>
+                    {plugin.homepageUrl && <ExternalLink href={plugin.homepageUrl} style={{ color: "var(--accent)", textDecoration: "none" }}>Pi ↗</ExternalLink>}
                   </div>
                 </div>
                 <button

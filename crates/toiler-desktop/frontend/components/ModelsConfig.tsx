@@ -7,6 +7,7 @@ import { RefreshCw } from "lucide-react";
 import { SelectPicker } from "./SelectPicker";
 import { EnabledModelsPicker } from "./EnabledModelsPicker";
 import { ProviderModelsPicker } from "./ProviderModelsPicker";
+import { ExternalLink } from "./ExternalLink";
 import type { ModelCatalogPreset, ModelCatalogRecommendation } from "@/lib/model-catalog";
 import type { DiscoveredModel } from "@/lib/model-discovery";
 import { copyText } from "@/lib/clipboard";
@@ -1065,14 +1066,12 @@ function ModelDetail({
           >
             {catalogState.phase === "loading" ? t("models.catalogFilling") : t("models.catalogFill")}
           </button>
-          <a
+          <ExternalLink
             href="https://github.com/anomalyco/models.dev"
-            target="_blank"
-            rel="noreferrer"
             style={{ marginLeft: "auto", color: "var(--text-dim)", fontSize: 10, textDecoration: "none" }}
           >
             {t("models.catalogSource")}
-          </a>
+          </ExternalLink>
         </div>
 
         {catalogStatusText && (
@@ -1624,9 +1623,9 @@ function OAuthDetail({ provider, onRefresh, onModelsChanged }: { provider: OAuth
               {loginState.userCode}
             </div>
             <p style={{ margin: 0, fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 }}>
-              <a href={loginState.verificationUri} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", wordBreak: "break-all" }}>
+              <ExternalLink href={loginState.verificationUri} style={{ color: "var(--accent)", wordBreak: "break-all" }}>
                 {loginState.verificationUri}
-              </a>
+              </ExternalLink>
               {loginState.expiresInSeconds ? ` Expires in ${Math.ceil(loginState.expiresInSeconds / 60)} minutes.` : ""}
             </p>
           </div>
