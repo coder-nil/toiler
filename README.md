@@ -130,6 +130,22 @@ Release 提供 NSIS（`.exe`）和 MSI（`.msi`）安装包，发布前在 Windo
 agent 的工作目录变成 `$HOME`，`find` / `grep` 一递归就撞进 `Documents` /
 `Desktop` / `Pictures` / `Music`，触发 macOS 的隐私授权弹窗。
 
+### 插件使用的 Node.js
+
+Toiler 启动不需要 Node.js。只有安装、更新和卸载 npm 插件时，才会检查本机的
+`node` 和 `npm` 是否能一起运行。优先尊重 `TOILER_NPM` 和当前 `PATH`；当桌面启动器
+没有继承终端环境时，再查找 nvm 或常见安装目录。这里不会运行登录脚本，也不会修改系统 `PATH`。
+
+| 平台 | 支持的常见安装方式 |
+|---|---|
+| macOS | 官方安装包、Homebrew、nvm |
+| Linux | 发行版软件包、`/usr/local/bin`、nvm |
+| Windows | 官方安装包、nvm-windows（`NVM_SYMLINK` / `NVM_HOME`） |
+
+同时装有多个版本时，从终端执行 `nvm use` 后启动 Toiler，可让插件优先使用终端选中的版本。
+非标准安装可以把 `TOILER_NPM` 指向 npm 文件的绝对路径（Windows 可指定标准的 `npm.cmd`）。
+找不到可用的一套时，插件面板会报错，不会自动下载 Node.js。
+
 ### 纯服务（开发 / 远程访问）
 
 ```bash

@@ -620,12 +620,12 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
 | `POST /api/git` | ✅ | pi 的 20 个动作（含 `merge_branch`、`*_remote_branch`、`*_branch`）+ toiler 追加的 `create_tag` / `delete_tag` / `push_tag` / `push_tags`（见差异 22、23），返回操作后的状态 |
 | `GET /api/git/status?cwd=` | ✅ | `{isGitRepository,repositoryRoot,files[],additions,deletions}` |
 | `GET /api/git/diff?cwd=&path=` | ✅ | `{supported,status?,patch?}`；未跟踪文件会合成补丁 |
-| `POST /api/git/commit-message` | ✅ | NDJSON：`update` → `done`（失败 `error`）；用 `settings.json` 的默认模型 |
+| `POST /api/git/commit-message` | ✅ | NDJSON：`update` → `done`（失败 `error`）；用 `settings.json` 的默认模型，按请求的 `locale`（`zh-CN` / `en`，缺省 `en`）明确要求标题摘要和正文的输出语言 |
 | `GET/POST/DELETE /api/worktrees` | ✅ | 列出 / 新建（`action:"checkout"` 走切分支）/ 删除（脏工作区 409 + `dirty:true`）；GET 额外返回当前工作树分支相对本地上游引用的 `branchSync: {ahead,behind}`，没有上游或不是工作树根目录时为 `null`。`GET /api/git` 和 `GET /api/worktrees` 尝试先获取当前分支的上游远程引用，失败时用本地已有引用；`GET /api/git/status` 不联网 |
 | `GET/PUT/PATCH/DELETE /api/projects` | ✅ | 用 toiler 自己的 `<appDir>/work.sqlite`（`~/.agents/toiler/work.sqlite`）；接口形状与 pi 一致，但**不再共库** |
 | `GET/POST /api/project-trust` | ✅ | `{requiresTrust,trusted}`；`trust.json` 与 pi 同格式 |
 | `GET /api/plugins?cwd=` | ⚠️ | 只读：列 `settings.json` 的 `packages` + 安装状态 + 包内资源；安装根只认 toiler 自己的 agent 目录（见差异 19） |
-| `POST /api/plugins` | ⚠️ | `install`/`remove`/`update`/`disable`/`enable` 全支持：npm 走本机 npm（`--legacy-peer-deps`，安装根 `<toilerHome>/plugins/npm`），启停改 `settings.json`；**git: 来源不支持**；找不到 npm → 500 + 中文提示。注意：装上的 TS 扩展 rpi 不会加载，功能不生效 |
+| `POST /api/plugins` | ⚠️ | `install`/`remove`/`update`/`disable`/`enable` 全支持：npm 操作先检测本机可运行的 Node.js 与 npm（`--legacy-peer-deps`，安装根 `<toilerHome>/plugins/npm`），启停改 `settings.json`；**git: 来源不支持**；无可用 Node.js / npm → 500 + 中文提示。注意：装上的 TS 扩展 rpi 不会加载，功能不生效 |
 | `GET /api/plugins/catalog?q=&from=&size=` | ⚠️ | 从 [Pi 官网目录](https://pi.dev/packages) 提取社区包；空 `q` 默认按月下载量排序，非空交给官网搜索。`from` 为偏移量（默认 0），`size` 默认 40、范围 1–50；返回 `{plugins,from,size,hasMore}`，上游失败返回 502，不伪装成无结果（差异 19） |
 | `POST /api/plugins/catalog/translate` | ⚠️ | 保留 `{translations:{}}` 兼容响应；目录展示作者原文，不请求翻译服务 |
 | `GET /api/mcp?cwd=&scope=&includeContent=` | ⚠️ | 读配置文件 → `{path,servers}`；`includeContent=1` 再带 `content` 原文（文件不存在时是 `{\n  "mcpServers": {}\n}\n`）。global 落在 `<configs>/mcp.json`（见差异 20） |

@@ -4198,12 +4198,13 @@ async fn post_plugins(root: &Path, configs: &Path, body: Value) -> Reply {
 /// 假的 npm：只做 toiler 真正会调用的两件事（install / uninstall），不碰网络。
 /// 真 npm 在离线机器 / CI 上不可用，但这里要验证的是「命令怎么拼、settings 怎么落盘」。
 #[cfg(unix)]
-const FAKE_NPM: &str = r#"#!/bin/sh
-# 假的 npm：只做 toiler 真正会调用的两件事（install / uninstall），不碰网络。
-#
-# 用 POSIX sh 而不是 python3：测试不该假设机器装了 Python ——「客户端机器没有
-# Python」正是版本升级改成纯 Rust 的原因，测试自身更不该反向依赖它。
-# npm must be isolated from the user's shared ~/.npm cache.
+const FAKE_NPM: &str = r#"#!/usr/bin/env node
+# 用 POSIX sh 模拟 npm 的版本探测和安装，不依赖本机 Node，也不联网。
+if [ "$1" = "--version" ]; then
+  echo 10.0.0
+  exit 0
+fi
+# npm 必须使用插件专用缓存。
 if [ -z "$npm_config_cache" ]; then
   echo "missing npm cache isolation" >&2
   exit 1
@@ -4527,10 +4528,8 @@ async fn plugins_list_reports_configured_packages_and_install_state() {
 // 持锁方不会被别人的 lock() 卡住（不会被反过来等待），而 `TOILER_AGENT_DIR` 这类
 // 进程级变量必须整段互斥。
 #[allow(clippy::await_holding_lock)]
-async fn plugins_install_remove_run_local_npm_and_persist_settings() {
-    // 前端 PluginsConfig 的三个按钮直接依赖它：
-    // `install`（抽屉「添加插件」）、`remove`（详情页「移除」）、`disable`/`enable`（详情页开关）。
-    // 装包必须走本机 npm；找不到 npm 时要给一句能看懂的提示，而不是 `spawn npm ENOENT`。
+async fn plugins_install_update_remove_run_local_npm_and_persist_settings() {
+    // 前端 PluginsConfig 的写操作依赖本机 npm，找不到 npm 时要明确提示。
     use std::os::unix::fs::PermissionsExt;
 
     let _env = env_guard();
@@ -4547,6 +4546,14 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
     let bin = agent.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let npm = bin.join("npm");
+    // 模拟 Finder 下按绝对路径发现 npm：它必须从子进程 PATH 找到同目录的 node。
+    let node = bin.join("node");
+    std::fs::write(
+        &node,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo v22.10.0; else exec /bin/sh \"$@\"; fi\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::write(&npm, FAKE_NPM).unwrap();
     std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::env::set_var("TOILER_NPM", &npm);
@@ -4589,6 +4596,7 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
     );
 
     let read_settings = || -> Value { read_settings_file(&configs.join("settings.json")) };
+    let source = "npm:pi-mcp-adapter@^1.0.0";
 
     // ---- install：npm 装到 <toilerHome>/plugins/npm，并把条目写进 settings.json
     let installed = post_plugins(
@@ -4597,7 +4605,7 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
         json!({
             "cwd": root.to_str().unwrap(),
             "action": "install",
-            "source": "npm:pi-mcp-adapter@1.0.0",
+            "source": source,
             "scope": "global",
         }),
     )
@@ -4608,7 +4616,7 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|pkg| pkg["source"] == "npm:pi-mcp-adapter@1.0.0")
+        .find(|pkg| pkg["source"] == source)
         .unwrap_or_else(|| panic!("装完要出现在列表里：{body}"));
     assert_eq!(
         package["status"], "loaded",
@@ -4629,7 +4637,7 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
         "包要真的落到磁盘上"
     );
     let settings = read_settings();
-    assert_eq!(settings["packages"][0], "npm:pi-mcp-adapter@1.0.0");
+    assert_eq!(settings["packages"][0], source);
     assert!(
         agent
             .join("plugins/npm/.npm-cache/fake-cache-marker")
@@ -4652,7 +4660,7 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
         json!({
             "cwd": root.to_str().unwrap(),
             "action": "install",
-            "source": "npm:pi-mcp-adapter@1.0.0",
+            "source": source,
             "scope": "global",
         }),
     )
@@ -4660,8 +4668,20 @@ async fn plugins_install_remove_run_local_npm_and_persist_settings() {
     assert_eq!(again.status, StatusCode::OK, "{}", again.text());
     assert_eq!(read_settings()["packages"].as_array().unwrap().len(), 1);
 
+    // ---- update：从详情页更新未钉死版本的包，应重新调用 npm 并保留配置原样。
+    let manifest = agent.join("plugins/npm/node_modules/pi-mcp-adapter/package.json");
+    std::fs::write(&manifest, r#"{"name":"pi-mcp-adapter","version":"1.0.0"}"#).unwrap();
+    let updated = post_plugins(
+        &root,
+        &configs,
+        json!({"cwd": root.to_str().unwrap(), "action": "update", "source": source}),
+    )
+    .await;
+    assert_eq!(updated.status, StatusCode::OK, "{}", updated.text());
+    assert_eq!(updated.json()["packages"][0]["version"], "9.9.9");
+    assert_eq!(read_settings()["packages"], json!([source]));
+
     // ---- disable / enable：只改 settings.json 的条目形态，不碰磁盘
-    let source = "npm:pi-mcp-adapter@1.0.0";
     let disabled = post_plugins(
         &root,
         &configs,

@@ -121,6 +121,10 @@ jobs:
         if: runner.os == 'Windows'
         run: 'cargo test --locked --target ${{ matrix.target }} -p toiler-server --lib process::tests::'
 
+      - name: Linux 和 Windows 插件 Node.js 回归测试
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        run: 'cargo test --locked --target ${{ matrix.target }} -p toiler-server --lib routes::plugins::npm::tests:: -- --include-ignored'
+
       - name: 打包（tauri build）
         working-directory: crates/toiler-desktop
         env:

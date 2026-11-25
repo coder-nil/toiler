@@ -56,7 +56,9 @@ use crate::paths;
 use crate::state::AppState;
 
 mod catalog;
+mod npm;
 pub use catalog::catalog;
+use npm::NpmRuntime;
 
 /// 一条 `packages` 条目的作用域。pi 内部叫 `user`，对外 JSON 里叫 `global`。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -326,93 +328,25 @@ fn npm_cache_dir(root: &Path) -> PathBuf {
     root.join(".npm-cache")
 }
 
-/// 找到 npm 可执行文件。
-///
-/// 从 Finder / launchd 启动时 `PATH` 往往只有 `/usr/bin:/bin:/usr/sbin:/sbin`，
-/// 而 npm 通常装在 nvm / Homebrew 目录里，所以 `PATH` 找不到时再探一遍常见位置。
-/// `TOILER_NPM` 可以显式指定（测试与非常规安装用）。
-fn npm_executable() -> Result<PathBuf, Failure> {
-    if let Some(raw) = std::env::var_os("TOILER_NPM") {
-        let path = PathBuf::from(raw);
-        return if path.is_file() {
-            Ok(path)
-        } else {
-            Err(missing_npm(&format!(
-                "TOILER_NPM 指向的文件不存在：{}",
-                path.display()
-            )))
-        };
-    }
-
-    if let Some(path) = find_in_path("npm") {
-        return Ok(path);
-    }
-
-    let mut candidates: Vec<PathBuf> = vec![
-        PathBuf::from("/opt/homebrew/bin/npm"),
-        PathBuf::from("/usr/local/bin/npm"),
-        PathBuf::from("/usr/bin/npm"),
-    ];
-    // nvm：取版本号最大的一套（按目录名排序即可，`v24` > `v22`）。
-    if let Some(home) = std::env::var_os("HOME") {
-        let nvm_root = PathBuf::from(home).join(".nvm/versions/node");
-        if let Ok(entries) = std::fs::read_dir(&nvm_root) {
-            let mut versions: Vec<PathBuf> = entries
-                .flatten()
-                .map(|entry| entry.path().join("bin/npm"))
-                .filter(|path| path.is_file())
-                .collect();
-            versions.sort();
-            candidates.splice(0..0, versions.into_iter().rev());
-        }
-    }
-
-    candidates
-        .into_iter()
-        .find(|path| path.is_file())
-        .ok_or_else(|| {
-            missing_npm("未检测到 npm。请先安装 Node.js（自带 npm），或确认 npm 在 PATH 中")
-        })
-}
-
-fn find_in_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
-}
-
-fn missing_npm(detail: &str) -> Failure {
-    Failure::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("{detail}；插件安装依赖本机 npm"),
-    )
-}
-
-/// `npm` 一次安装/卸载最长等待时间。装个 pi 扩展通常几秒，卡住说明网络或 registry 有问题。
+/// `npm` 一次安装/卸载最长等待时间。
 const NPM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// 跑一次 npm，非零退出时把 stderr 尾部原样带回（`ETARGET` 这类信息对用户最有用）。
 ///
 /// `npm_config_cache` 故意指向插件安装根下的专用缓存：不能让损坏的 `~/.npm` 缓存
 /// 污染插件安装，也不能在修复插件时删除用户其他项目共用的缓存。
-async fn run_npm(npm: &Path, args: &[String], cache_dir: &Path) -> Result<(), Failure> {
+async fn run_npm(npm: &NpmRuntime, args: &[String], cache_dir: &Path) -> Result<(), Failure> {
     std::fs::create_dir_all(cache_dir)?;
-    let mut command = crate::process::tokio_command(npm);
+    let mut command = npm.command();
     command
         .args(args)
         .env("npm_config_cache", cache_dir)
-        .env("npm_config_prefer_online", "true")
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true);
+        .env("npm_config_prefer_online", "true");
 
     let label = args.first().cloned().unwrap_or_default();
-    tracing::info!(npm = %npm.display(), args = %args.join(" "), "执行 npm");
+    tracing::info!(npm = %npm.npm.display(), args = %args.join(" "), "执行 npm");
     let output = match tokio::time::timeout(NPM_TIMEOUT, command.output()).await {
         Ok(Ok(output)) => output,
-        Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(missing_npm("未检测到 npm"));
-        }
         Ok(Err(error)) => return Err(Failure::internal(format!("执行 npm 失败：{error}"))),
         Err(_) => {
             return Err(Failure::internal(format!(
@@ -464,7 +398,7 @@ async fn install(
 ) -> Result<(), Failure> {
     match parse_source(source) {
         Source::Npm { .. } => {
-            let npm = npm_executable()?;
+            let npm = NpmRuntime::resolve().await.map_err(Failure::internal)?;
             let root = npm_root(scope, cwd, plugins_root);
             ensure_npm_project(&root)?;
             let cache = npm_cache_dir(&root);
@@ -512,7 +446,7 @@ async fn remove(
         let root = npm_root(scope, cwd, plugins_root);
         // 目录不存在 = 从来没装过，跳过 npm，只清 settings（pi 的行为）。
         if root.is_dir() {
-            let npm = npm_executable()?;
+            let npm = NpmRuntime::resolve().await.map_err(Failure::internal)?;
             let cache = npm_cache_dir(&root);
             run_npm(
                 &npm,
@@ -551,7 +485,7 @@ async fn update(
             return Ok(());
         }
         Source::Npm { name, version } => {
-            let npm = npm_executable()?;
+            let npm = NpmRuntime::resolve().await.map_err(Failure::internal)?;
             let root = npm_root(scope, cwd, plugins_root);
             ensure_npm_project(&root)?;
             let cache = npm_cache_dir(&root);

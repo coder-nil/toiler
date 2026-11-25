@@ -8,7 +8,7 @@
 //! | `POST /api/git/commit-message` | 从暂存区 diff 生成 commit message |
 //! | `POST /api/models-config/test` | 新配的模型能不能通 |
 //!
-//! 都走 [`complete`]：一条 user 消息 → `Provider::stream_simple` → 收完流。
+//! 都走一次补全：可选系统提示词 + 一条用户消息 → `Provider::stream_simple` → 收完流。
 //! 没有工具、没有重试、没有会话持久化（与 pi 的 `completeSimple` 一致）。
 
 use std::sync::Arc;
@@ -40,8 +40,24 @@ pub async fn complete(
     max_tokens: u64,
     timeout: Duration,
 ) -> Result<Reply> {
-    let context = Context::new(vec![Message::User(UserMessage::new(prompt, now_ms()))]);
+    let context = prompt_context(prompt, None);
+    complete_with_context(provider, model, api_key, &context, max_tokens, timeout).await
+}
 
+pub(crate) fn prompt_context(prompt: String, system_prompt: Option<&str>) -> Context {
+    let mut context = Context::new(vec![Message::User(UserMessage::new(prompt, now_ms()))]);
+    context.system_prompt = system_prompt.map(str::to_owned);
+    context
+}
+
+pub(crate) async fn complete_with_context(
+    provider: Arc<dyn Provider>,
+    model: &Model,
+    api_key: Option<String>,
+    context: &Context,
+    max_tokens: u64,
+    timeout: Duration,
+) -> Result<Reply> {
     let options = SimpleStreamOptions {
         api_key,
         max_tokens: Some(max_tokens),
@@ -51,7 +67,7 @@ pub async fn complete(
         ..Default::default()
     };
 
-    let mut stream = provider.stream_simple(model, &context, &options).await;
+    let mut stream = provider.stream_simple(model, context, &options).await;
     let mut text = String::new();
     let mut usage = None;
     let mut stop_reason = StopReason::Stop;
