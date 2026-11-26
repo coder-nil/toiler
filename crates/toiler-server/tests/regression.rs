@@ -5654,6 +5654,194 @@ async fn queued_messages_are_text_arrays_and_clear_queue_round_trips() {
     std::fs::remove_dir_all(&project).ok();
 }
 
+/// `ChatInput` 只按 `queue_update` 刷新排队条：后续消息开始处理时就应消失，
+/// 即使它的回复尚未返回，也不能把仍在排队的消息一起清掉。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn follow_up_leaves_visible_queue_before_its_reply_finishes() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use rpi_ai::{
+        AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream, Content, Context,
+        DoneReason, Model, Provider, SimpleStreamOptions, StopReason,
+    };
+    use tokio::sync::Semaphore;
+
+    struct PausedProvider {
+        model: Model,
+        replies: Arc<Semaphore>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for PausedProvider {
+        fn id(&self) -> &str {
+            self.model.provider.as_str()
+        }
+
+        fn models(&self) -> &[Model] {
+            std::slice::from_ref(&self.model)
+        }
+
+        async fn stream_simple(
+            &self,
+            model: &Model,
+            _context: &Context,
+            options: &SimpleStreamOptions,
+        ) -> AssistantMessageEventStream {
+            let (mut producer, stream) =
+                rpi_ai::event_stream::create_assistant_message_event_stream_with_cancellation(
+                    &options.signal,
+                );
+            let replies = self.replies.clone();
+            let mut message = AssistantMessage::terminal(
+                model.api.clone(),
+                model.provider.clone(),
+                model.id.clone(),
+                StopReason::Stop,
+                "",
+                0,
+            );
+            message.error_message = None;
+            message.content = vec![Content::text("收到")];
+            tokio::spawn(async move {
+                replies.acquire().await.unwrap().forget();
+                let _ = producer
+                    .push(AssistantMessageEvent::Done {
+                        reason: DoneReason::Stop,
+                        message,
+                    })
+                    .await;
+            });
+            stream
+        }
+    }
+
+    async fn wait_event(body: &mut Body, label: &str, matches: impl Fn(&Value) -> bool) -> Value {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = body.frame().await.unwrap().unwrap();
+                let bytes = frame.into_data().unwrap();
+                let Some(data) = std::str::from_utf8(&bytes).unwrap().strip_prefix("data: ") else {
+                    continue;
+                };
+                let event: Value = serde_json::from_str(data).unwrap();
+                assert_ne!(event["type"], "run_error", "{event}");
+                if matches(&event) {
+                    return event;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("没有收到{label}"))
+    }
+
+    let dir = fixture_root("queue-delivery");
+    let mut catalog = ModelCatalog::from_config(
+        json!({ "providers": { "stub": {
+            "api": "openai-completions",
+            "baseUrl": "https://example.test/v1",
+            "apiKey": "test-key",
+            "models": [{"id": "stub"}]
+        }}}),
+        None,
+    )
+    .unwrap();
+    let replies = Arc::new(Semaphore::new(0));
+    catalog.providers = vec![Arc::new(PausedProvider {
+        model: catalog.model_for("stub", "stub").unwrap().clone(),
+        replies: replies.clone(),
+    })];
+    let state = AppState::with_cwd(dir.join("sessions"), catalog, &dir)
+        .with_binding("127.0.0.1", 30141)
+        .with_stores(
+            toiler_server::auth::AuthStore::new(dir.join("auth.json")),
+            toiler_server::models_json::ModelsFile::at(dir.join("models.json")),
+            toiler_server::settings::SettingsFile::at(dir.join("settings.json")),
+            toiler_server::projects::ProjectStore::at(dir.join("work.sqlite")),
+            toiler_server::trust::TrustStore::at(dir.join("trust.json")),
+        );
+    let router = routes::router(state.clone());
+    let request = json!({"cwd": dir, "type": "ensure_session"}).to_string();
+    let created = call(
+        router.clone(),
+        "POST",
+        "/api/agent/new",
+        Some(&request),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text());
+    let created = created.json();
+    let sid = created["sessionId"].as_str().unwrap();
+    let url = format!("/api/agent/{sid}");
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("{url}/events"))
+                .header("host", "127.0.0.1:30141")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut events = response.into_body();
+    wait_event(&mut events, "连接帧", |event| {
+        event["type"] == "connected"
+    })
+    .await;
+
+    for (message, expected_queue) in [
+        ("第一条", None),
+        ("第二条", Some(json!(["第二条"]))),
+        ("第三条", Some(json!(["第二条", "第三条"]))),
+    ] {
+        let prompt = json!({"type": "prompt", "message": message, "streamingBehavior": "followUp"});
+        let sent = call(router.clone(), "POST", &url, Some(&prompt.to_string()), &[]).await;
+        assert_eq!(sent.status, StatusCode::OK, "{}", sent.text());
+        if let Some(expected) = expected_queue {
+            let update = wait_event(&mut events, "入队帧", |event| {
+                event["type"] == "queue_update"
+            })
+            .await;
+            assert_eq!(update["followUp"], expected);
+        } else {
+            wait_event(&mut events, "首轮开始帧", |event| {
+                event["type"] == "agent_start"
+            })
+            .await;
+        }
+    }
+
+    for (delivered, expected_queue) in [("第二条", json!(["第三条"])), ("第三条", json!([]))]
+    {
+        replies.add_permits(1);
+        wait_event(&mut events, "排队消息投递帧", |event| {
+            event["type"] == "message_end"
+                && event["message"]["role"] == "user"
+                && event["message"]["content"] == delivered
+        })
+        .await;
+        // 故意扣住这次回复，旧实现只在整轮结束时通知，永远等不到这帧。
+        let update = wait_event(&mut events, "出队帧", |event| {
+            event["type"] == "queue_update"
+        })
+        .await;
+        assert_eq!(update["followUp"], expected_queue);
+        assert_eq!(update["steering"], json!([]));
+    }
+
+    replies.add_permits(1);
+    wait_event(&mut events, "整轮结束帧", |event| {
+        event["type"] == "agent_end"
+    })
+    .await;
+    drop(events);
+    state.live().remove(sid).await;
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// 「从此处编辑」：被编辑的那条消息**连同它之后的内容**一起从分支上消失，
 /// 之后重发的新消息挂在父节点下（旧消息留在旧分支）。
 ///

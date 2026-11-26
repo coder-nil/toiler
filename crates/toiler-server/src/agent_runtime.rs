@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use anyhow::{Context, Result};
 use rpi_agent::events::{AgentEmitter, AgentEvent};
@@ -50,6 +50,8 @@ pub struct LiveAgent {
     harness: Arc<AgentHarness>,
     lane: Arc<dyn AgentLane>,
     events: broadcast::Sender<Value>,
+    /// 让命令与投递事件按同一顺序取快照和广播，避免旧队列覆盖新队列。
+    queue_updates: tokio::sync::Mutex<()>,
     running: Arc<AtomicBool>,
     /// 当前模型。`set_model` 会在运行中替换它，所以不是不可变字段。
     model: Mutex<rpi_ai::Model>,
@@ -236,7 +238,7 @@ impl LiveAgent {
             // commit message / 模型连通性测试）是「不重试、不落会话」的一次性补全，
             // 那边不能被这层改写文案。
             models: crate::retry_provider::wrap_all(&catalog.providers),
-            agent_emitter: Some(tap),
+            agent_emitter: Some(tap.clone()),
             // 队列模式在 `AgentHarness::create` 时定下来（rpi 没有运行期 setter），
             // 所以这里每次开会话都重新读一遍 `settings.json`：用户在设置页改完，
             // 新开的会话立刻按新模式投递。
@@ -253,13 +255,14 @@ impl LiveAgent {
         harness.set_skill_execution_env(env);
         let lane = harness.lane("main");
 
-        Ok(Arc::new(Self {
+        let live = Arc::new(Self {
             id: id.to_string(),
             path: path.to_path_buf(),
             cwd: cwd.to_string(),
             harness,
             lane,
             events,
+            queue_updates: tokio::sync::Mutex::new(()),
             running: Arc::new(AtomicBool::new(false)),
             model: Mutex::new(model),
             thinking_level: Mutex::new(thinking_level),
@@ -272,7 +275,9 @@ impl LiveAgent {
             chat_mode: Mutex::new(false),
             ui,
             tasks,
-        }))
+        });
+        tap.live.get_or_init(|| Arc::downgrade(&live));
+        Ok(live)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Value> {
@@ -358,7 +363,7 @@ impl LiveAgent {
                         this.running.store(false, Ordering::Relaxed);
                         this.notify_running_changed();
                     }
-                    // 入队 / 出队（本轮结束）都推一帧，前端排队条才是实时的。
+                    // 入队或整轮收尾时同步队列；轮中的出队由投递事件单独通知。
                     this.broadcast_queue_update().await;
                     tracing::info!(
                         "prompt 结束：session={} queued={} ok={} err={:?}",
@@ -666,6 +671,7 @@ impl LiveAgent {
 
     /// 推一帧 `queue_update`：前端 `ChatInput` 的排队条与手机端都读它。
     async fn broadcast_queue_update(&self) {
+        let _gate = self.queue_updates.lock().await;
         let (steering, follow_up) = self.queued_texts().await;
         let _ = self.events.send(json!({
             "type": "queue_update",
@@ -1068,6 +1074,8 @@ fn now_ms() -> i64 {
 /// 把 `AgentEvent` 投成广播用的 JSON 的 emitter。
 pub struct EventTap {
     events: broadcast::Sender<Value>,
+    /// harness 持有 emitter，不能再由 emitter 强引用活会话。
+    live: OnceLock<Weak<LiveAgent>>,
     /// 重试提示的配对状态（见 [`RetryNotice`]）。
     retry: RetryNotice,
 }
@@ -1076,6 +1084,7 @@ impl EventTap {
     pub fn new(events: broadcast::Sender<Value>) -> Self {
         Self {
             events,
+            live: OnceLock::new(),
             retry: RetryNotice::default(),
         }
     }
@@ -1094,6 +1103,22 @@ impl AgentEmitter for EventTap {
     fn emit(&self, event: AgentEvent) -> futures::future::BoxFuture<'static, ()> {
         self.publish(&event);
         Box::pin(async {})
+    }
+
+    fn emit_injected(&self, event: AgentEvent) -> futures::future::BoxFuture<'static, ()> {
+        // rpi 在同一次运行里消费排队消息。等该消息落盘后立刻推剩余队列，
+        // 不等下一次模型回复，也不靠文本比对（排队消息可能同文或只带图片）。
+        let live = if matches!(&event, AgentEvent::MessageEnd { .. }) {
+            self.live.get().and_then(Weak::upgrade)
+        } else {
+            None
+        };
+        self.publish(&event);
+        Box::pin(async move {
+            if let Some(live) = live {
+                live.broadcast_queue_update().await;
+            }
+        })
     }
 
     fn try_emit(&self, event: AgentEvent) {

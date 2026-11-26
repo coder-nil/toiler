@@ -275,8 +275,9 @@ v3 文件里没有 leaf 记录（pi 也没有）：只挪内存指针，重开�
    返回上一题也先作废旧请求，再用新 id 发送目标题，快照回放沿用同一完整请求帧。
    `method` 还有 `setStatus` / `setWidget`（`task_progress` 的展示，非阻塞）。
 3.5 排队变化：`{"type":"queue_update","steering":["<文本>"],"followUp":[]}`。
-   入队（`prompt` 运行中 / `steer` / `follow_up`）、清空（`clear_queue` / `abort`）
-   与一轮结束时各推一帧；桌面端据此刷新排队条，手机端收到后重拉一次快照。
+   入队（`prompt` 运行中 / `steer` / `follow_up`）、排队消息投递、清空（`clear_queue` / `abort`）
+   与整轮运行结束时推送剩余队列。排队消息落盘后立即推送，不等它的模型回复；
+   桌面端据此刷新排队条，手机端收到后重拉一次快照。
 3.6 重试提示：`{"type":"auto_retry_start","attempt":1,"maxAttempts":10,"delayMs":2000,"errorMessage":"…"}`
    与 `{"type":"auto_retry_end","success":true|false,"attempt":1,"finalError":"…"}`。
    前端 `useAgentSession.ts` 用这两帧 `setRetryInfo` / `setRetryInfo(null)`（输入框上方
