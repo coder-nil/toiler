@@ -2745,12 +2745,6 @@ span.token.table {
   gap: 4px;
 }
 
-.git-summary-note {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--text-muted);
-}
-
 .git-section {
   margin-top: 16px;
   padding-top: 14px;

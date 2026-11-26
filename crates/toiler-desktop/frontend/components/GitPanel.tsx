@@ -47,7 +47,7 @@ type GitSummary = {
   untrackedPaths: string[];
 };
 
-type Action = "stage" | "unstage" | "discard" | "discard_all" | "commit" | "fetch" | "pull" | "push" | "merge" | "continue" | "abort" | "set_remote_url" | "create_tag" | "delete_tag" | "push_tag" | "push_tags" | "summarize" | `bump_${VersionUpgradeLevel}`;
+type Action = "stage" | "unstage" | "discard" | "discard_all" | "commit" | "fetch" | "pull" | "push" | "merge" | "continue" | "abort" | "set_remote_url" | "create_tag" | "delete_tag" | "push_tag" | "summarize" | `bump_${VersionUpgradeLevel}`;
 
 const SAVED_CREDENTIAL_MASK = "••••••••";
 
@@ -176,7 +176,7 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
     setError(null);
     try {
       // 远程动作都要带上凭据：推标签同样可能遇到 HTTPS token。
-      const isRemoteAction = action === "fetch" || action === "pull" || action === "push" || action === "push_tag" || action === "push_tags";
+      const isRemoteAction = action === "fetch" || action === "pull" || action === "push" || action === "push_tag";
       const credentialKind = summary?.credentialKind;
       const credential = isRemoteAction && secret && secret !== SAVED_CREDENTIAL_MASK && (credentialKind === "https" || credentialKind === "ssh")
         ? { kind: credentialKind, secret, ...(credentialKind === "https" ? { username } : {}) }
@@ -185,10 +185,8 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
       const data = await readApiJson<GitSummary>(res, { hint: t("git.serverErrorHint") });
       setSummary(data);
       // 只在 Git 确认推送成功后清除对应版本标签的提示。
-      if (action === "push_tag" || action === "push_tags") {
-        setVersionResult((result) => result?.cwd === cwd &&
-          (action === "push_tag" ? extra.tag === result.tag : data.tags.includes(result.tag))
-          ? null : result);
+      if (action === "push_tag") {
+        setVersionResult((result) => result?.cwd === cwd && extra.tag === result.tag ? null : result);
       }
       if (action === "commit") setMessage("");
       if (action === "create_tag") {
@@ -434,11 +432,9 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
               <div className="git-actions-row"><ActionButton label={t("git.fetch")} action="fetch" busy={busy} onClick={() => void run("fetch")} /><ActionButton label={t(pullRebase ? "git.pullRebase" : "git.pullMerge")} action="pull" busy={busy} onClick={() => void run("pull", { rebase: pullRebase })} /><ActionButton label={t("git.push")} action="push" busy={busy} onClick={() => void run("push")} /><label className="git-check"><input type="checkbox" checked={pullRebase} onChange={(event) => setPullRebase(event.target.checked)} disabled={disabled} /> {t("git.rebaseWhenPulling")}</label></div>
             </div>
             <div className="git-section"><SectionTitle title={t("git.mergeBranch")} /><div className="git-actions-row"><MergeBranchPicker branches={mergeBranches} value={mergeBranch} disabled={disabled} onChange={setMergeBranch} /><ActionButton label={t("git.merge")} action="merge" busy={busy} disabled={!mergeBranch || mergeBranches.length === 0} onClick={() => void run("merge", { branch: mergeBranch })} /></div></div>
-            {/* 标签：本地列表 / 创建（带附注则建附注 tag）/ 删除本地 / 推到远端。
-                推送需要 origin，所以没配 remote 时两处推送按钮都是 disabled，
-                而不是点下去才吃一个 `'origin' does not appear to be a repository`。 */}
+            {/* 标签推送需要 origin，未配置远程时禁用各标签的推送按钮。 */}
             <div className="git-section">
-              <SectionTitle title={t("git.tags")} action={summary.tags.length > 0 ? <><span className="git-summary-note">{t("git.tagCount", { count: summary.tags.length })}</span><ActionButton label={t("git.pushAllTags")} action="push_tags" busy={busy} disabled={!summary.remote} onClick={() => void run("push_tags")} /></> : undefined} />
+              <SectionTitle title={t("git.tags")} action={summary.tags.length > 0 ? t("git.tagCount", { count: summary.tags.length }) : undefined} />
               <div className="git-field">
                 <input className="git-input" value={newTag} onChange={(event) => setNewTag(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && newTag.trim() && !disabled) void run("create_tag", { tag: newTag.trim(), ...(tagMessage.trim() ? { message: tagMessage.trim() } : {}) }); }} placeholder={tagPlaceholder} title={tagPlaceholder} disabled={disabled} />
                 <input className="git-input" value={tagMessage} onChange={(event) => setTagMessage(event.target.value)} placeholder={t("git.tagMessage")} title={t("git.tagMessage")} disabled={disabled} />

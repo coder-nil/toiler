@@ -207,7 +207,6 @@ export const zhCNLocale: LocalePlugin = {
     "git.versionUpgradeDone": "版本升级完成，已创建版本提交和普通标签 {tag}，尚未推送。",
     "git.deleteTag": "删除标签",
     "git.pushTag": "推送到远程",
-    "git.pushAllTags": "推送全部标签",
     "git.deleteTagConfirm": "删除本地标签 {tag}？",
     "git.deleteTagLocalOnly": "只删本仓库的标签，远端同名的标签不会被删除。",
     "git.noTags": "还没有标签",
