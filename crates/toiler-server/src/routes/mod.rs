@@ -4,6 +4,7 @@
 
 pub mod agent;
 pub mod agent_extra;
+pub mod appearance;
 pub mod auth;
 pub mod file_index;
 pub mod files;
@@ -29,6 +30,8 @@ use crate::state::AppState;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        // 本地季节信息与 Dock 图标共用四立日历，图片仍由嵌入的静态资源提供。
+        .route("/api/appearance/season", get(appearance::season))
         // ---- sessions ----
         .route("/api/sessions", get(crate::routes::sessions::list))
         .route(

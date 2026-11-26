@@ -7,25 +7,14 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use tauri::{AppHandle, Manager};
+use toiler_server::seasons::{Calendar, Season};
 
-mod solar_terms;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Season {
-    Spring,
-    Summer,
-    Autumn,
-    Winter,
-}
-
-impl Season {
-    fn png(self) -> &'static [u8] {
-        match self {
-            Self::Spring => include_bytes!("../icons/seasons/spring.png"),
-            Self::Summer => include_bytes!("../icons/seasons/summer.png"),
-            Self::Autumn => include_bytes!("../icons/seasons/autumn.png"),
-            Self::Winter => include_bytes!("../icons/seasons/winter.png"),
-        }
+fn png(season: Season) -> &'static [u8] {
+    match season {
+        Season::Spring => include_bytes!("../icons/seasons/spring.png"),
+        Season::Summer => include_bytes!("../icons/seasons/summer.png"),
+        Season::Autumn => include_bytes!("../icons/seasons/autumn.png"),
+        Season::Winter => include_bytes!("../icons/seasons/winter.png"),
     }
 }
 
@@ -33,7 +22,7 @@ impl Season {
 pub(crate) struct SeasonalIconState {
     applied: Mutex<Option<Season>>,
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
-    calendar: Mutex<solar_terms::Calendar>,
+    calendar: Mutex<Calendar>,
 }
 
 fn current_season(app: &AppHandle) -> Result<(Season, Duration), String> {
@@ -49,7 +38,7 @@ fn apply(_app: &AppHandle, season: Season) -> Result<(), String> {
     use objc2_foundation::NSData;
 
     let main_thread = MainThreadMarker::new().ok_or("Dock 图标只能在主线程更新")?;
-    let data = NSData::with_bytes(season.png());
+    let data = NSData::with_bytes(png(season));
     let image = NSImage::initWithData(NSImage::alloc(), &data).ok_or("季节图标解码失败")?;
     // SAFETY: 在主线程提供有效的 NSImage，且始终传 Some，不使用空图标。
     unsafe {
@@ -60,7 +49,7 @@ fn apply(_app: &AppHandle, season: Season) -> Result<(), String> {
 
 #[cfg(not(target_os = "macos"))]
 fn apply(app: &AppHandle, season: Season) -> Result<(), String> {
-    let icon = tauri::image::Image::from_bytes(season.png()).map_err(|error| error.to_string())?;
+    let icon = tauri::image::Image::from_bytes(png(season)).map_err(|error| error.to_string())?;
     for window in app.webview_windows().values() {
         #[cfg(target_os = "windows")]
         let hwnd = window.hwnd().map_err(|error| error.to_string())?;
@@ -158,7 +147,7 @@ mod tests {
             Season::Autumn,
             Season::Winter,
         ] {
-            let image = tauri::image::Image::from_bytes(season.png()).unwrap();
+            let image = tauri::image::Image::from_bytes(png(season)).unwrap();
             assert_eq!((image.width(), image.height()), (512, 512));
             let alpha = |x: usize, y: usize| image.rgba()[(y * 512 + x) * 4 + 3];
             for (x, y) in [(0, 0), (511, 0), (0, 511), (511, 511)] {

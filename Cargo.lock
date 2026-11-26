@@ -5715,7 +5715,6 @@ version = "1.0.11"
 dependencies = [
  "anyhow",
  "libc",
- "lunar_rust",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -5765,6 +5764,7 @@ dependencies = [
  "idna",
  "include_dir",
  "libc",
+ "lunar_rust",
  "md-5",
  "multer",
  "pulldown-cmark",

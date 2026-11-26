@@ -61,6 +61,8 @@ flate2 = "1"
 idna = "1"
 # 枚举本机网卡，挑一个手机最可能连上的内网 IPv4（pi 用 os.networkInterfaces）
 libc = "0.2"
+# 应用图标与新建对话插画共用离线四立天文历。
+lunar_rust = "1.0.1"
 pulldown-cmark = { version = "0.13.6", default-features = false, features = ["html"] }
 
 [dev-dependencies]

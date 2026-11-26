@@ -23,6 +23,7 @@ pub mod reasoning_summary;
 pub mod remote_models;
 pub mod retry_provider;
 pub mod routes;
+pub mod seasons;
 pub mod security;
 pub mod session_view;
 pub mod sessions_store;

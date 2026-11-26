@@ -621,6 +621,19 @@ pub fn credential_kind(url: Option<&str>) -> &'static str {
     "none"
 }
 
+/// 是否允许状态刷新触发远程 fetch。
+///
+/// 远程状态请求可能在界面启动时自动发生，不能因为 SSH 私钥未解锁就把
+/// passphrase 提示打到启动它的控制台。需要认证的远程只有在应用加密存储中
+/// 已有凭据时才刷新；不需要凭据的本地 / `file://` / `git://` 远程仍可刷新。
+fn remote_refresh_allowed(store: &CredentialStore, remote: Option<&str>) -> bool {
+    let Some(remote) = remote.filter(|url| !url.is_empty()) else {
+        return false;
+    };
+    let kind = credential_kind(Some(remote));
+    kind == "none" || store.saved_username(remote, kind).is_some()
+}
+
 /// 当前是否处在 merge / rebase / cherry-pick 之类的中间状态（`76402.s`）。
 fn operation_in_progress(root: &Path) -> Option<&'static str> {
     let git_dir = run_git(root, &["rev-parse", "--absolute-git-dir"], STATUS_TIMEOUT).ok()?;
@@ -757,6 +770,15 @@ pub fn refresh_remote_refs(cwd: &Path) {
     let Some(root) = repository_root(cwd) else {
         return;
     };
+    // `/api/git` 与 `/api/worktrees` 会在页面加载时自动走到这里。没有已保存的
+    // SSH/HTTPS 凭据时不做网络 fetch，避免 OpenSSH 直接向控制台询问私钥口令。
+    let credential_store = CredentialStore::default();
+    let remote_url = run_git(&root, &["remote", "get-url", "origin"], STATUS_TIMEOUT)
+        .ok()
+        .filter(|url| !url.is_empty());
+    if !remote_refresh_allowed(&credential_store, remote_url.as_deref()) {
+        return;
+    }
     let remote = run_git(
         &root,
         &[
@@ -2023,6 +2045,25 @@ mod tests {
         let dir = temp_path(tag);
         let store = CredentialStore::with_key(dir.join("git-credentials.json"), vec![7u8; 32]);
         (store, dir)
+    }
+
+    #[test]
+    fn remote_refresh_requires_saved_credential_for_authenticated_remote() {
+        let (store, dir) = temp_credential_store("refresh-credential");
+        let ssh = "git@example.invalid:acme/repo.git";
+        let https = "https://example.invalid/acme/repo.git";
+
+        assert!(!remote_refresh_allowed(&store, Some(ssh)));
+        assert!(!remote_refresh_allowed(&store, Some(https)));
+        assert!(!remote_refresh_allowed(&store, None));
+        assert!(remote_refresh_allowed(&store, Some("file:///tmp/repo.git")));
+
+        store
+            .save(ssh, &GitCredential::new("ssh", None, "passphrase"))
+            .unwrap();
+        assert!(remote_refresh_allowed(&store, Some(ssh)));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 回归：【勾了「在此设备上加密记住凭据」，口令还是会被清空】的直接用例。

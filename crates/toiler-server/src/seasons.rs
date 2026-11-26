@@ -11,7 +11,23 @@ use lunar_rust::{
     solar::{self, SolarRefHelper},
 };
 
-use super::Season;
+/// 运行中应用图标与新建对话插画共用四立边界，避免前后端各算一套。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Season {
+    Spring,
+    Summer,
+    Autumn,
+    Winter,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeasonSnapshot {
+    pub season: Season,
+    pub server_time: u64,
+    pub next_change_at: u64,
+}
 
 const UNIX_JULIAN_DAY: f64 = 2_440_587.5;
 const SECONDS_PER_DAY: f64 = 86_400.0;
@@ -19,13 +35,35 @@ const BEIJING_OFFSET_SECONDS: f64 = 8.0 * 3_600.0;
 const MAX_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
-pub(super) struct Calendar {
+pub struct Calendar {
     // 只缓存当前公历年与下一年立春；轮询不必每次重新计算天文历。
     cached: Option<(i64, [(SystemTime, Season); 5])>,
 }
 
 impl Calendar {
-    pub(super) fn at(&mut self, now: SystemTime) -> Result<(Season, Duration), String> {
+    pub fn at(&mut self, now: SystemTime) -> Result<(Season, Duration), String> {
+        let (season, next_change) = self.resolve(now)?;
+        let delay = next_change.duration_since(now).map_err(|e| e.to_string())?;
+        Ok((season, delay.min(MAX_CHECK_INTERVAL)))
+    }
+
+    pub fn snapshot(&mut self, now: SystemTime) -> Result<SeasonSnapshot, String> {
+        let (season, next_change) = self.resolve(now)?;
+        let millis = |time: SystemTime| -> Result<u64, String> {
+            time.duration_since(UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_millis()
+                .try_into()
+                .map_err(|_| "节气时间戳超出支持范围".into())
+        };
+        Ok(SeasonSnapshot {
+            season,
+            server_time: millis(now)?,
+            next_change_at: millis(next_change)?,
+        })
+    }
+
+    fn resolve(&mut self, now: SystemTime) -> Result<(Season, SystemTime), String> {
         let elapsed = now.duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?;
         let utc_julian_day = UNIX_JULIAN_DAY + elapsed.as_secs_f64() / SECONDS_PER_DAY;
         // 上游日期构造会把秒四舍五入；取 UTC 当日零点，避免年末最后半秒进位成 12/32。
@@ -41,8 +79,7 @@ impl Calendar {
         let mut season = Season::Winter;
         for &(instant, next_season) in events {
             if instant > now {
-                let delay = instant.duration_since(now).map_err(|e| e.to_string())?;
-                return Ok((season, delay.min(MAX_CHECK_INTERVAL)));
+                return Ok((season, instant));
             }
             season = next_season;
         }
@@ -164,6 +201,35 @@ mod tests {
         ] {
             assert_eq!(calendar.at(utc(2026, month, day, 0, 0)).unwrap().0, season);
         }
+    }
+
+    #[test]
+    fn snapshot_exposes_the_actual_next_boundary_instead_of_the_polling_interval() {
+        let mut calendar = Calendar::default();
+        let events = transitions(2026).unwrap();
+        let now = utc(2026, 11, 26, 0, 0);
+        let snapshot = calendar.snapshot(now).unwrap();
+        assert_eq!(snapshot.season, Season::Winter);
+        assert_eq!(
+            snapshot.server_time,
+            now.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+        );
+        assert_eq!(
+            snapshot.next_change_at,
+            transitions(2027).unwrap()[0]
+                .0
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        );
+        let before = calendar
+            .snapshot(events[1].0 - Duration::from_millis(1))
+            .unwrap();
+        let after = calendar.snapshot(events[1].0).unwrap();
+        assert_eq!(before.season, Season::Spring);
+        assert_eq!(before.next_change_at, after.server_time);
+        assert_eq!(after.season, Season::Summer);
+        assert!(after.next_change_at > after.server_time);
     }
 
     #[test]

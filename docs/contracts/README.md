@@ -490,6 +490,25 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
   刷新成功会重建运行时目录，新模型在对话里可直接选用。其它 OAuth 订阅返回 501。
   Qoder CN 若存在同名用户自定义 provider 配置，改用自定义 Provider 的导入模型入口。
 
+## GET /api/appearance/season（Toiler 扩展）
+
+新建对话页面的 `SeasonalIllustration` 使用，和运行中的应用图标共用
+`toiler-server::seasons` 的离线四立天文历。按立春、立夏、立秋、立冬的实际交节
+时刻切换，时间戳均为 Unix 毫秒，不按本机时区或固定月份划分。
+
+```jsonc
+{
+  "season": "winter", // spring | summer | autumn | winter
+  "serverTime": 1795651200000,
+  "nextChangeAt": 1800000000000 // 示例值，实际为下一次四立交节时刻
+}
+```
+
+响应带 `Cache-Control: no-store`。前端按服务器时间差调度，临近交节时定时到边界，
+平时最多每分钟重新判断，并在恢复前台后刷新。图片路径是前端内置的四张 WebP，
+不由接口下发任意 URL，不访问第三方服务，不读取或写入用户 Store。计算失败返回
+`500 {"error":"读取季节失败"}`；前端保留现有图片或回退为原品牌标记。
+
 ## GET /api/mobile/state
 
 查询参数：`session`（id）、`cwd`、`limit`。

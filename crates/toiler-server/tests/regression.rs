@@ -56,6 +56,38 @@ impl Reply {
 /// 这把锁，改完立刻恢复。
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// SeasonalIllustration：空白页需要本地四立季节与下次切换时刻，不读取用户配置。
+#[tokio::test]
+async fn empty_chat_season_uses_shared_calendar_and_disables_http_caching() {
+    let dir = fixture_root("empty-chat-season");
+    let router = app_with_agent_dir(&dir, &dir, Some(&dir));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/appearance/season")
+                .header("host", "127.0.0.1:30141")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(["spring", "summer", "autumn", "winter"].contains(&body["season"].as_str().unwrap()));
+    let server_time = body["serverTime"].as_u64().unwrap();
+    let next_change = body["nextChangeAt"].as_u64().unwrap();
+    assert!(next_change > server_time);
+    let snapshot = toiler_server::seasons::Calendar::default()
+        .snapshot(std::time::UNIX_EPOCH + std::time::Duration::from_millis(server_time))
+        .unwrap();
+    assert_eq!(body, serde_json::to_value(snapshot).unwrap());
+    assert!(!dir.join("settings.json").exists());
+    assert!(!dir.join("work.sqlite").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn env_guard() -> std::sync::MutexGuard<'static, ()> {
     ENV_LOCK
         .lock()
