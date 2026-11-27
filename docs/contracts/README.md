@@ -640,6 +640,10 @@ Qoder CN 使用相同响应外形，但模型定义来自官方 `model/list`，�
 | `POST /api/git` | ✅ | pi 的 20 个动作（含 `merge_branch`、`*_remote_branch`、`*_branch`）+ toiler 追加的 `create_tag` / `delete_tag` / `push_tag` / `push_tags`（见差异 22、23），返回操作后的状态 |
 | `GET /api/git/status?cwd=` | ✅ | `{isGitRepository,repositoryRoot,files[],additions,deletions}` |
 | `GET /api/git/diff?cwd=&path=` | ✅ | `{supported,status?,patch?}`；未跟踪文件会合成补丁 |
+| `GET /api/git/workspace-diff?cwd=&scope=&path=&hash=&oldPath=` | ✅ | Toiler 扩展：`{patch,oversized}`。`scope=unstaged` 比较工作区与暂存区（含未跟踪文本）；`staged` 比较暂存区与 HEAD；两者使用仓库内绝对 `path`。`scope=commit` 使用完整 `hash`、仓库相对 `path` 与可选重命名前 `oldPath`，与第一父提交（或空树）比较，不读取工作区文件。补丁超 256 KiB 时返回空补丁并设置 `oversized:true`。 |
+| `GET /api/git/refs?cwd=` | ✅ | Toiler 扩展：`{repositoryRoot,headBranch,refs:[{name,commit}]}`；`headBranch` 和引用名使用全名，脱离 HEAD 时前者为 `null`。忽略远程符号别名；无法直接装饰到提交的引用其 `commit` 为 `null` |
+| `GET /api/git/history?cwd=&ref=&start=&offset=` | ✅ | Toiler 扩展：`{start,commits:[{hash,parents,subject,author,authoredAt}],nextOffset}`；默认 `HEAD`，也接受本地分支、远程分支和标签全名。按拓扑顺序每页至多 100 条；续页传回首屏的 `start` 和上页的 `nextOffset`，到尾部为 `null` |
+| `GET /api/git/commit?cwd=&hash=` | ✅ | Toiler 扩展：接受完整提交哈希，返回上面的提交字段及 `authorEmail`、`message`、`files:[{status,path,oldPath}]`、`containingBranches:[{name,isTip}]`。分支列表涵盖从分支顶端可达该提交的本地和远程跟踪引用（`name` 为全名，`isTip` 表示引用直接指向该提交），不包含标签或符号别名。合并提交的文件变更以第一父提交为基准；根提交以空树为基准。历史三接口仅允许访问授权仓库，不写工作区、不联网 |
 | `POST /api/git/commit-message` | ✅ | NDJSON：`update` → `done`（失败 `error`）；用 `settings.json` 的默认模型，按请求的 `locale`（`zh-CN` / `en`，缺省 `en`）明确要求标题摘要和正文的输出语言 |
 | `GET/POST/DELETE /api/worktrees` | ✅ | 列出 / 新建（`action:"checkout"` 走切分支）/ 删除（脏工作区 409 + `dirty:true`）；GET 额外返回当前工作树分支相对本地上游引用的 `branchSync: {ahead,behind}`，没有上游或不是工作树根目录时为 `null`。`GET /api/git` 和 `GET /api/worktrees` 尝试先获取当前分支的上游远程引用，失败时用本地已有引用；`GET /api/git/status` 不联网 |
 | `GET/PUT/PATCH/DELETE /api/projects` | ✅ | 用 toiler 自己的 `<appDir>/work.sqlite`（`~/.agents/toiler/work.sqlite`）；接口形状与 pi 一致，但**不再共库** |

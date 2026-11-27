@@ -11,6 +11,7 @@ import { isMacPlatform, isWindowsPlatform } from "@/lib/platform-key";
 import { revealNext } from "@/lib/typewriter";
 import { upgradeProjectVersion, VERSION_UPGRADE_LEVELS, type VersionUpgradeLevel, type VersionUpgradePreview } from "@/lib/version-upgrade";
 import { BranchPicker } from "./BranchPicker";
+import type { GitDiffSelection } from "@/lib/git-workspace";
 
 // MergeBranchPicker delegates to the shared picker, which renders the accessible
 // role="combobox" / role="listbox" control and uses git.selectBranch as its fallback label.
@@ -77,10 +78,11 @@ interface GitPanelProps {
   refreshButtonClassName: string;
   onClose: () => void;
   onChanged: () => void;
-  onOpenFile: (filePath: string, fileName: string, options?: { modeHint?: "diff" }) => void;
+  onSelectFile: (file: GitDiffSelection) => void;
+  selectedFile: GitDiffSelection | null;
 }
 
-export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName, onClose, onChanged, onOpenFile }: GitPanelProps) {
+export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName, onClose, onChanged, onSelectFile, selectedFile }: GitPanelProps) {
   const { locale, t } = useI18n();
   const [summary, setSummary] = useState<GitSummary | null>(null);
   const [message, setMessage] = useState("");
@@ -310,9 +312,7 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
     }
   }, [cwd, locale, sessionId, t]);
 
-  const openDiff = useCallback((file: GitFileStatus) => {
-    onOpenFile(file.filePath, fileName(file.filePath), { modeHint: "diff" });
-  }, [onOpenFile]);
+  const activeWorktreeFile = selectedFile?.scope === "unstaged" || selectedFile?.scope === "staged" ? selectedFile : null;
 
   const staged = summary?.changes.files.filter((file) => file.indexStatus !== " " && file.indexStatus !== "?") ?? [];
   const unstaged = summary?.changes.files.filter((file) => file.worktreeStatus !== " " || file.indexStatus === "?") ?? [];
@@ -366,18 +366,18 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
 
   return (
     <section ref={panelRef} tabIndex={-1} aria-label={t("common.git")} className="git-panel" onKeyDown={handleKeyDown}>
-        {/* 刷新入口在共享标题栏，禁用状态和错误仍由当前仓库的面板管理。 */}
+        {/* 刷新保持在 Git 操作区的标题栏。 */}
         {refreshTarget && createPortal(
-          <button
-            type="button"
-            className={refreshButtonClassName}
-            onClick={() => void refreshFromToolbar()}
-            disabled={disabled || Boolean(versionPreview)}
-            title={t("git.refreshStatus")}
-            aria-label={t("git.refreshStatus")}
-          >
-            <RefreshCw size={14} strokeWidth={1.8} aria-hidden="true" />
-          </button>,
+            <button
+              type="button"
+              className={refreshButtonClassName}
+              onClick={() => void refreshFromToolbar()}
+              disabled={disabled || Boolean(versionPreview)}
+              title={t("git.refreshStatus")}
+              aria-label={t("git.refreshStatus")}
+            >
+              <RefreshCw size={14} strokeWidth={1.8} aria-hidden="true" />
+            </button>,
           refreshTarget,
         )}
         <div className="git-panel-body" inert={Boolean(versionPreview)}>
@@ -401,11 +401,11 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
             {summary.operation && <div className="git-note" data-tone="warn"><span className="git-note-text">{t("git.operationInProgress", { operation: t(`git.operation.${summary.operation}`) })}{conflictCount ? ` ${t("git.operationConflicts", { count: conflictCount })}` : ""}</span><div className="git-note-actions"><ActionButton label={t("git.continue")} busy={busy} action="continue" onClick={() => void run("continue")} /><ActionButton label={t("git.abort")} busy={busy} action="abort" danger onClick={() => void run("abort")} /></div></div>}
             <div className="git-section">
               <SectionTitle title={t("git.changesSummary", { additions: summary.changes.additions, deletions: summary.changes.deletions })} action={<>{unstaged.length > 0 && <ActionButton label={t("git.stageAll")} action="stage" busy={busy} onClick={() => void run("stage", { paths: unstaged.map((file) => file.filePath) })} />}{summary?.changes.files.length > 0 && <ActionButton label={t("git.discardAll")} action="discard_all" busy={busy} danger disabled={conflictCount > 0} title={t("git.discardAllTitle")} onClick={() => setConfirmingDiscardAll(true)} />}</>} />
-              <FileList files={unstaged} empty={t("git.noUnstagedChanges")} busy={busy} onOpenDiff={openDiff} onStage={(filePath) => void run("stage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} />
+              <FileList files={unstaged} empty={t("git.noUnstagedChanges")} busy={busy} selectedPath={activeWorktreeFile?.scope === "unstaged" ? activeWorktreeFile.path : undefined} onOpenDiff={(file) => onSelectFile({ scope: "unstaged", path: file.filePath })} onStage={(filePath) => void run("stage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} />
             </div>
             <div className="git-section">
               <SectionTitle title={t("git.stagedSummary", { count: staged.length })} action={staged.length > 0 ? <ActionButton label={t("git.unstageAll")} action="unstage" busy={busy} onClick={() => void run("unstage", { paths: staged.map((file) => file.filePath) })} /> : undefined} />
-              <FileList files={staged} empty={t("git.nothingStaged")} busy={busy} onOpenDiff={openDiff} onUnstage={(filePath) => void run("unstage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} />
+              <FileList files={staged} empty={t("git.nothingStaged")} busy={busy} selectedPath={activeWorktreeFile?.scope === "staged" ? activeWorktreeFile.path : undefined} onOpenDiff={(file) => onSelectFile({ scope: "staged", path: file.filePath })} onUnstage={(filePath) => void run("unstage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} />
             </div>
             <div className="git-section">
               <SectionTitle title={t("git.commit")} />
@@ -496,14 +496,14 @@ function FileAction({ label, icon: Icon, action, busy, disabled, danger, onClick
   );
 }
 
-function FileList({ files, empty, busy, onOpenDiff, onStage, onUnstage, onDiscard }: { files: GitFileStatus[]; empty: string; busy: Action | null; onOpenDiff: (file: GitFileStatus) => void; onStage?: (filePath: string) => void; onUnstage?: (filePath: string) => void; onDiscard?: (file: GitFileStatus) => void }) {
+function FileList({ files, empty, busy, selectedPath, onOpenDiff, onStage, onUnstage, onDiscard }: { files: GitFileStatus[]; empty: string; busy: Action | null; selectedPath?: string; onOpenDiff: (file: GitFileStatus) => void; onStage?: (filePath: string) => void; onUnstage?: (filePath: string) => void; onDiscard?: (file: GitFileStatus) => void }) {
   const { t } = useI18n();
   if (!files.length) return <div className="git-hint">{empty}</div>;
   return (
     <div className="git-file-list">
       {files.map((file) => (
         <div key={`${file.filePath}:${file.indexStatus}:${file.worktreeStatus}`} className="git-file-row" data-conflict={file.status === "conflict" ? "true" : undefined}>
-          <button type="button" className="git-file-open" onClick={() => onOpenDiff(file)} disabled={Boolean(busy)} title={file.filePath}>
+          <button type="button" className="git-file-open" onClick={() => onOpenDiff(file)} aria-pressed={selectedPath === file.filePath} disabled={Boolean(busy)} title={file.filePath}>
             <span className="git-file-code" data-status={file.status} aria-hidden="true">{file.code}</span>
             <span className="git-file-name">{fileName(file.filePath)}</span>
           </button>

@@ -3084,6 +3084,10 @@ span.token.table {
   color: var(--accent);
 }
 
+.git-file-row:has(.git-file-open[aria-pressed="true"]) {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+}
+
 .git-file-row[data-conflict="true"]:hover .git-file-name {
   color: var(--danger);
 }

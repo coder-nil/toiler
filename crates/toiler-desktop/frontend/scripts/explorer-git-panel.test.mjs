@@ -9,41 +9,43 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 const sidebar = await read("components/SessionSidebar.tsx");
 const shell = await read("components/AppShell.tsx");
 const panel = await read("components/GitPanel.tsx");
+const workspace = await read("components/GitWorkspace.tsx");
+const history = await read("components/GitHistoryPanel.tsx");
 const explorer = sidebar.match(/<section className=\{styles\.explorer\}[\s\S]*?<\/section>/)?.[0];
 
-test("Git 开关移到文件浏览器，底部和文件浏览器不再显示旧入口", () => {
+test("侧栏项目和子仓库入口打开同一个 Git 工作区，不替换文件树", () => {
   assert.ok(explorer);
-  assert.match(explorer, /onClick=\{toggleGitPanel\}\s+title=\{t\("common\.git"\)\}\s+pressed=\{gitPanelOpen\}/);
-  assert.doesNotMatch(explorer, /openUploadPicker|uploadFilesTitle/);
-  assert.doesNotMatch(shell, /<GitPanel\b|translate\("common\.git"\)/);
-});
-
-test("Git 开关与文件或 Git 刷新共用同一组显隐工具栏，不再显示关闭按钮", () => {
-  assert.ok(explorer);
-  assert.match(explorer, /gitPanelOpen \? \(\s*<h2[^>]*gitHeading[^>]*>\s*<GitBranch[^>]*\/>\s*<span>\{t\("common\.git"\)\}<\/span>/);
-  assert.match(explorer, /<div className=\{styles\.sectionActions\}>\s*\{gitPanelOpen \? \(\s*<div className=\{styles\.gitRefreshSlot\} ref=\{setGitRefreshTarget\} \/>\s*\) : \([\s\S]*?t\("sidebar\.refreshExplorer"\)[\s\S]*?<\/>\s*\)\}\s*\{showExplorerGitButton && \(\s*<ToolbarIconButton\s+onClick=\{toggleGitPanel\}/);
-  assert.match(explorer, /refreshTarget=\{gitRefreshTarget\}/);
-  assert.match(panel, /refreshTarget && createPortal\([\s\S]*?t\("git\.refreshStatus"\)[\s\S]*?refreshTarget,/);
-  assert.doesNotMatch(panel, /<header|git\.close/);
-});
-
-test("Git 面板仅替换文件树的显示，并保留子仓库和差异预览入口", () => {
-  assert.ok(explorer);
-  assert.match(explorer, /hidden=\{gitPanelOpen\}>\s*<FileExplorer/);
+  assert.match(explorer, /onClick=\{toggleGitPanel\}\s+title=\{t\("gitWorkspace\.title"\)\}\s+pressed=\{gitPanelOpen\}/);
   assert.match(explorer, /onOpenRepositoryGitPanel=\{openRepositoryGitPanel\}/);
-  assert.match(explorer, /\{gitPanelCwd && \(\s*<GitPanel\s+key=\{gitPanelCwd\}\s+cwd=\{gitPanelCwd\}/);
-  assert.match(explorer, /onClose=\{closeGitPanelAndRestoreFocus\}\s+onChanged=\{refreshAfterGitChange\}\s+onOpenFile=\{onOpenFile/);
-  assert.match(sidebar, /gitTarget\.explorerCwd === explorerCwd \? gitTarget\.cwd : null/);
+  assert.match(sidebar, /if \(explorerCwd\) onToggleGitWorkspace\(cwd, explorerCwd\)/);
+  assert.doesNotMatch(explorer, /<GitPanel\b|hidden=\{gitPanelOpen\}|openUploadPicker/);
+});
+
+test("Git 工作区隐藏但不卸载聊天，保留返回入口并刷新侧栏", () => {
+  assert.match(shell, /inert=\{Boolean\(gitWorkspace\)\}[\s\S]*?<ChatWindow[\s\S]*?\{gitWorkspace && <GitWorkspace/);
+  assert.match(shell, /const filePanelVisible = rightPanelOpen && !gitWorkspace/);
+  assert.match(workspace, /onClick=\{onClose\}[\s\S]*?gitWorkspace\.back/);
+  assert.match(workspace, /refreshTarget=\{refreshTarget\}/);
+  assert.match(panel, /refreshTarget && createPortal\([\s\S]*?t\("git\.refreshStatus"\)[\s\S]*?refreshTarget,/);
+  assert.match(shell, /const refreshAfterGitChange = useCallback\(\(\) => \{\s*handleExplorerRefresh\(\);\s*setGitWorkspaceRefreshKey/);
+});
+
+test("当前更改与历史文件都送到共用差异区，保留各自的比较基准", () => {
+  assert.match(panel, /onSelectFile\(\{ scope: "unstaged", path: file\.filePath \}\)/);
+  assert.match(panel, /onSelectFile\(\{ scope: "staged", path: file\.filePath \}\)/);
+  assert.match(history, /onSelectFile\(\{ scope: "commit", hash: commit\.hash, path: file\.path, oldPath: file\.oldPath \}\)/);
+  assert.match(workspace, /<WorkspaceDiff cwd=\{cwd\} selection=\{selection\}/);
+  assert.doesNotMatch(history, /showModal\(|<dialog\b/);
 });
 
 test("Git 面板在远程区显示地址，分支同步数字仍由工作树选择框展示", () => {
   assert.doesNotMatch(panel, /git-panel-path|className="git-summary"/);
   assert.match(panel, /\{summary\.remote && !editingRemote && <div className="git-actions-row"[^\n]*flexWrap: "nowrap"[^\n]*>\s*<div className="git-remote-url" title=\{summary\.remote\}[^\n]*textOverflow: "ellipsis"[^\n]*>\{summary\.remote\}<\/div>\s*<div style=\{\{ flexShrink: 0 \}\}><ActionButton label=\{t\("git\.editRemote"\)\}/);
   assert.match(sidebar, /worktreeState\.forCwd === selectedCwd \? worktreeState\.branchSync : null/);
-  const selector = sidebar.match(/<button\s+type="button"\s+aria-expanded=\{wtDropdownOpen\}[\s\S]*?<\/button>/)?.[0];
+  const selector = sidebar.match(/<button\b[^>]*\baria-expanded=\{wtDropdownOpen\}[\s\S]*?<\/button>/)?.[0];
   assert.ok(selector);
   assert.match(selector, /branchSync &&[\s\S]*?branchSync\.ahead[\s\S]*?branchSync\.behind/);
-  assert.match(sidebar, /const refreshAfterGitChange = useCallback\(\(\) => \{\s*refreshExplorer\(\);\s*setWtRefreshKey/);
+  assert.match(sidebar, /\[selectedCwd, wtRefreshKey, refreshKey, gitWorkspaceRefreshKey\]/);
   assert.match(sidebar, /subscribeToWindowForeground\(\(\) => \{ void loadWorktrees\(true\); \}\)/);
 });
 

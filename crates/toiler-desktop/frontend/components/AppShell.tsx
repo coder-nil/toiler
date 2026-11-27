@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar } from "./SessionSidebar";
 import { ChatWindow } from "./ChatWindow";
+import { GitWorkspace } from "./GitWorkspace";
 import { TabBar, type Tab } from "./TabBar";
 import { openFileTab, markFileTabRevealHandled, renameFileTab, saveFileViewerState, saveFileDirtyState } from "./file-tab-state";
 import { ProjectTrustDialog } from "./ProjectTrustDialog";
@@ -172,6 +173,10 @@ export function AppShell() {
   const [projectTrustError, setProjectTrustError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
+  const [gitWorkspace, setGitWorkspace] = useState<{ cwd: string; contextCwd: string } | null>(null);
+  const [gitWorkspaceRefreshKey, setGitWorkspaceRefreshKey] = useState(0);
+  const gitEntryRef = useRef<HTMLElement | null>(null);
+  const filePanelVisible = rightPanelOpen && !gitWorkspace;
   const chatScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const cancelChatScrollPreservationRef = useRef<(() => void) | null>(null);
   const [terminalCwds, setTerminalCwds] = useState<string[]>([]);
@@ -642,6 +647,7 @@ export function AppShell() {
     const isInitialProjectAdoption = activeProjectKeyRef.current === null;
     const currentFreshCwd = newSessionCwd ?? activeCwd;
     setActiveCwd(cwd);
+    setGitWorkspace((target) => target?.contextCwd === cwd ? target : null);
     // Skip if cwd is null (initial mount).
     if (!cwd) return;
     const newProject = projectKey ?? projectRoot ?? cwd;
@@ -707,6 +713,7 @@ export function AppShell() {
   }, [activeCwd, invalidateWorkspaceRestore, newSessionCwd, router, selectedSession, restoreWorkspaceContext]);
 
   const handleSelectSession = useCallback((session: SessionInfo, isRestore = false) => {
+    if (!isRestore) setGitWorkspace(null);
     invalidateWorkspaceRestore();
     activeNewSessionDraftKeyRef.current = null;
     // Re-clicking the already-open session must not remount the chat and
@@ -742,6 +749,7 @@ export function AppShell() {
   }, [invalidateWorkspaceRestore, router, isMobile, selectedSession]);
 
   const handleNewSession = useCallback((sessionId: string, cwd: string) => {
+    setGitWorkspace(null);
     invalidateWorkspaceRestore();
     const draftKey = `new:${sessionId}:${cwd}`;
     activeNewSessionDraftKeyRef.current = draftKey;
@@ -921,6 +929,31 @@ export function AppShell() {
   const handleExplorerRefresh = useCallback(() => {
     setExplorerRefreshKey((k) => k + 1);
   }, []);
+
+  const refreshAfterGitChange = useCallback(() => {
+    handleExplorerRefresh();
+    setGitWorkspaceRefreshKey((key) => key + 1);
+  }, [handleExplorerRefresh]);
+
+  const closeGitWorkspace = useCallback(() => {
+    setGitWorkspace(null);
+    requestAnimationFrame(() => {
+      if (!isMobile && gitEntryRef.current?.isConnected) gitEntryRef.current.focus({ preventScroll: true });
+      else topBarRef.current?.focus({ preventScroll: true });
+    });
+  }, [isMobile]);
+
+  const toggleGitWorkspace = useCallback((cwd: string, contextCwd: string) => {
+    if (gitWorkspace?.cwd === cwd) {
+      closeGitWorkspace();
+      return;
+    }
+    gitEntryRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setActiveTopPanel(null);
+    setMobileToolbarMoreOpen(false);
+    setGitWorkspace({ cwd, contextCwd });
+    if (isMobile) setSidebarOpen(false);
+  }, [closeGitWorkspace, gitWorkspace?.cwd, isMobile]);
 
   const handleSessionForked = useCallback((newSessionId: string) => {
     invalidateWorkspaceRestore();
@@ -1213,6 +1246,9 @@ export function AppShell() {
         canRenamePath={canRenamePath}
         explorerRefreshKey={explorerRefreshKey}
         onExplorerRefresh={handleExplorerRefresh}
+        gitWorkspaceCwd={gitWorkspace?.cwd ?? null}
+        gitWorkspaceRefreshKey={gitWorkspaceRefreshKey}
+        onToggleGitWorkspace={toggleGitWorkspace}
         onAtMention={handleAtMention}
         onAtMentions={handleAtMentions}
         onBackgroundTaskDone={handleBackgroundTaskDone}
@@ -1873,11 +1909,15 @@ export function AppShell() {
         />
       )}
 
-      {/* Center: chat */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+      {/* 保持聊天树挂载并保留尺寸，让会话、草稿、滚动和正在运行的会话不受切换影响。 */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0, position: "relative" }}>
+        <div inert={Boolean(gitWorkspace)} aria-hidden={gitWorkspace ? true : undefined}
+          style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden",
+            ...(gitWorkspace ? { position: "absolute", inset: 0, visibility: "hidden", pointerEvents: "none" } : {}) }}>
         {/* Top bar keeps the sidebar opener available after the sidebar is hidden. */}
         <div
           ref={topBarRef}
+          tabIndex={-1}
           className="app-chrome app-topbar"
           data-sidebar-open={sidebarOpen ? "true" : "false"}
           // drag-region="deep"：Tauri 的裸属性只在直接点中这个元素时生效，
@@ -2308,14 +2348,18 @@ export function AppShell() {
             }}
           />
         ))}
+        </div>
+        {gitWorkspace && <GitWorkspace key={gitWorkspace.cwd} cwd={gitWorkspace.cwd}
+          sessionId={selectedSession?.id ?? null} sidebarOpen={sidebarOpen} refreshKey={gitWorkspaceRefreshKey}
+          onToggleSidebar={handleSidebarToggle} onClose={closeGitWorkspace} onChanged={refreshAfterGitChange} />}
       </div>
 
       <div
         aria-hidden="true"
-        className={`right-panel-overlay-backdrop${rightPanelOpen ? " is-open" : ""}`}
+        className={`right-panel-overlay-backdrop${filePanelVisible ? " is-open" : ""}`}
         onClick={() => setRightPanelOpen(false)}
       />
-      {rightPanelOpen && (
+      {filePanelVisible && (
         <div
           {...rightPanelResizer.separatorProps}
           aria-controls="file-panel"
@@ -2332,7 +2376,7 @@ export function AppShell() {
         className={`right-panel-container${rightPanelOpen ? " right-panel-open" : " right-panel-closed"}${rightPanelResizer.isResizing ? " right-panel-resizing" : ""}`}
         style={{
           "--right-panel-width": `${rightPanelResizer.width}px`,
-          display: "flex",
+          display: gitWorkspace ? "none" : "flex",
           flexDirection: "column",
           borderLeft: "1px solid var(--border)",
           background: "var(--file-panel-surface, var(--bg))",
@@ -2395,7 +2439,7 @@ export function AppShell() {
               initialState={activeFileTab.viewerState}
               initialLine={activeFileTab.revealLine}
               onRevealHandled={() => setFileTabs((prev) => markFileTabRevealHandled(prev, activeFileTab.id))}
-              watchEnabled={rightPanelOpen}
+              watchEnabled={filePanelVisible}
               onStateChange={(viewerState) => handleFileViewerStateChange(
                 activeFileTab.id,
                 activeFileTab.viewerRevision ?? 0,

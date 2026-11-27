@@ -218,7 +218,7 @@ test("三列标题区保留背景回退、窗口拖动与按钮交互入口", ()
   assert.match(shell, /className="app-chrome app-file-panel-titlebar" data-tauri-drag-region="deep"/);
 });
 
-test("嵌入侧栏的 Git 面板不继承原生标题栏材质或拖动区", async () => {
+test("Git 操作区不继承原生标题栏材质或拖动区", async () => {
   assert.doesNotMatch(css, /--git-panel-surface/);
   assert.match(css, /\.git-panel\s*\{[^}]*background: var\(--sidebar-bg, var\(--bg\)\)/);
   const panel = await read("../components/GitPanel.tsx");

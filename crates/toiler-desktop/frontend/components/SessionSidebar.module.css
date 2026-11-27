@@ -150,11 +150,6 @@
   max-height: 40%;
 }
 
-.explorer[data-git-open="true"] {
-  /* 文件少时浏览器会收缩；Git 打开后预留独立滚动区，不挤占会话列表。 */
-  height: 40%;
-}
-
 .explorerScroll,
 .sessionList {
   min-height: 0;
@@ -218,22 +213,6 @@
   transform: rotate(90deg);
 }
 
-.gitHeading {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.gitHeading svg {
-  flex: none;
-  color: var(--text-muted);
-}
-
-.gitRefreshSlot {
-  display: flex;
-  flex: none;
-}
-
 .branchSync {
   display: inline-flex;
   flex: none;
@@ -257,6 +236,202 @@
 
 .branchSync [data-direction="behind"][data-active="true"] {
   color: var(--star);
+}
+
+.animatedDropdown {
+  transform-origin: top center;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.animatedDropdown[data-visible="false"] {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.98);
+}
+
+.animatedDropdown[inert] { pointer-events: none; }
+
+.worktreeDropdown,
+.branchActionMenu {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: var(--shadow-overlay);
+}
+
+.worktreeDropdown {
+  position: absolute;
+  inset: calc(100% + 6px) 0 auto;
+  z-index: 100;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.worktreeFilter {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 7px 7px 0;
+  padding-inline: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+}
+
+.worktreeFilter:focus-within { border-color: var(--accent); }
+.worktreeFilter svg { flex: none; }
+
+.worktreeFilter input {
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  outline: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.worktreeFilter input::placeholder { color: var(--text-muted); }
+
+.worktreeList {
+  max-height: min(40vh, 300px);
+  padding: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.worktreeSectionHeading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 27px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: start;
+}
+
+.worktreeSectionHeading:not(button) { padding-inline-end: 26px; }
+button.worktreeSectionHeading { cursor: pointer; }
+button.worktreeSectionHeading:hover { background: var(--bg-hover); }
+.worktreeRow + .worktreeSectionHeading { margin-top: 5px; }
+.worktreeSectionHeading + .worktreeSectionHeading { margin-top: 3px; }
+
+.worktreeCount {
+  flex: none;
+  margin-inline-start: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.worktreeSectionCaret { flex: none; }
+.worktreeSectionHeading[aria-expanded="true"] .worktreeSectionCaret { transform: rotate(90deg); }
+
+.worktreeRow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: 6px;
+}
+
+.worktreeRow:hover,
+.worktreeRow:has(.worktreeRef[aria-expanded="true"]) { background: var(--bg-hover-soft); }
+
+.worktreeRow:has(.worktreeRef[aria-current="true"]) {
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg));
+}
+
+.worktreeRow:hover:has(.worktreeRef[aria-current="true"]),
+.worktreeRow:has(.worktreeRef[aria-current="true"][aria-expanded="true"]) {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+}
+
+.worktreeRef {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 8px;
+  border-radius: inherit;
+  color: var(--text);
+  cursor: pointer;
+  font: 11px var(--font-mono);
+  text-align: start;
+}
+
+.worktreeRef[aria-current="true"] { font-weight: 600; }
+.worktreeRef:disabled,
+.branchActionItem:disabled { cursor: not-allowed; opacity: 0.55; }
+
+.worktreeRemove {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 26px;
+  margin-inline-end: 2px;
+  border-radius: 5px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.worktreeEmpty,
+.worktreeError {
+  padding: 7px 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.worktreeError {
+  margin: 0 6px 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg));
+  color: var(--danger);
+}
+
+.branchActionMenu {
+  position: fixed;
+  z-index: 1200;
+  min-width: 148px;
+  padding: 4px;
+  border-radius: var(--radius-md);
+}
+
+.branchActionItem {
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: start;
+}
+
+.branchActionItem:hover:not(:disabled) { background: var(--bg-hover-soft); }
+.branchActionItem[data-danger="true"] { color: var(--danger); }
+.branchActionItem[data-danger="true"]:hover:not(:disabled),
+.worktreeRemove:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg));
+  color: var(--danger);
+}
+
+:is(.worktreeTrigger, button.worktreeSectionHeading, .worktreeRef, .worktreeRemove, .branchActionItem):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animatedDropdown { transition: none; }
+  .animatedDropdown[data-visible="false"] { transform: none; }
 }
 
 .sessions {

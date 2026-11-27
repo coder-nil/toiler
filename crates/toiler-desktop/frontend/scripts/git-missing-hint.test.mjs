@@ -11,7 +11,7 @@ const read = (relative) => readFile(join(root, relative), "utf8");
 /** 缺少 Git 时，文件浏览器仍要保留安装提示的入口。 */
 test("没装 Git 时文件浏览器仍有 Git 入口", async () => {
   const sidebar = await read("components/SessionSidebar.tsx");
-  assert.match(sidebar, /const canOpenProjectGit = explorerGit\?\.isGit === true \|\| explorerGit\?\.gitAvailable === false/);
+  assert.match(sidebar, /const showExplorerGitButton = gitPanelOpen \|\| explorerGit\?\.isGit === true \|\| explorerGit\?\.gitAvailable === false/);
   assert.match(sidebar, /showExplorerGitButton && \(\s*<ToolbarIconButton\s+onClick=\{toggleGitPanel\}/);
 });
 

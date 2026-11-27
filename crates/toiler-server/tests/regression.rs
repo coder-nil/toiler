@@ -3880,6 +3880,347 @@ async fn real_project_root_is_detected_for_a_git_checkout() {
     let _: BTreeMap<String, Value> = BTreeMap::new();
 }
 
+fn history_fixture_git(sandbox: &Path, repo: &Path, args: &[&str]) -> String {
+    let result = std::process::Command::new("git")
+        .current_dir(repo)
+        .args(["-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false"])
+        .args(args)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", sandbox.join("gitconfig"))
+        .env("GIT_AUTHOR_NAME", "测试作者")
+        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+        .env("GIT_COMMITTER_NAME", "测试作者")
+        .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    String::from_utf8(result.stdout)
+        .unwrap()
+        .trim_end()
+        .to_string()
+}
+
+/// 三栏历史面板依赖全名引用、第一父提交文件列表和完整的分支归属。
+#[tokio::test]
+async fn git_history_lists_refs_and_reads_root_rename_and_merge_details() {
+    let sandbox = fixture_root("git-history");
+    let repo = sandbox.join("repo");
+    let store = sandbox.join("store");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::create_dir(&store).unwrap();
+    let git = |args: &[&str]| history_fixture_git(&sandbox, &repo, args);
+    git(&["init", "-q", "-b", "main"]);
+    let router = app_with_agent_dir(&store, &repo, Some(&store));
+    let cwd = url_encode(&repo.to_string_lossy());
+    assert_eq!(
+        get(router.clone(), &format!("/api/git/history?cwd={cwd}"))
+            .await
+            .json(),
+        json!({"start":null,"commits":[],"nextOffset":null})
+    );
+
+    std::fs::write(repo.join("原 文件.txt"), "内容\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "根提交"]);
+    let root = git(&["rev-parse", "HEAD"]);
+    git(&["tag", "-am", "发布标签", "v1"]);
+    git(&["checkout", "-qb", "feature/example"]);
+    std::fs::write(repo.join("feature.txt"), "新功能\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "功能分支"]);
+    let side = git(&["rev-parse", "HEAD"]);
+    git(&["update-ref", "refs/remotes/origin/example", &side]);
+    git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/example",
+    ]);
+    git(&["checkout", "-q", "main"]);
+    git(&["mv", "原 文件.txt", "新 文件.txt"]);
+    git(&["commit", "-qm", "重命名"]);
+    let renamed = git(&["rev-parse", "HEAD"]);
+    git(&[
+        "merge",
+        "--no-ff",
+        "-qm",
+        "合并功能\n\n提交正文",
+        "feature/example",
+    ]);
+    let merge = git(&["rev-parse", "HEAD"]);
+
+    let refs = get(router.clone(), &format!("/api/git/refs?cwd={cwd}"))
+        .await
+        .json();
+    assert_eq!(refs["headBranch"], "refs/heads/main");
+    assert_eq!(
+        refs["refs"],
+        json!([
+            {"name":"refs/heads/feature/example","commit":side},
+            {"name":"refs/heads/main","commit":merge},
+            {"name":"refs/remotes/origin/example","commit":side},
+            {"name":"refs/tags/v1","commit":root}
+        ])
+    );
+    for (reference, expected) in [
+        ("HEAD", &merge),
+        ("refs/remotes/origin/example", &side),
+        ("refs/tags/v1", &root),
+    ] {
+        let uri = format!("/api/git/history?cwd={cwd}&ref={}", url_encode(reference));
+        let history = get(router.clone(), &uri).await.json();
+        assert_eq!(
+            history["commits"][0]["hash"],
+            expected.as_str(),
+            "{history}"
+        );
+        assert_eq!(history["commits"][0]["author"], "测试作者");
+        assert!(history["commits"][0]["authoredAt"]
+            .as_str()
+            .unwrap()
+            .contains('T'));
+        assert_eq!(
+            history["commits"].as_array().unwrap().last().unwrap()["hash"],
+            root
+        );
+    }
+    for (hash, files, containing_branches) in [
+        (
+            &root,
+            json!([{"status":"A","path":"原 文件.txt","oldPath":null}]),
+            json!([
+                {"name":"refs/heads/feature/example","isTip":false},
+                {"name":"refs/heads/main","isTip":false},
+                {"name":"refs/remotes/origin/example","isTip":false}
+            ]),
+        ),
+        (
+            &renamed,
+            json!([{"status":"R100","path":"新 文件.txt","oldPath":"原 文件.txt"}]),
+            json!([{"name":"refs/heads/main","isTip":false}]),
+        ),
+        (
+            &side,
+            json!([{"status":"A","path":"feature.txt","oldPath":null}]),
+            json!([
+                {"name":"refs/heads/feature/example","isTip":true},
+                {"name":"refs/heads/main","isTip":false},
+                {"name":"refs/remotes/origin/example","isTip":true}
+            ]),
+        ),
+        (
+            &merge,
+            json!([{"status":"A","path":"feature.txt","oldPath":null}]),
+            json!([{"name":"refs/heads/main","isTip":true}]),
+        ),
+    ] {
+        let detail = get(
+            router.clone(),
+            &format!("/api/git/commit?cwd={cwd}&hash={hash}"),
+        )
+        .await
+        .json();
+        assert_eq!(detail["hash"], hash.as_str());
+        assert_eq!(detail["files"], files, "{detail}");
+        assert_eq!(
+            detail["containingBranches"], containing_branches,
+            "{detail}"
+        );
+        assert_eq!(detail["authorEmail"], "test@example.invalid");
+        if hash == &merge {
+            assert_eq!(detail["parents"], json!([renamed, side]));
+            assert_eq!(detail["message"], "合并功能\n\n提交正文");
+        }
+    }
+    let merge_file = get(
+        router.clone(),
+        &format!("/api/git/workspace-diff?cwd={cwd}&scope=commit&path=feature.txt&hash={merge}"),
+    )
+    .await
+    .json();
+    // feature.txt 在第二父提交已存在；只有与第一父提交比较才会显示新增。
+    assert!(
+        merge_file["patch"]
+            .as_str()
+            .is_some_and(|patch| patch.contains("+新功能")),
+        "{merge_file}"
+    );
+    let rename = get(
+        router.clone(),
+        &format!(
+            "/api/git/workspace-diff?cwd={cwd}&scope=commit&path={}&hash={renamed}&oldPath={}",
+            url_encode("新 文件.txt"),
+            url_encode("原 文件.txt")
+        ),
+    )
+    .await
+    .json();
+    assert!(
+        rename["patch"]
+            .as_str()
+            .is_some_and(|patch| patch.contains("similarity index 100%")),
+        "{rename}"
+    );
+
+    let tree = git(&["rev-parse", "HEAD^{tree}"]);
+    let tagged_only = git(&["commit-tree", &tree, "-m", "仅有标签"]);
+    git(&["tag", "tagged-only", &tagged_only]);
+    let tagged_detail = get(
+        router.clone(),
+        &format!("/api/git/commit?cwd={cwd}&hash={tagged_only}"),
+    )
+    .await
+    .json();
+    assert_eq!(tagged_detail["containingBranches"], json!([]));
+
+    assert_eq!(
+        get(
+            router.clone(),
+            &format!("/api/git/history?cwd={cwd}&ref=refs%2Fheads%2Fmain%5E")
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        get(router, &format!("/api/git/commit?cwd={cwd}&hash=HEAD"))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(git(&["status", "--porcelain"]), "");
+    assert_eq!(git(&["symbolic-ref", "HEAD"]), "refs/heads/main");
+
+    let sub = repo.join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let restricted = app_with_agent_dir(&store, &sub, Some(&store));
+    let uri = format!("/api/git/refs?cwd={}", url_encode(&sub.to_string_lossy()));
+    assert_eq!(get(restricted, &uri).await.status, StatusCode::FORBIDDEN);
+    std::fs::remove_dir_all(sandbox).unwrap();
+}
+
+/// 共用差异区必须分别比较工作区、暂存区和历史快照，不从磁盘读取已删除的历史文件。
+#[tokio::test]
+async fn git_workspace_diff_keeps_compare_scopes_separate() {
+    let sandbox = fixture_root("git-workspace-diff");
+    let repo = sandbox.join("repo");
+    let store = sandbox.join("store");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::create_dir(&store).unwrap();
+    let git = |args: &[&str]| history_fixture_git(&sandbox, &repo, args);
+    git(&["init", "-q", "-b", "main"]);
+    let router = app_with_agent_dir(&store, &repo, Some(&store));
+    let endpoint = format!(
+        "/api/git/workspace-diff?cwd={}",
+        url_encode(&repo.to_string_lossy())
+    );
+    let name = "中文 [1].txt";
+    let file = repo.join(name);
+    // 与 Git 状态面板发出的 filePath 一致，避免 macOS /var 和 /private/var 的别名差异。
+    let repository_root = PathBuf::from(git(&["rev-parse", "--show-toplevel"]));
+    let absolute = url_encode(&repository_root.join(name).to_string_lossy());
+    let relative = url_encode(name);
+    std::fs::write(&file, "untracked\n").unwrap();
+    let unstaged = format!("{endpoint}&scope=unstaged&path={absolute}");
+    let staged = format!("{endpoint}&scope=staged&path={absolute}");
+    let untracked = get(router.clone(), &unstaged).await.json();
+    assert!(
+        untracked["patch"]
+            .as_str()
+            .is_some_and(|patch| patch.contains("+untracked")),
+        "{untracked}"
+    );
+    git(&["add", "--", name]);
+    let unborn = get(router.clone(), &staged).await.json();
+    assert!(unborn["patch"].as_str().unwrap().contains("+untracked"));
+    git(&["commit", "-qm", "root"]);
+    let root = git(&["rev-parse", "HEAD"]);
+    std::fs::write(&file, "indexed\n").unwrap();
+    git(&["add", "--", name]);
+    std::fs::write(&file, "working tree\n").unwrap();
+    let answer = get(router.clone(), &unstaged).await.json();
+    let patch = answer["patch"].as_str().unwrap();
+    assert!(
+        patch.contains("-indexed") && patch.contains("+working tree"),
+        "{patch}"
+    );
+    let answer = get(router.clone(), &staged).await.json();
+    let patch = answer["patch"].as_str().unwrap();
+    assert!(
+        patch.contains("-untracked")
+            && patch.contains("+indexed")
+            && !patch.contains("working tree"),
+        "{patch}"
+    );
+    git(&["commit", "-qm", "update"]);
+    let update = git(&["rev-parse", "HEAD"]);
+    std::fs::remove_file(&file).unwrap();
+    for (hash, added) in [(&root, "+untracked"), (&update, "+indexed")] {
+        let detail = get(
+            router.clone(),
+            &format!("{endpoint}&scope=commit&path={relative}&hash={hash}"),
+        )
+        .await
+        .json();
+        assert!(
+            detail["patch"].as_str().unwrap().contains(added),
+            "{detail}"
+        );
+        assert_eq!(detail["oversized"], false);
+    }
+    let forbidden = get(
+        router,
+        &format!("{endpoint}&scope=commit&path=..%2Foutside&hash={root}"),
+    )
+    .await;
+    assert_eq!(forbidden.status, StatusCode::BAD_REQUEST);
+    std::fs::remove_dir_all(sandbox).unwrap();
+}
+
+/// 点击加载更早的提交时，即使分支前进，也接着原来的提交图继续分页。
+#[tokio::test]
+async fn git_history_pagination_keeps_the_original_tip() {
+    let sandbox = fixture_root("git-history-page");
+    let repo = sandbox.join("repo");
+    let store = sandbox.join("store");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::create_dir(&store).unwrap();
+    let git = |args: &[&str]| history_fixture_git(&sandbox, &repo, args);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["commit", "--allow-empty", "-qm", "root"]);
+    let root = git(&["rev-parse", "HEAD"]);
+    let tree = git(&["rev-parse", "HEAD^{tree}"]);
+    let mut tip = root.clone();
+    for number in 1..103 {
+        tip = git(&["commit-tree", &tree, "-p", &tip, "-m", &number.to_string()]);
+    }
+    git(&["update-ref", "HEAD", &tip]);
+    let router = app_with_agent_dir(&store, &repo, Some(&store));
+    let uri = format!(
+        "/api/git/history?cwd={}",
+        url_encode(&repo.to_string_lossy())
+    );
+    let first = get(router.clone(), &uri).await.json();
+    assert_eq!(first["start"], tip);
+    assert_eq!(first["nextOffset"], 100);
+    let commits = first["commits"].as_array().unwrap();
+    assert_eq!(commits.len(), 100);
+    git(&["commit", "--allow-empty", "-qm", "added after first page"]);
+    let next = get(router, &format!("{uri}&start={tip}&offset=100"))
+        .await
+        .json();
+    let following = next["commits"].as_array().unwrap();
+    assert_eq!(following.len(), 3);
+    assert_eq!(next["start"], tip);
+    assert_eq!(next["nextOffset"], Value::Null);
+    assert_eq!(following[0]["hash"], commits[99]["parents"][0]);
+    assert_eq!(following[2]["hash"], root);
+    std::fs::remove_dir_all(sandbox).unwrap();
+}
+
 #[tokio::test]
 async fn worktree_selector_reports_sync_counts_for_the_current_checkout() {
     // 分支选择框依赖当前工作树的 branchSync，不能取主工作树的 HEAD。

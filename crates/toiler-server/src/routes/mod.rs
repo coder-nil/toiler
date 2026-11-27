@@ -206,6 +206,13 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/git/status", get(crate::routes::git::status_only))
         .route("/api/git/diff", get(crate::routes::git::diff))
+        .route("/api/git/refs", get(crate::routes::git::history_refs))
+        .route("/api/git/history", get(crate::routes::git::history_page))
+        .route("/api/git/commit", get(crate::routes::git::history_commit))
+        .route(
+            "/api/git/workspace-diff",
+            get(crate::routes::git::workspace_diff),
+        )
         .route(
             "/api/git/commit-message",
             post(crate::routes::git::commit_message),

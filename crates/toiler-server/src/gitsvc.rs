@@ -33,6 +33,8 @@ use serde_json::{json, Value};
 
 use crate::git_credentials::{CredentialStore, GitCredential};
 
+pub(crate) mod history;
+
 /// 单文件参与 diff / 行数统计的上限（pi 的 `1060._4`，256 KiB）。
 pub const MAX_DIFF_FILE_BYTES: u64 = 262_144;
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);

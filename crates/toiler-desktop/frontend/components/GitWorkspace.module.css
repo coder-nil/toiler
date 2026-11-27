@@ -1,0 +1,36 @@
+.workspace { display:flex; flex-direction:column; height:100%; min-width:0; min-height:0; overflow:hidden; background:var(--bg); font-size:13px; }
+.topBar { display:flex; align-items:center; flex:none; gap:8px; padding:env(safe-area-inset-top) 10px 0; border-bottom:1px solid var(--border); background:var(--titlebar-surface, var(--bg-chrome)); }
+.topBar > svg { color:var(--accent); flex:none; }
+.topBar h1, .paneBar h2 { margin:0; flex:none; font-size:13px; font-weight:650; }
+.repository, .fileName { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--text-muted); }
+.repository { margin-right:auto; padding-left:8px; border-left:1px solid var(--border); }
+.topBar .back { display:flex; flex:none; gap:5px; width:auto; padding:0 7px; white-space:nowrap; }
+.body { container:git-workspace / inline-size; flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; }
+.regions { display:grid; flex:1; min-height:0; grid-template-columns:clamp(218px,24%,324px) minmax(0,1fr); grid-template-rows:minmax(0,43fr) minmax(0,57fr); }
+.changes, .diff, .history { min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
+.changes { grid-row:1 / 3; border-right:1px solid var(--border); background:var(--sidebar-bg); }
+.diff { border-bottom:1px solid var(--border); }
+.history > section { flex:1; }
+.paneBar { display:flex; flex:none; align-items:center; min-height:36px; gap:8px; padding:0 10px 0 12px; border-bottom:1px solid var(--border); background:var(--bg-chrome); }
+.paneBar > svg { flex:none; color:var(--text-muted); }
+.changes .paneBar h2 { margin-right:auto; }
+.iconButton { display:grid; width:26px; height:26px; place-items:center; border-radius:var(--radius-sm); color:var(--text-muted); cursor:pointer; }
+.iconButton:hover:not(:disabled), .retry:hover { background:var(--bg-hover); color:var(--text); }
+.iconButton:disabled { opacity:.45; cursor:default; }
+.scope { flex:none; margin-left:auto; padding:1px 5px; border-radius:var(--radius-xs); background:var(--bg-panel); color:var(--text-muted); font-size:11px; }
+.diffScroll { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; }
+.diffScroll:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.patchMeta { margin:0; padding:10px 12px; white-space:pre; font:12px/1.5 var(--font-mono); user-select:text; }
+.hint { margin:0; padding:12px; color:var(--text-muted); overflow-wrap:anywhere; }
+.retry { margin-top:6px; padding:3px 8px; border:1px solid var(--border); border-radius:var(--radius-sm); cursor:pointer; }
+.navigation { display:none; }
+@container git-workspace (width < 630px) {
+  .navigation { display:grid; flex:none; grid-template-columns:repeat(3, minmax(0,1fr)); background:var(--bg-chrome); border-bottom:1px solid var(--border); }
+  .navigation button { min-height:36px; font-size:12px; color:var(--text-muted); cursor:pointer; }
+  .navigation button[aria-pressed="true"] { box-shadow:inset 0 -2px var(--accent); color:var(--text); }
+  .regions { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr); }
+  .changes { grid-row:auto; border-right:0; }
+  .body:not([data-pane="changes"]) .changes,
+  .body:not([data-pane="diff"]) .diff,
+  .body:not([data-pane="history"]) .history { display:none; }
+}
