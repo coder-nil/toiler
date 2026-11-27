@@ -30,6 +30,11 @@ test("Git 工作区隐藏但不卸载聊天，保留返回入口并刷新侧栏"
   assert.match(shell, /const refreshAfterGitChange = useCallback\(\(\) => \{\s*handleExplorerRefresh\(\);\s*setGitWorkspaceRefreshKey/);
 });
 
+test("进入 Git 工作区自动收起侧栏，返回聊天时重新展开", () => {
+  assert.match(shell, /const toggleGitWorkspace = useCallback[\s\S]*?setGitWorkspace\(\{ cwd, contextCwd \}\);\s*setSidebarOpen\(false\);/);
+  assert.match(shell, /const closeGitWorkspace = useCallback\(\(\) => \{\s*setGitWorkspace\(null\);\s*setSidebarOpen\(true\);/);
+});
+
 test("当前更改与历史文件都送到共用差异区，保留各自的比较基准", () => {
   assert.match(panel, /onSelectFile\(\{ scope: "unstaged", path: file\.filePath \}\)/);
   assert.match(panel, /onSelectFile\(\{ scope: "staged", path: file\.filePath \}\)/);

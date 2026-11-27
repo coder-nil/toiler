@@ -35,6 +35,32 @@ export interface GitHistoryCommit extends GitHistorySummary {
   containingBranches: GitHistoryBranch[];
 }
 
+export interface GitHistoryCriteria {
+  commitId: string;
+  subject: string;
+  author: string;
+  fromDate: string;
+  toDate: string;
+}
+
+export function historyFilterParams(criteria: GitHistoryCriteria): Record<string, string> {
+  const { commitId, subject, author, fromDate, toDate } = criteria;
+  const params: Record<string, string> = {};
+  for (const [key, value] of Object.entries({ commitId: commitId.toLowerCase(), subject, author })) {
+    if (value.trim()) params[key] = value.trim();
+  }
+  if (fromDate) params.from = String(localDayBoundary(fromDate));
+  if (toDate) params.before = String(localDayBoundary(toDate, 1));
+  return params;
+}
+
+function localDayBoundary(value: string, days = 0): number {
+  const date = new Date(`${value}T00:00:00`);
+  // 下一天的本地零点包含完整的结束日，也适用于夏令时切换日。
+  date.setDate(date.getDate() + days);
+  return date.getTime() / 1000;
+}
+
 export function shortRef(name: string): string {
   return name.replace(/^refs\/(heads|remotes|tags)\//, "");
 }

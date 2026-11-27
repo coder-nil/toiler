@@ -1,15 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ChevronRight, FileText, GitBranch, GitCommitHorizontal, GitMerge, History, RefreshCw, Search, Tag } from "lucide-react";
 import type { GitDiffSelection } from "@/lib/git-workspace";
 import { useI18n } from "@/hooks/useI18n";
 import { readApiJson } from "@/lib/api-json";
-import { layoutGitHistory, shortRef, type GitHistoryBranch, type GitHistoryCommit, type GitHistoryPage, type GitHistoryRef, type GitHistoryRefs } from "@/lib/git-history";
+import { historyFilterParams, layoutGitHistory, shortRef, type GitHistoryCriteria, type GitHistoryBranch, type GitHistoryCommit, type GitHistoryPage, type GitHistoryRef, type GitHistoryRefs } from "@/lib/git-history";
+import { CommitActionMenu, CommitResetDialog, type CommitActionAnchor, type CommitActionTarget, type GitResetMode } from "./GitHistoryActions";
 import styles from "./GitHistoryPanel.module.css";
 
 type Pane = "refs" | "commits" | "details";
 const PANES = ["refs", "commits", "details"] as const;
+const EMPTY_CRITERIA: GitHistoryCriteria = { commitId: "", subject: "", author: "", fromDate: "", toDate: "" };
 const REF_GROUPS = [
   ["refs/heads/", "sidebar.localBranches", GitBranch],
   ["refs/remotes/", "sidebar.remoteBranches", GitBranch],
@@ -54,17 +56,83 @@ function LoadState({ error, retry }: { error?: string; retry: () => void }) {
   </div>;
 }
 
-export function GitHistoryPanel({ cwd, refreshKey, onSelectFile, selectedFile }: { cwd: string; refreshKey: number; onSelectFile: (file: GitDiffSelection) => void; selectedFile: GitDiffSelection | null }) {
+export function GitHistoryPanel({ cwd, refreshKey, onSelectFile, selectedFile, onChanged }: { cwd: string; refreshKey: number; onSelectFile: (file: GitDiffSelection) => void; selectedFile: GitDiffSelection | null; onChanged: () => void }) {
   const { t } = useI18n();
   const panel = useRef<HTMLElement>(null);
+  const searchButton = useRef<HTMLButtonElement>(null);
+  const formId = useId();
+  const [showFilters, setShowFilters] = useState(false);
+  const [draft, setDraft] = useState<GitHistoryCriteria>(EMPTY_CRITERIA);
+  const [criteria, setCriteria] = useState<GitHistoryCriteria>(EMPTY_CRITERIA);
+  const params = useMemo(() => historyFilterParams(criteria), [criteria]);
+  const searchKey = JSON.stringify(params);
+  const filtered = searchKey !== "{}";
   const [pane, setPane] = useState<Pane>("commits");
   const [reference, setReference] = useState("HEAD");
   const [filter, setFilter] = useState("");
   const [reload, setReload] = useState(0);
+  const [menu, setMenu] = useState<CommitActionAnchor | null>(null);
+  const [resetTarget, setResetTarget] = useState<CommitActionTarget | null>(null);
+  const actionTrigger = useRef<HTMLButtonElement | null>(null);
+  const actionPending = useRef(false);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const version = `${refreshKey}:${reload}`;
   const resource = useResource<GitHistoryRefs>(url("refs", cwd, { reload: version }));
   const { data } = resource;
   const selectedRef = data?.refs.some((item) => item.name === reference) ? reference : "HEAD";
+  const checkedOut = data?.refs.find((item) => item.name === data.headBranch);
+  const canWrite = Boolean(checkedOut?.commit);
+
+  const restoreActionFocus = useCallback(() => {
+    const trigger = actionTrigger.current;
+    (trigger?.isConnected ? trigger : searchButton.current)?.focus({ preventScroll: true });
+  }, []);
+
+  const closeMenu = useCallback((restoreFocus: boolean) => {
+    setMenu(null);
+    if (restoreFocus) restoreActionFocus();
+  }, [restoreActionFocus]);
+
+  function openMenu(anchor: CommitActionAnchor) {
+    if (actionPending.current) return;
+    actionTrigger.current = anchor.trigger;
+    setActionError(null);
+    setMenu(anchor);
+  }
+
+  function menuTarget(): CommitActionTarget | null {
+    if (!menu || !checkedOut?.commit) return null;
+    return { commit: menu.commit, branch: checkedOut.name, head: checkedOut.commit };
+  }
+
+  async function runAction(target: CommitActionTarget, mode?: GitResetMode) {
+    if (actionPending.current) return;
+    actionPending.current = true;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      const response = await fetch("/api/git/history-action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd, hash: target.commit.hash, expectedBranch: target.branch, expectedHead: target.head,
+          ...(mode ? { action: "reset", mode } : { action: "cherry_pick" }) }),
+      });
+      await readApiJson<{ ok: true }>(response);
+      setResetTarget(null);
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      actionPending.current = false;
+      setActionBusy(false);
+      // 优选失败也可能留下待处理冲突，必须同步 Git 操作区和工作树状态。
+      onChanged();
+      requestAnimationFrame(() => {
+        if (!panel.current?.isConnected || panel.current.ownerDocument.querySelector("dialog[open]")) return;
+        restoreActionFocus();
+      });
+    }
+  }
 
   function showPane(next: Pane) {
     setPane(next);
@@ -79,14 +147,56 @@ export function GitHistoryPanel({ cwd, refreshKey, onSelectFile, selectedFile }:
     showPane("commits");
   }
 
+  function updateFilter(field: keyof GitHistoryCriteria, value: string) {
+    setDraft((previous) => ({ ...previous, [field]: value }));
+  }
+
+  function applySearch(next: GitHistoryCriteria) {
+    setCriteria(next);
+    setShowFilters(false);
+    showPane("commits");
+    searchButton.current?.focus({ preventScroll: true });
+  }
+
   return (
     <section ref={panel} className={styles.panel} aria-label={t("gitHistory.title")} data-pane={pane}>
       <header className={styles.toolbar}>
         <History size={15} aria-hidden="true" />
         <h2>{t("gitHistory.title")}</h2>
+        <button ref={searchButton} type="button" className={styles.queryButton} data-active={filtered}
+          aria-expanded={showFilters} aria-controls={formId} onClick={() => setShowFilters((value) => !value)}>
+          <Search size={14} aria-hidden="true" />{t(filtered ? "gitHistory.filtersActive" : "gitHistory.search")}
+        </button>
         <button type="button" className={styles.iconButton} onClick={() => setReload((value) => value + 1)}
           aria-label={t("gitHistory.refresh")} title={t("gitHistory.refresh")}><RefreshCw size={15} aria-hidden="true" /></button>
       </header>
+      {!resetTarget && actionError && <p className={styles.actionError} role="alert">{actionError}</p>}
+      {!resetTarget && actionBusy && <p className={styles.actionStatus} role="status">{t("gitHistory.cherryPickBusy")}</p>}
+      <form id={formId} hidden={!showFilters} className={styles.queryForm} aria-label={t("gitHistory.search")}
+        onSubmit={(event) => { event.preventDefault(); applySearch(draft); }}>
+        <label>{t("gitHistory.shortHash")}
+          <input type="text" autoComplete="off" spellCheck={false} maxLength={8} pattern="[0-9A-Fa-f]{8}" value={draft.commitId}
+            onChange={(event) => updateFilter("commitId", event.target.value)} />
+        </label>
+        <label>{t("gitHistory.subject")}
+          <input type="search" value={draft.subject} onChange={(event) => updateFilter("subject", event.target.value)} />
+        </label>
+        <label>{t("gitHistory.author")}
+          <input type="search" value={draft.author} onChange={(event) => updateFilter("author", event.target.value)} />
+        </label>
+        <label>{t("gitHistory.fromDate")}
+          <input type="date" value={draft.fromDate} max={draft.toDate || undefined} onChange={(event) => updateFilter("fromDate", event.target.value)} />
+        </label>
+        <label>{t("gitHistory.toDate")}
+          <input type="date" value={draft.toDate} min={draft.fromDate || undefined} onChange={(event) => updateFilter("toDate", event.target.value)} />
+        </label>
+        <div className={styles.queryActions}>
+          <button type="button" className={styles.secondaryButton} onClick={() => { setDraft(EMPTY_CRITERIA); applySearch(EMPTY_CRITERIA); }}>
+            {t("gitHistory.clearSearch")}
+          </button>
+          <button type="submit" className={`${styles.secondaryButton} ${styles.querySubmit}`}>{t("gitHistory.search")}</button>
+        </div>
+      </form>
       <nav className={styles.navigation} aria-label={t("gitHistory.title")}>
         {PANES.map((name) => <button type="button" key={name} data-navigation={name} aria-pressed={name === pane} onClick={() => showPane(name)}>
           {t(`gitHistory.${name}`)}
@@ -126,15 +236,21 @@ export function GitHistoryPanel({ cwd, refreshKey, onSelectFile, selectedFile }:
               })}
             </div>
           </section>
-          <CommitHistory key={`${version}:${selectedRef}`} cwd={cwd} reference={selectedRef} refs={data.refs} onOpenDetails={() => showPane("details")} onSelectFile={onSelectFile} selectedFile={selectedFile} />
+          <CommitHistory key={`${version}:${selectedRef}:${searchKey}`} cwd={cwd} reference={selectedRef} params={params} filtered={filtered} refs={data.refs} onOpenDetails={() => showPane("details")} onSelectFile={onSelectFile} selectedFile={selectedFile} onCommitMenu={openMenu} />
         </div>}
+      {menu && <CommitActionMenu anchor={menu} canWrite={canWrite} onClose={closeMenu}
+        onCherryPick={() => { const target = menuTarget(); closeMenu(true); if (target) void runAction(target); }}
+        onReset={() => { const target = menuTarget(); closeMenu(false); if (target) setResetTarget(target); }} />}
+      {resetTarget && <CommitResetDialog target={resetTarget} busy={actionBusy} error={actionError}
+        onCancel={() => { setResetTarget(null); setActionError(null); requestAnimationFrame(restoreActionFocus); }}
+        onConfirm={(mode) => void runAction(resetTarget, mode)} />}
     </section>
   );
 }
 
-function CommitHistory({ cwd, reference, refs, onOpenDetails, onSelectFile, selectedFile }: { cwd: string; reference: string; refs: GitHistoryRef[]; onOpenDetails: () => void; onSelectFile: (file: GitDiffSelection) => void; selectedFile: GitDiffSelection | null }) {
+function CommitHistory({ cwd, reference, params, filtered, refs, onOpenDetails, onSelectFile, selectedFile, onCommitMenu }: { cwd: string; reference: string; params: Record<string, string>; filtered: boolean; refs: GitHistoryRef[]; onOpenDetails: () => void; onSelectFile: (file: GitDiffSelection) => void; selectedFile: GitDiffSelection | null; onCommitMenu: (anchor: CommitActionAnchor) => void }) {
   const { locale, t } = useI18n();
-  const initial = useResource<GitHistoryPage>(url("history", cwd, { ref: reference }));
+  const initial = useResource<GitHistoryPage>(url("history", cwd, { ref: reference, ...params }));
   const [pages, setPages] = useState<GitHistoryPage[]>([]);
   const [selection, setSelection] = useState<string | null>(null);
   const [moreBusy, setMoreBusy] = useState(false);
@@ -143,7 +259,8 @@ function CommitHistory({ cwd, reference, refs, onOpenDetails, onSelectFile, sele
   useEffect(() => () => continuation.current?.abort(), []);
 
   const commits = useMemo(() => initial.data ? [initial.data, ...pages].flatMap((page) => page.commits) : [], [initial.data, pages]);
-  const graph = useMemo(() => layoutGitHistory(commits), [commits]);
+  // 筛选会跳过祖先，不能把相邻结果误画成连续的提交图。
+  const graph = useMemo(() => filtered ? null : layoutGitHistory(commits), [filtered, commits]);
   const decorations = useMemo(() => {
     const byCommit = new Map<string, GitHistoryRef[]>();
     for (const item of refs) {
@@ -157,7 +274,7 @@ function CommitHistory({ cwd, reference, refs, onOpenDetails, onSelectFile, sele
   const selectedHash = selection ?? commits[0]?.hash;
   const next = (pages.at(-1) ?? initial.data)?.nextOffset;
   const date = useMemo(() => new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }), [locale]);
-  const grid = { "--graph-width": `${graph.width * 13 + 11}px` } as CSSProperties;
+  const grid = { "--graph-width": `${graph ? graph.width * 13 + 11 : 0}px` } as CSSProperties;
 
   async function loadMore() {
     const start = initial.data?.start;
@@ -167,7 +284,7 @@ function CommitHistory({ cwd, reference, refs, onOpenDetails, onSelectFile, sele
     setMoreBusy(true);
     setMoreError(undefined);
     try {
-      const page = await request<GitHistoryPage>(url("history", cwd, { start, offset: String(next) }), controller.signal);
+      const page = await request<GitHistoryPage>(url("history", cwd, { start, offset: String(next), ...params }), controller.signal);
       if (!controller.signal.aborted) setPages((loaded) => [...loaded, page]);
     } catch (error) {
       if (!controller.signal.aborted) setMoreError(errorMessage(error));
@@ -178,27 +295,39 @@ function CommitHistory({ cwd, reference, refs, onOpenDetails, onSelectFile, sele
   }
 
   return <>
-    <section className={`${styles.column} ${styles.commits}`} aria-label={t("gitHistory.commits")} style={grid}>
+    <section className={`${styles.column} ${styles.commits}`} aria-label={t("gitHistory.commits")} style={grid} data-filtered={filtered}>
       <div className={styles.columnBar}>
         <h3>{t("gitHistory.commits")}</h3>
         <span className={`${styles.scope} ${styles.ellipsis}`} title={reference}>{shortRef(reference)}</span>
       </div>
       <div className={styles.scroll}>
         <div className={`${styles.commitGrid} ${styles.commitHead}`} aria-hidden="true">
-          <span /><span>{t("gitHistory.subject")}</span><span>{t("gitHistory.author")}</span><span>{t("gitHistory.time")}</span>
+          {graph && <span />}<span>{t("gitHistory.hash")}</span><span>{t("gitHistory.subject")}</span><span>{t("gitHistory.author")}</span><span>{t("gitHistory.time")}</span>
         </div>
         {!initial.data && <LoadState error={initial.error} retry={initial.retry} />}
-        {initial.data && commits.length === 0 && <p className={styles.hint}>{t("gitHistory.noCommits")}</p>}
+        {initial.data && commits.length === 0 && <p className={styles.hint} role="status">{t(filtered ? "gitHistory.noSearchResults" : "gitHistory.noCommits")}</p>}
         <ul className={styles.list}>
           {commits.map((commit, index) => {
+            const merge = commit.parents.length > 1;
             const labels = decorations.get(commit.hash);
             const labelTitle = labels?.map((item) => shortRef(item.name)).join(", ");
             return <li key={commit.hash}>
-              <button type="button" className={styles.commitGrid} aria-pressed={selectedHash === commit.hash} onClick={() => {
-                setSelection(commit.hash);
-                onOpenDetails();
-              }}>
-                <CommitGraph row={graph.rows[index]} width={graph.width} merge={commit.parents.length > 1} />
+              <button type="button" className={styles.commitGrid} data-merge={merge || undefined} aria-pressed={selectedHash === commit.hash} aria-haspopup="menu"
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  onCommitMenu({ commit, trigger: event.currentTarget, x: event.clientX, y: event.clientY });
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+                  event.preventDefault();
+                  const { left, bottom } = event.currentTarget.getBoundingClientRect();
+                  onCommitMenu({ commit, trigger: event.currentTarget, x: left, y: bottom });
+                }} onClick={() => {
+                  setSelection(commit.hash);
+                  onOpenDetails();
+                }}>
+                {graph && <CommitGraph row={graph.rows[index]} width={graph.width} merge={merge} />}
+                <code className={styles.commitShortId} title={commit.hash}>{commit.hash.slice(0, 8)}</code>
                 <span className={styles.subject}>
                   <span className={styles.ellipsis} title={`${commit.subject} (${commit.hash.slice(0, 8)})`}>{commit.subject || t("gitHistory.noSubject")}</span>
                   {labels && <span className={styles.decoration} title={labelTitle}>

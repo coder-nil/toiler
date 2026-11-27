@@ -40,6 +40,26 @@
 .iconButton { display: grid; place-items: center; width: 29px; height: 29px; flex: none; border-radius: var(--radius-sm); color: var(--text-muted); }
 .iconButton:hover { background: var(--bg-hover); color: var(--text); }
 .panel :is(button, summary) { cursor: pointer; }
+.queryButton { display: flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: var(--radius-xs); color: var(--text-muted); font-size: 12px; }
+.queryButton:hover { background: var(--bg-hover); }
+.queryButton[aria-expanded="true"], .queryButton[data-active="true"] { background: var(--history-selected); color: var(--text); }
+.queryForm:not([hidden]) { display: grid; }
+.queryForm {
+  flex: 0 1 auto;
+  max-height: 50%;
+  overflow: auto;
+  grid-template-columns: repeat(auto-fit, minmax(min(118px, 100%), 1fr));
+  align-items: end;
+  gap: 7px 9px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--sidebar-bg);
+}
+.queryForm label { display: grid; gap: 3px; min-width: 0; color: var(--text-muted); font-size: 11px; }
+.queryForm input { width: 100%; min-width: 0; min-height: 27px; padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg); color: var(--text); font: inherit; font-size: 12px; }
+.queryActions { display: flex; justify-content: flex-end; gap: 5px; }
+.queryActions button { white-space: nowrap; }
+.queryActions .querySubmit { background: var(--history-selected); color: var(--text); }
 
 .navigation { display: none; }
 .columns {
@@ -78,13 +98,13 @@
 .refGroup summary:hover, .refRow:hover { background: var(--bg-hover); }
 .refRow[aria-pressed="true"] { background: var(--history-selected); }
 
-.commits { overflow: hidden; }
+.commits { --commit-fields: 76px minmax(240px, 1fr) 64px minmax(96px, 18%); overflow: hidden; }
 .commitGrid {
   --history-row: var(--bg);
   display: grid;
   /* 提交图需要保持自己的线槽宽度；窄窗口时由中间列表横向滚动，不能压缩成一团。 */
-  min-width: calc(var(--graph-width) + 452px);
-  grid-template-columns: var(--graph-width) minmax(280px, 1fr) 64px minmax(80px, 18%);
+  min-width: calc(var(--graph-width) + 510px);
+  grid-template-columns: var(--graph-width) var(--commit-fields);
   gap: 6px;
   align-items: center;
   width: 100%;
@@ -93,12 +113,15 @@
   text-align: left;
   background: var(--history-row);
 }
+.commits[data-filtered="true"] .commitGrid { grid-template-columns: var(--commit-fields); }
+button.commitGrid[data-merge="true"] { color: var(--text-muted); }
 button.commitGrid:hover { --history-row: var(--bg-hover); }
 button.commitGrid[aria-pressed="true"] { --history-row: var(--history-selected); }
 .commitHead { position: sticky; top: 0; z-index: 1; min-height: 26px; --history-row: var(--bg-chrome); border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
 .scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: auto; scrollbar-gutter: stable; }
 .list { list-style: none; margin: 0; padding: 0; }
-.scroll > .list { min-width: calc(var(--graph-width) + 452px); }
+.scroll > .list { min-width: calc(var(--graph-width) + 510px); }
+.commitShortId { padding-left: 2px; color: var(--text-muted); font: 11px/1.5 var(--font-mono); }
 .graph { display: block; width: var(--graph-width); min-width: var(--graph-width); height: 30px; }
 .subject { display: flex; align-items: center; min-width: 0; gap: 6px; }
 .decoration { display: flex; align-items: center; flex: 0 0 auto; max-width: 34%; gap: 4px; padding: 0 4px; border-radius: var(--radius-xs); color: var(--text-muted); background: var(--bg-panel); font-size: 10px; }
@@ -107,6 +130,9 @@ button.commitGrid[aria-pressed="true"] { --history-row: var(--history-selected);
 .time { font-variant-numeric: tabular-nums; }
 .pageControls { display: flex; justify-content: center; padding: 12px; border-top: 1px solid var(--border); }
 .hint { margin: 0; padding: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.actionError, .actionStatus { margin: 0; max-height: 35%; overflow: auto; padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.actionError { color: var(--danger); }
+.actionStatus { color: var(--text-muted); }
 .hint p { margin: 4px 0 8px; }
 .secondaryButton { padding: 4px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-panel); color: var(--text); font-size: 12px; }
 .secondaryButton:hover:not(:disabled) { background: var(--bg-hover); }

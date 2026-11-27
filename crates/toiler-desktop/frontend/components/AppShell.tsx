@@ -937,6 +937,7 @@ export function AppShell() {
 
   const closeGitWorkspace = useCallback(() => {
     setGitWorkspace(null);
+    setSidebarOpen(true);
     requestAnimationFrame(() => {
       if (!isMobile && gitEntryRef.current?.isConnected) gitEntryRef.current.focus({ preventScroll: true });
       else topBarRef.current?.focus({ preventScroll: true });
@@ -952,8 +953,8 @@ export function AppShell() {
     setActiveTopPanel(null);
     setMobileToolbarMoreOpen(false);
     setGitWorkspace({ cwd, contextCwd });
-    if (isMobile) setSidebarOpen(false);
-  }, [closeGitWorkspace, gitWorkspace?.cwd, isMobile]);
+    setSidebarOpen(false);
+  }, [closeGitWorkspace, gitWorkspace?.cwd]);
 
   const handleSessionForked = useCallback((newSessionId: string) => {
     invalidateWorkspaceRestore();

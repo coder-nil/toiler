@@ -1,15 +1,17 @@
 //! 工作树历史面板只读本地引用和提交对象，不刷新远端或读取工作区文件。
 
 use super::{
-    err, is_binary, parse_porcelain, run_git_inner, synthesize_patch, GitError,
-    MAX_DIFF_FILE_BYTES, STATUS_TIMEOUT,
+    err, is_binary, operation_in_progress, parse_porcelain, read_git_stdout, repo_lock,
+    run_git_inner, synthesize_patch, GitError, ACTION_TIMEOUT, MAX_DIFF_FILE_BYTES, STATUS_TIMEOUT,
 };
 use serde::Serialize;
+use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 
 const REF_PREFIXES: [&str; 3] = ["refs/heads/", "refs/remotes/", "refs/tags/"];
 pub(crate) const PAGE_SIZE: usize = 100;
 const SUMMARY_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%aI%x00%s";
+const SEARCH_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%aI%x00%s%x00%at";
 const DETAIL_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%aI%x00%s%x00%ae%x00%B";
 const LOG_OPTIONS: &[&str] = &[
     "--no-patch",
@@ -21,21 +23,28 @@ const LOG_OPTIONS: &[&str] = &[
     "-z",
 ];
 
-fn read(root: &Path, args: &[&str]) -> Result<String, GitError> {
-    let args = [
+fn history_args<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    [
         vec!["--no-replace-objects", "--literal-pathspecs"],
         args.to_vec(),
     ]
-    .concat();
+    .concat()
+}
+
+fn read_only_env() -> [(&'static str, String); 3] {
+    [
+        ("GIT_NO_LAZY_FETCH", "1".into()),
+        ("GIT_ALLOW_PROTOCOL", String::new()),
+        ("GIT_OPTIONAL_LOCKS", "0".into()),
+    ]
+}
+
+fn read(root: &Path, args: &[&str]) -> Result<String, GitError> {
     run_git_inner(
         root,
-        &args,
+        &history_args(args),
         STATUS_TIMEOUT,
-        &[
-            ("GIT_NO_LAZY_FETCH", "1".into()),
-            ("GIT_ALLOW_PROTOCOL", String::new()),
-            ("GIT_OPTIONAL_LOCKS", "0".into()),
-        ],
+        &read_only_env(),
         false,
     )
 }
@@ -160,11 +169,191 @@ fn exact_commit(root: &Path, hash: &str) -> Result<String, GitError> {
     Ok(resolved)
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ResetMode {
+    Soft,
+    Mixed,
+    Hard,
+    Keep,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub(crate) enum HistoryAction {
+    CherryPick,
+    Reset { mode: ResetMode },
+}
+
+pub(crate) fn apply_action(
+    root: &Path,
+    action: HistoryAction,
+    hash: &str,
+    expected_branch: &str,
+    expected_head: &str,
+) -> Result<(), GitError> {
+    let lock = repo_lock(root);
+    let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+    let target = exact_commit(root, hash)?;
+    // 浏览的是任意引用；实际操作始终限于用户发起操作时看到的检出分支和 HEAD。
+    let branch = head_branch(root)
+        .filter(|branch| branch.starts_with("refs/heads/"))
+        .ok_or_else(|| err("No local branch is checked out"))?;
+    if branch != expected_branch || !resolve_commit(root, "HEAD")?.eq_ignore_ascii_case(expected_head) {
+        return Err(err("The checked-out branch or HEAD changed; refresh history and try again"));
+    }
+    if operation_in_progress(root).is_some() {
+        return Err(err("Finish or abort the current Git operation first"));
+    }
+    let args = match action {
+        HistoryAction::CherryPick => vec!["cherry-pick", &target],
+        HistoryAction::Reset { mode } => {
+            let flag = match mode {
+                ResetMode::Soft => "--soft",
+                ResetMode::Mixed => "--mixed",
+                ResetMode::Hard => "--hard",
+                ResetMode::Keep => "--keep",
+            };
+            vec!["reset", flag, &target, "--"]
+        }
+    };
+    run_git_inner(root, &history_args(&args), ACTION_TIMEOUT, &read_only_env(), true)?;
+    Ok(())
+}
+
+#[derive(Default)]
+pub(crate) struct HistoryFilters {
+    commit_id: String,
+    subject: String,
+    author: String,
+    from: Option<i64>,
+    before: Option<i64>,
+}
+
+impl HistoryFilters {
+    pub(crate) fn new(
+        commit_id: &str,
+        subject: &str,
+        author: &str,
+        from: Option<i64>,
+        before: Option<i64>,
+    ) -> Result<Self, GitError> {
+        let commit_id = commit_id.trim();
+        if !commit_id.is_empty()
+            && (commit_id.len() != 8 || !commit_id.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(err("Commit ID must be exactly 8 hexadecimal characters"));
+        }
+        if matches!((from, before), (Some(from), Some(before)) if from >= before) {
+            return Err(err("Invalid commit date range"));
+        }
+        Ok(Self {
+            commit_id: commit_id.to_ascii_lowercase(),
+            subject: subject.trim().to_lowercase(),
+            author: author.trim().to_lowercase(),
+            from,
+            before,
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.commit_id.is_empty()
+            && self.subject.is_empty()
+            && self.author.is_empty()
+            && self.from.is_none()
+            && self.before.is_none()
+    }
+
+    fn matches(&self, fields: &[Vec<u8>; 6]) -> bool {
+        if !fields[0].starts_with(self.commit_id.as_bytes())
+            || (!self.subject.is_empty()
+                && !String::from_utf8_lossy(&fields[4])
+                    .to_lowercase()
+                    .contains(&self.subject))
+            || (!self.author.is_empty()
+                && !String::from_utf8_lossy(&fields[2])
+                    .to_lowercase()
+                    .contains(&self.author))
+        {
+            return false;
+        }
+        if self.from.is_none() && self.before.is_none() {
+            return true;
+        }
+        String::from_utf8_lossy(&fields[5])
+            .parse::<i64>()
+            .ok()
+            .is_some_and(|at| {
+                !matches!(self.from, Some(from) if at < from)
+                    && !matches!(self.before, Some(before) if at >= before)
+            })
+    }
+}
+
+fn search(
+    root: &Path,
+    start: &str,
+    offset: usize,
+    filters: HistoryFilters,
+) -> Result<Vec<Summary>, GitError> {
+    let mut args = vec!["log", "--topo-order", SEARCH_FORMAT];
+    args.extend(LOG_OPTIONS);
+    args.extend([start, "--"]);
+    // 摘要是 %s，提交时间是 %at，不能用会匹配正文或提交者时间的 Git 选项代替。
+    // 流式读取而不是把整个仓库的日志攒起来，offset 只计算匹配的提交。
+    read_git_stdout(
+        root,
+        &history_args(&args),
+        STATUS_TIMEOUT,
+        &read_only_env(),
+        move |stdout| {
+            let mut reader = BufReader::new(stdout);
+            let mut fields: [Vec<u8>; 6] = Default::default();
+            let mut skipped = 0;
+            let mut commits = Vec::new();
+            loop {
+                for (index, field) in fields.iter_mut().enumerate() {
+                    field.clear();
+                    let size = reader
+                        .read_until(0, field)
+                        .map_err(|error| err(error.to_string()))?;
+                    if size == 0 && index == 0 {
+                        return Ok(commits);
+                    }
+                    if field.pop() != Some(0) {
+                        return Err(err("Invalid Git commit output"));
+                    }
+                }
+                if !filters.matches(&fields) {
+                    continue;
+                }
+                if skipped < offset {
+                    skipped += 1;
+                    continue;
+                }
+                let text = fields
+                    .each_ref()
+                    .map(|field| String::from_utf8_lossy(field));
+                commits.push(Summary::parse(
+                    &text.each_ref().map(|field| field.as_ref()),
+                )?);
+                if commits.len() > PAGE_SIZE {
+                    // 仍要读完管道，让 Git 正常退出并保留真实错误。
+                    io::copy(&mut reader, &mut io::sink())
+                        .map_err(|error| err(error.to_string()))?;
+                    return Ok(commits);
+                }
+            }
+        },
+    )
+}
+
 pub(crate) fn page(
     root: &Path,
     reference: &str,
     start: Option<&str>,
     offset: usize,
+    filters: HistoryFilters,
 ) -> Result<Page, GitError> {
     let start = if let Some(start) = start {
         // 页码绑定到首屏的提交，不随分支指针移动而漏行或产生重复项。
@@ -205,20 +394,11 @@ pub(crate) fn page(
     if offset > (i32::MAX as usize) - PAGE_SIZE {
         return Err(err("Git history offset is out of range"));
     }
-    let skip = format!("--skip={offset}");
-    let count = format!("--max-count={}", PAGE_SIZE + 1);
-    let mut args = vec!["log", "--topo-order", SUMMARY_FORMAT, &skip, &count];
-    args.extend(LOG_OPTIONS);
-    args.extend([start.as_str(), "--"]);
-    let raw = read(root, &args)?;
-    let fields = raw.split_terminator('\0').collect::<Vec<_>>();
-    if fields.len() % 5 != 0 {
-        return Err(err("Invalid Git commit output"));
-    }
-    let mut commits = fields
-        .chunks(5)
-        .map(Summary::parse)
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut commits = if filters.is_empty() {
+        unfiltered(root, &start, offset)?
+    } else {
+        search(root, &start, offset, filters)?
+    };
     let next_offset = (commits.len() > PAGE_SIZE).then(|| offset + PAGE_SIZE);
     commits.truncate(PAGE_SIZE);
     Ok(Page {
@@ -226,6 +406,20 @@ pub(crate) fn page(
         commits,
         next_offset,
     })
+}
+
+fn unfiltered(root: &Path, start: &str, offset: usize) -> Result<Vec<Summary>, GitError> {
+    let skip = format!("--skip={offset}");
+    let count = format!("--max-count={}", PAGE_SIZE + 1);
+    let mut args = vec!["log", "--topo-order", SUMMARY_FORMAT, &skip, &count];
+    args.extend(LOG_OPTIONS);
+    args.extend([start, "--"]);
+    let raw = read(root, &args)?;
+    let fields = raw.split_terminator('\0').collect::<Vec<_>>();
+    if fields.len() % 5 != 0 {
+        return Err(err("Invalid Git commit output"));
+    }
+    fields.chunks(5).map(Summary::parse).collect()
 }
 
 #[derive(Serialize)]

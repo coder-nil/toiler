@@ -4180,6 +4180,85 @@ async fn git_workspace_diff_keeps_compare_scopes_separate() {
     std::fs::remove_dir_all(sandbox).unwrap();
 }
 
+/// 提交查询在所选引用内组合匹配 ID、摘要、提交人和界面显示的作者时间。
+#[tokio::test]
+async fn git_history_search_combines_criteria_in_the_selected_ref() {
+    let sandbox = fixture_root("git-history-search");
+    let repo = sandbox.join("repo");
+    let store = sandbox.join("store");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::create_dir(&store).unwrap();
+    let git = |args: &[&str]| history_fixture_git(&sandbox, &repo, args);
+    git(&["init", "-q", "-b", "main"]);
+    git(&[
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "修复 [UI]",
+        "--author=Élodie <test@example.invalid>",
+        "--date=2024-05-01T12:00:00+08:00",
+    ]);
+    let match_id = git(&["rev-parse", "HEAD"]);
+    git(&["tag", "first"]);
+    git(&[
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "无关摘要\n\n修复 [UI]",
+        "--author=Élodie <test@example.invalid>",
+        "--date=2024-05-01T04:00:00Z",
+    ]);
+    git(&[
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "修复 [UI]",
+        "--author=Élodie <test@example.invalid>",
+        "--date=2024-05-02T00:00:00Z",
+    ]);
+    let last_id = git(&["rev-parse", "HEAD"]);
+    let router = app_with_agent_dir(&store, &repo, Some(&store));
+    let uri = format!(
+        "/api/git/history?cwd={}",
+        url_encode(&repo.to_string_lossy())
+    );
+    let subject = url_encode("[ui]");
+    let author = url_encode("ÉLODIE");
+    let from = toiler_session::time::iso_to_ms("2024-05-01T04:00:00Z").unwrap() / 1000;
+    let before = toiler_session::time::iso_to_ms("2024-05-02T00:00:00Z").unwrap() / 1000;
+    let query = format!("{uri}&subject={subject}&author={author}&from={from}&before={before}");
+    let filtered = get(router.clone(), &query).await.json();
+    let commits = filtered["commits"].as_array().unwrap();
+    assert_eq!(commits.len(), 1, "{filtered}");
+    assert_eq!(commits[0]["hash"], match_id);
+    let short_id = match_id[..8].to_ascii_uppercase();
+    let match_hash = get(router.clone(), &format!("{query}&commitId={short_id}"))
+        .await
+        .json();
+    assert_eq!(match_hash["commits"], filtered["commits"]);
+    let tag_search = get(
+        router.clone(),
+        &format!("{uri}&ref=refs%2Ftags%2Ffirst&commitId={}", &last_id[..8]),
+    )
+    .await
+    .json();
+    assert_eq!(tag_search["commits"], json!([]));
+    assert_eq!(tag_search["nextOffset"], Value::Null);
+    assert_eq!(
+        get(router.clone(), &format!("{uri}&commitId=XYZ"))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        get(router, &format!("{uri}&from={before}&before={from}"))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    std::fs::remove_dir_all(sandbox).unwrap();
+}
+
 /// 点击加载更早的提交时，即使分支前进，也接着原来的提交图继续分页。
 #[tokio::test]
 async fn git_history_pagination_keeps_the_original_tip() {
@@ -4195,7 +4274,12 @@ async fn git_history_pagination_keeps_the_original_tip() {
     let tree = git(&["rev-parse", "HEAD^{tree}"]);
     let mut tip = root.clone();
     for number in 1..103 {
-        tip = git(&["commit-tree", &tree, "-p", &tip, "-m", &number.to_string()]);
+        let subject = if number == 101 {
+            "ignore".to_owned()
+        } else {
+            format!("match {number}")
+        };
+        tip = git(&["commit-tree", &tree, "-p", &tip, "-m", &subject]);
     }
     git(&["update-ref", "HEAD", &tip]);
     let router = app_with_agent_dir(&store, &repo, Some(&store));
@@ -4208,7 +4292,28 @@ async fn git_history_pagination_keeps_the_original_tip() {
     assert_eq!(first["nextOffset"], 100);
     let commits = first["commits"].as_array().unwrap();
     assert_eq!(commits.len(), 100);
-    git(&["commit", "--allow-empty", "-qm", "added after first page"]);
+    let search = get(router.clone(), &format!("{uri}&subject=match"))
+        .await
+        .json();
+    assert_eq!(search["commits"].as_array().unwrap().len(), 100);
+    assert_eq!(search["commits"][1]["subject"], "match 100");
+    assert_eq!(search["nextOffset"], 100);
+    git(&[
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "match added after first page",
+    ]);
+    let search_next = get(
+        router.clone(),
+        &format!("{uri}&subject=match&start={tip}&offset=100"),
+    )
+    .await
+    .json();
+    let search_results = search_next["commits"].as_array().unwrap();
+    assert_eq!(search_results.len(), 1);
+    assert_eq!(search_results[0]["subject"], "match 1");
+    assert_eq!(search_next["nextOffset"], Value::Null);
     let next = get(router, &format!("{uri}&start={tip}&offset=100"))
         .await
         .json();

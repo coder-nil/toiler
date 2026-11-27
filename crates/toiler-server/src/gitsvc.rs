@@ -25,7 +25,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{ChildStdout, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -187,6 +187,26 @@ fn run_git_inner(
     extra_env: &[(&str, String)],
     trim: bool,
 ) -> Result<String, GitError> {
+    let stdout = read_git_stdout(cwd, args, timeout, extra_env, |mut stdout| {
+        let mut bytes = Vec::new();
+        let _ = stdout.read_to_end(&mut bytes);
+        Ok(bytes)
+    })?;
+    let stdout = String::from_utf8_lossy(&stdout).into_owned();
+    Ok(if trim {
+        stdout.trim().to_owned()
+    } else {
+        stdout
+    })
+}
+
+fn read_git_stdout<T: Send + 'static>(
+    cwd: &Path,
+    args: &[&str],
+    timeout: Duration,
+    extra_env: &[(&str, String)],
+    read: impl FnOnce(ChildStdout) -> Result<T, GitError> + Send + 'static,
+) -> Result<T, GitError> {
     // 本机没装 git 时直接返回，不去 spawn。在 Windows 上每次 spawn 找不到
     // 可执行文件都要把 PATH 扫一遍，面板刷新是高频路径，没必要白花这个代价。
     if !git_available() {
@@ -211,13 +231,9 @@ fn run_git_inner(
         .map_err(|e| err(format!("git 启动失败: {e}")))?;
 
     // 两个线程把 stdout/stderr 抽干，避免大输出塞满管道导致死锁。
-    let mut stdout = child.stdout.take().expect("piped stdout");
+    let stdout = child.stdout.take().expect("piped stdout");
     let mut stderr = child.stderr.take().expect("piped stderr");
-    let out_handle = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
-        buf
-    });
+    let out_handle = std::thread::spawn(move || read(stdout));
     let err_handle = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = stderr.read_to_end(&mut buf);
@@ -239,10 +255,9 @@ fn run_git_inner(
             Err(e) => return Err(err(format!("git 等待失败: {e}"))),
         }
     };
-    let stdout = out_handle.join().unwrap_or_default();
+    let stdout = out_handle.join();
     let stderr = err_handle.join().unwrap_or_default();
-    let stdout = String::from_utf8_lossy(&stdout).to_string();
-    let stderr = String::from_utf8_lossy(&stderr).to_string();
+    let stderr = String::from_utf8_lossy(&stderr);
     if !status.success() {
         let message = stderr.trim();
         return Err(err(if message.is_empty() {
@@ -251,11 +266,7 @@ fn run_git_inner(
             message.to_string()
         }));
     }
-    Ok(if trim {
-        stdout.trim().to_string()
-    } else {
-        stdout
-    })
+    stdout.map_err(|_| err("无法读取 Git 命令输出"))?
 }
 
 /// `git rev-parse --show-toplevel`；不是仓库就 `None`。

@@ -7,6 +7,7 @@
 //! | `GET  /api/git/status?cwd=` | 只要「变更文件 + 增删行数」 |
 //! | `GET  /api/git/diff?cwd=&path=` | 单文件补丁 |
 //! | `GET  /api/git/refs`、`/api/git/history`、`/api/git/commit` | 只读工作树提交历史 |
+//! | `POST /api/git/history-action` | 在当前检出分支优选或重置到指定提交 |
 //! | `POST /api/git/commit-message` | 暂存区 diff → 模型生成 commit message（NDJSON 流） |
 //! | `GET/POST/DELETE /api/worktrees` | 列出 / 新建（或 checkout） / 删除 worktree |
 //!
@@ -178,6 +179,12 @@ pub struct HistoryQuery {
     reference: Option<String>,
     start: Option<String>,
     offset: Option<usize>,
+    #[serde(rename = "commitId")]
+    commit_id: Option<String>,
+    subject: Option<String>,
+    author: Option<String>,
+    from: Option<i64>,
+    before: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -186,7 +193,7 @@ pub struct HistoryCommitQuery {
     hash: String,
 }
 
-async fn read_history<T: serde::Serialize + Send + 'static>(
+async fn in_history_repository<T: serde::Serialize + Send + 'static>(
     state: AppState,
     cwd: Option<String>,
     job: impl FnOnce(&Path) -> Result<T, gitsvc::GitError> + Send + 'static,
@@ -203,7 +210,7 @@ async fn read_history<T: serde::Serialize + Send + 'static>(
         let Some(root) = gitsvc::repository_root(&cwd) else {
             return Err((400, "Not a Git repository".to_owned()));
         };
-        // 工作树历史是整个仓库的，获准访问其中一个子目录不代表获准读取父仓库。
+        // 历史操作作用于整个仓库，获准访问子目录不代表获准访问父仓库。
         if !state.roots().allows_real(&root) {
             return Err((403, "Access denied".to_owned()));
         }
@@ -222,7 +229,7 @@ pub async fn history_refs(
     _trusted: Trusted,
     Query(query): Query<CwdQuery>,
 ) -> Response {
-    read_history(state, query.cwd, gitsvc::history::refs).await
+    in_history_repository(state, query.cwd, gitsvc::history::refs).await
 }
 
 pub async fn history_page(
@@ -230,12 +237,20 @@ pub async fn history_page(
     _trusted: Trusted,
     Query(query): Query<HistoryQuery>,
 ) -> Response {
-    read_history(state, query.cwd, move |root| {
+    in_history_repository(state, query.cwd, move |root| {
+        let filters = gitsvc::history::HistoryFilters::new(
+            query.commit_id.as_deref().unwrap_or_default(),
+            query.subject.as_deref().unwrap_or_default(),
+            query.author.as_deref().unwrap_or_default(),
+            query.from,
+            query.before,
+        )?;
         gitsvc::history::page(
             root,
             query.reference.as_deref().unwrap_or("HEAD"),
             query.start.as_deref(),
             query.offset.unwrap_or(0),
+            filters,
         )
     })
     .await
@@ -246,8 +261,31 @@ pub async fn history_commit(
     _trusted: Trusted,
     Query(query): Query<HistoryCommitQuery>,
 ) -> Response {
-    read_history(state, query.cwd, move |root| {
+    in_history_repository(state, query.cwd, move |root| {
         gitsvc::history::commit(root, &query.hash)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryActionBody {
+    cwd: Option<String>,
+    hash: String,
+    expected_branch: String,
+    expected_head: String,
+    #[serde(flatten)]
+    action: gitsvc::history::HistoryAction,
+}
+
+pub async fn history_action(
+    State(state): State<AppState>,
+    _trusted: Trusted,
+    Json(body): Json<HistoryActionBody>,
+) -> Response {
+    in_history_repository(state, body.cwd, move |root| {
+        gitsvc::history::apply_action(root, body.action, &body.hash, &body.expected_branch, &body.expected_head)?;
+        Ok(json!({ "ok": true }))
     })
     .await
 }
@@ -267,7 +305,7 @@ pub async fn workspace_diff(
     _trusted: Trusted,
     Query(query): Query<WorkspaceDiffQuery>,
 ) -> Response {
-    read_history(state, query.cwd, move |root| {
+    in_history_repository(state, query.cwd, move |root| {
         gitsvc::history::workspace_diff(
             root,
             query.scope,
