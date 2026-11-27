@@ -1,5 +1,6 @@
 //! 工作树历史与引用操作；浏览接口只读本地引用和提交对象。
 
+pub(crate) mod push;
 pub(crate) mod refs_action;
 
 use super::{
@@ -441,7 +442,7 @@ pub(crate) fn page(
     }
     let own_email = configured_author_email(root);
     let mut commits = if filters.is_empty() {
-        unfiltered(root, &start, offset, own_email.as_deref())?
+        unfiltered(root, &start, None, offset, own_email.as_deref())?
     } else {
         search(root, &start, offset, filters, own_email)?
     };
@@ -457,6 +458,7 @@ pub(crate) fn page(
 fn unfiltered(
     root: &Path,
     start: &str,
+    exclude: Option<&str>,
     offset: usize,
     own_email: Option<&str>,
 ) -> Result<Vec<Summary>, GitError> {
@@ -464,7 +466,10 @@ fn unfiltered(
     let count = format!("--max-count={}", PAGE_SIZE + 1);
     let mut args = vec!["log", "--topo-order", SUMMARY_FORMAT, &skip, &count];
     args.extend(LOG_OPTIONS);
-    args.extend([start, "--"]);
+    args.push(start);
+    let excluded = exclude.map(|hash| format!("^{hash}"));
+    args.extend(excluded.as_deref());
+    args.push("--");
     let raw = read(root, &args)?;
     let fields = raw.split_terminator('\0').collect::<Vec<_>>();
     if fields.len() % 6 != 0 {

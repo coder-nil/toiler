@@ -54,6 +54,59 @@ test("Git 面板在远程区显示地址，分支同步数字仍由工作树选�
   assert.match(sidebar, /subscribeToWindowForeground\(\(\) => \{ void loadWorktrees\(true\); \}\)/);
 });
 
+test("远程在 Git 操作区顶部，提交与提交并推送相邻，不再显示独立合并区", () => {
+  const headings = [...panel.matchAll(/<SectionTitle title=\{t\("(git\.\w+)"/g)].map((match) => match[1]);
+  assert.deepEqual(headings, ["git.remote", "git.changesSummary", "git.stagedSummary", "git.commit", "git.tags"]);
+  assert.doesNotMatch(panel, /MergeBranchPicker|git\.mergeBranch/);
+  assert.match(panel, /label=\{t\("git\.commit"\)\} action="commit"[^\n]*run\("commit", \{ message \}\)[^\n]*\n\s*<ActionButton label=\{t\("git\.commitAndPush"\)\} action="commit_and_push"[^\n]*run\("commit_and_push", \{ message \}\)/);
+});
+
+test("提交并推送先完成本地提交，普通推送和组合操作都只在确认后发起推送", () => {
+  assert.match(panel, /const firstAction = action === "commit_and_push" \? "commit" : action;[\s\S]*?await request\(firstAction, extra\);[\s\S]*?setPushPrompt\(\{ cwd, committed: true \}\)/);
+  assert.match(panel, /action="push" busy=\{busy\} onClick=\{\(\) => setPushPrompt\(\{ cwd, committed: false \}\)\}/);
+  assert.equal([...panel.matchAll(/run\("push"/g)].length, 1);
+  assert.match(panel, /run\("push", \{ previewToken: preview\.token \}, preview\.usesPanelCredential \? undefined : null\)/);
+  assert.match(panel, /onCancel=\{\(\) => setPushPrompt\(null\)\} onPush=\{confirmPush\}/);
+});
+
+test("推送预览的分支只读，提交选择驱动右侧文件和详情", async () => {
+  const dialog = await read("components/GitPushDialog.tsx");
+  assert.doesNotMatch(dialog, /<select\b|BranchPicker/);
+  assert.match(dialog, /preview\.remote\}\/\{preview\.targetBranch/);
+  assert.match(dialog, /onClick=\{\(\) => setHash\(item\.hash\)\}/);
+  assert.match(dialog, /load<GitHistoryCommit>\("commit", cwd, \{ hash \}/);
+  assert.match(dialog, /commit\.files\.map/);
+  assert.match(dialog, /commit\.message/);
+  assert.match(dialog, /await onPush\(preview\)/);
+});
+
+test("Git 操作区的拉取入口统一在没有已存 HTTPS 或 SSH 凭据时弹出确认框", () => {
+  assert.equal([...panel.matchAll(/action="pull" busy=\{busy\} onClick=\{requestPull\}/g)].length, 2);
+  assert.match(panel, /if \(!hasSavedCredential && \(kind === "https" \|\| kind === "ssh"\)\) \{\s*setPullPrompt\(\{ cwd, remote, kind, rebase: pullRebase \}\);\s*return;\s*\}\s*pull\(pullRebase\);/);
+});
+
+test("取消凭据确认不拉取，确认保留原拉取模式，留空不会发送凭据", () => {
+  assert.match(panel, /pullPrompt\.remote === summary\.remote && pullPrompt\.kind === summary\.credentialKind/);
+  assert.match(panel, /onCancel=\{\(\) => setPullPrompt\(null\)\}/);
+  assert.match(panel, /onConfirm=\{\(draft\) => \{ setPullPrompt\(null\); pull\(pullPrompt\.rebase, draft\); \}\}/);
+  assert.match(panel, /run\("pull", \{ rebase \}, draft\)/);
+  assert.match(panel, /isRemoteAction\(gitAction\) && draft\?\.secret && draft\.secret !== SAVED_CREDENTIAL_MASK/);
+  assert.match(panel, /\.\.\.\(credential && draft \? \{ credential, rememberCredential: draft\.rememberCredential \} : \{\}\)/);
+  assert.match(panel, /onCancel=\{\(event\) => \{ event\.preventDefault\(\); onCancel\(\); \}\}/);
+});
+
+test("侧栏和 Git 历史按完整引用删除分支，不连带移除工作树", async () => {
+  const actions = await read("components/GitRefActions.tsx");
+  assert.match(sidebar, /sidebar\.deleteLocalBranch[^\n]*[\s\S]*?reference: `refs\/heads\/\$\{branch\}`/);
+  assert.match(sidebar, /sidebar\.deleteRemoteBranch[^\n]*[\s\S]*?reference: `refs\/remotes\/\$\{branch\}`/);
+  const handler = sidebar.split("const handleDeleteBranch =")[1]?.split("const handleRemoveWorktree =")[0] ?? "";
+  assert.match(handler, /requestGitRefAction\(target\.cwd, target\.reference,/);
+  assert.doesNotMatch(handler, /\/api\/worktrees|delete_remote_branch|delete_branch/);
+  assert.match(actions, /const canForceDelete = isDelete && kind === "local";/);
+  assert.match(actions, /const \[forceDelete, setForceDelete\] = useState\(false\)/);
+  assert.match(actions, /canForceDelete && forceDelete \? \{ action: "delete", force: true \} : \{ action: "delete" \}/);
+});
+
 function foregroundWindow() {
   const target = new EventTarget();
   target.document = Object.assign(new EventTarget(), { visibilityState: "visible" });

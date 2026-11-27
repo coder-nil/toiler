@@ -23,6 +23,7 @@ import { AboutButton } from "./AboutDialog";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { FileExplorer, TreeLoadingSpinner, type FileExplorerHandle } from "./FileExplorer";
 import { BranchPicker } from "./BranchPicker";
+import { DeleteBranchDialog, requestGitRefAction } from "./GitRefActions";
 import styles from "./SessionSidebar.module.css";
 
 const ICON_STROKE = 1.8;
@@ -157,10 +158,8 @@ interface BranchMenuPosition {
 }
 
 interface DeleteBranchDialogState {
-  branch: string;
-  remote: boolean;
-  linkedWorktreePath?: string;
-  forceLinkedWorktree: boolean;
+  cwd: string;
+  reference: string;
 }
 
 interface ProjectSelection {
@@ -1126,13 +1125,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   }, [selectedCwd, wtBusy, worktreeState]);
 
   const handleBranchGitAction = useCallback(async (
-    action: "create_branch" | "rename_branch" | "delete_branch" | "checkout_remote_branch" | "delete_remote_branch" | "pull" | "push" | "pull_branch" | "push_branch" | "merge_branch",
+    action: "create_branch" | "rename_branch" | "checkout_remote_branch" | "pull" | "push" | "pull_branch" | "push_branch" | "merge_branch",
     branch: string,
     cwd: string | null,
     startPoint?: string,
     newBranch?: string,
-    linkedWorktreePath?: string,
-    forceLinkedWorktree = false,
     targetBranch?: string,
   ) => {
     if (!cwd || wtBusy) return;
@@ -1144,8 +1141,6 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       if (!newBranch?.trim() || newBranch.trim() === branch) return;
       body.branch = branch;
       body.newBranch = newBranch.trim();
-    } else if (action === "delete_branch" || action === "delete_remote_branch") {
-      body.branch = branch;
     } else if (action === "merge_branch") {
       if (!targetBranch?.trim() || targetBranch === branch) return;
       body.branch = branch;
@@ -1158,28 +1153,6 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     setBranchMenu(null);
     setRemoteBranchMenu(null);
     try {
-      if (action === "delete_branch" && linkedWorktreePath) {
-        const removeWorktree = async (force: boolean) => {
-          const response = await fetch("/api/worktrees", {
-            method: "DELETE",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ cwd, path: linkedWorktreePath, force }),
-          });
-          const data = await response.json().catch(() => ({})) as { error?: string };
-          return { response, data };
-        };
-        const removal = await removeWorktree(forceLinkedWorktree);
-        if (removal.response.status === 409) {
-          setDeleteBranchDialog((current) => current && current.branch === branch
-            ? { ...current, forceLinkedWorktree: true }
-            : current);
-          return;
-        }
-        if (!removal.response.ok || removal.data.error) {
-          setWtError(removal.data.error ?? `HTTP ${removal.response.status}`);
-          return;
-        }
-      }
       const res = await fetch("/api/git", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1190,7 +1163,6 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         setWtError(data.error ?? `HTTP ${res.status}`);
         return;
       }
-      if (action === "delete_branch" || action === "delete_remote_branch") setDeleteBranchDialog(null);
       if (action === "merge_branch") setMergeBranchDialog(null);
       setWtRefreshKey((key) => key + 1);
     } catch (error) {
@@ -1199,6 +1171,21 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       setWtBusy(false);
     }
   }, [wtBusy]);
+
+  const handleDeleteBranch = async (target: DeleteBranchDialogState, force: boolean) => {
+    if (wtBusy || target.cwd !== selectedCwd) return;
+    setWtBusy(true);
+    setWtError(null);
+    try {
+      await requestGitRefAction(target.cwd, target.reference, force ? { action: "delete", force: true } : { action: "delete" });
+      setDeleteBranchDialog(null);
+      setWtRefreshKey((key) => key + 1);
+    } catch (error) {
+      setWtError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWtBusy(false);
+    }
+  };
 
   const handleRemoveWorktree = useCallback(async (path: string, force: boolean) => {
     if (!worktreeState || wtBusy) return;
@@ -2001,10 +1988,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                                 setRenamedBranchName(branch);
                                 setRenameBranchDialog(branch);
                               }} />
-                              {!isCurrent && !branchWorktree?.isMain && <BranchMenuButton label={t("sidebar.delete")} danger onClick={() => {
+                              {!isCurrent && !branchWorktree?.isMain && <BranchMenuButton label={t("sidebar.deleteLocalBranch")} danger onClick={() => {
                                 setBranchMenu(null);
                                 setWtError(null);
-                                setDeleteBranchDialog({ branch, remote: false, linkedWorktreePath: branchWorktree?.path, forceLinkedWorktree: false });
+                                if (selectedCwd) setDeleteBranchDialog({ cwd: selectedCwd, reference: `refs/heads/${branch}` });
                               }} />}
                             </BranchMenuPortal>
                           )}
@@ -2048,10 +2035,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                             <BranchMenuButton label={t("sidebar.checkOut")} onClick={() => void handleBranchGitAction("checkout_remote_branch", branch, selectedCwd)} />
                             <BranchMenuButton label={t("sidebar.newBranch")} onClick={() => { setRemoteBranchMenu(null); setNewBranchName(""); setCreateBranchDialog({ startPoint: branch }); }} />
                             <BranchMenuDivider />
-                            <BranchMenuButton label={t("sidebar.delete")} danger onClick={() => {
+                            <BranchMenuButton label={t("sidebar.deleteRemoteBranch")} danger onClick={() => {
                               setRemoteBranchMenu(null);
                               setWtError(null);
-                              setDeleteBranchDialog({ branch, remote: true, forceLinkedWorktree: false });
+                              if (selectedCwd) setDeleteBranchDialog({ cwd: selectedCwd, reference: `refs/remotes/${branch}` });
                             }} />
                           </BranchMenuPortal>
                         )}
@@ -2343,21 +2330,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           }}
         />
       )}
-      {deleteBranchDialog && (
+      {deleteBranchDialog && deleteBranchDialog.cwd === selectedCwd && (
         <DeleteBranchDialog
-          state={deleteBranchDialog}
+          reference={deleteBranchDialog.reference}
           busy={wtBusy}
           error={wtError}
           onCancel={() => { if (!wtBusy) { setDeleteBranchDialog(null); setWtError(null); } }}
-          onConfirm={() => void handleBranchGitAction(
-            deleteBranchDialog.remote ? "delete_remote_branch" : "delete_branch",
-            deleteBranchDialog.branch,
-            selectedCwd,
-            undefined,
-            undefined,
-            deleteBranchDialog.linkedWorktreePath,
-            deleteBranchDialog.forceLinkedWorktree,
-          )}
+          onConfirm={(force) => void handleDeleteBranch(deleteBranchDialog, force)}
         />
       )}
       {mergeBranchDialog && worktreeState && (
@@ -2369,7 +2348,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           error={wtError}
           onChange={setMergeTargetBranch}
           onCancel={() => { if (!wtBusy) { setMergeBranchDialog(null); setWtError(null); } }}
-          onConfirm={() => void handleBranchGitAction("merge_branch", mergeBranchDialog, selectedCwd, undefined, undefined, undefined, false, mergeTargetBranch)}
+          onConfirm={() => void handleBranchGitAction("merge_branch", mergeBranchDialog, selectedCwd, undefined, undefined, mergeTargetBranch)}
         />
       )}
     </aside>
@@ -2441,34 +2420,6 @@ function RenameBranchDialog({ value, busy, onChange, onCancel, onConfirm }: { va
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, padding: "10px 18px", borderTop: "1px solid var(--border)" }}>
           <button type="button" onClick={onCancel} disabled={busy} style={{ height: 30, padding: "0 10px", border: "none", borderRadius: 5, background: "transparent", color: "var(--text-muted)", cursor: busy ? "not-allowed" : "pointer", fontSize: 12 }}>{t("sidebar.cancel")}</button>
           <button type="button" onClick={onConfirm} disabled={busy || !value.trim()} style={{ height: 30, padding: "0 10px", border: "none", borderRadius: 5, background: "var(--accent)", color: "#fff", cursor: busy || !value.trim() ? "not-allowed" : "pointer", opacity: busy || !value.trim() ? .6 : 1, fontSize: 12, fontWeight: 600 }}>{t("sidebar.rename")}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function DeleteBranchDialog({ state, busy, error, onCancel, onConfirm }: { state: DeleteBranchDialogState; busy: boolean; error: string | null; onCancel: () => void; onConfirm: () => void }) {
-  const { t } = useI18n();
-  useEffect(() => { const handleKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape" && !busy) { event.preventDefault(); event.stopPropagation(); onCancel(); } }; document.addEventListener("keydown", handleKeyDown, true); return () => document.removeEventListener("keydown", handleKeyDown, true); }, [busy, onCancel]);
-  const title = state.remote ? t("sidebar.deleteRemoteBranch") : t("sidebar.deleteLocalBranch");
-  const description = state.remote
-    ? t("sidebar.deleteBranchDescription", { branch: state.branch })
-    : state.forceLinkedWorktree
-      ? t("sidebar.forceDeleteBranchWorktreeDescription", { branch: state.branch })
-      : state.linkedWorktreePath
-        ? t("sidebar.deleteBranchAndWorktreeDescription", { branch: state.branch })
-        : t("sidebar.deleteBranchDescription", { branch: state.branch });
-  return (
-    <div role="presentation" onClick={(event) => { if (!busy && event.target === event.currentTarget) onCancel(); }} style={{ position: "fixed", inset: 0, zIndex: 1100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, background: "rgba(0,0,0,.4)" }}>
-      <div role="dialog" aria-modal="true" aria-labelledby="delete-branch-title" style={{ width: 360, maxWidth: "100%", border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg-panel)", boxShadow: "0 12px 36px rgba(0,0,0,.24)" }}>
-        <div style={{ padding: "16px 18px" }}>
-          <div id="delete-branch-title" style={{ color: "var(--text)", fontSize: 14, fontWeight: 700 }}>{title}</div>
-          <div style={{ marginTop: 8, color: "var(--text-muted)", fontSize: 12, lineHeight: 1.5, overflowWrap: "anywhere" }}>{description}</div>
-          {error && <div role="alert" style={{ marginTop: 10, color: "#ef4444", fontSize: 11, lineHeight: 1.45 }}>{error}</div>}
-        </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, padding: "10px 18px", borderTop: "1px solid var(--border)" }}>
-          <button type="button" onClick={onCancel} disabled={busy} style={{ height: 30, padding: "0 10px", border: "none", borderRadius: 5, background: "transparent", color: "var(--text-muted)", cursor: busy ? "not-allowed" : "pointer", fontSize: 12 }}>{t("sidebar.cancel")}</button>
-          <button type="button" onClick={onConfirm} disabled={busy} style={{ height: 30, padding: "0 10px", border: "none", borderRadius: 5, background: "#dc2626", color: "#fff", cursor: busy ? "not-allowed" : "pointer", opacity: busy ? .6 : 1, fontSize: 12, fontWeight: 600 }}>{t("sidebar.delete")}</button>
         </div>
       </div>
     </div>

@@ -3205,6 +3205,47 @@ span.token.table {
   gap: 8px;
 }
 
+.git-pull-dialog {
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  width: min(380px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  margin: auto;
+  padding: 18px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--bg-panel);
+  color: var(--text);
+  box-shadow: var(--shadow-overlay);
+}
+
+.git-pull-dialog::backdrop {
+  background: var(--bg-overlay, #0008);
+}
+
+.git-pull-dialog form {
+  display: grid;
+  gap: 10px;
+}
+
+.git-pull-dialog h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.git-pull-dialog .git-field-label {
+  display: grid;
+  gap: 4px;
+}
+
+.git-pull-dialog .git-btn[type="submit"] {
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .git-btn,
   .git-icon-btn,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Loader2, Minus, Plus, RefreshCw, Trash2, Undo2, Upload } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/hooks/useI18n";
@@ -10,11 +10,8 @@ import { nextTagName, sortTagsDescending } from "@/lib/git-tags";
 import { isMacPlatform, isWindowsPlatform } from "@/lib/platform-key";
 import { revealNext } from "@/lib/typewriter";
 import { upgradeProjectVersion, VERSION_UPGRADE_LEVELS, type VersionUpgradeLevel, type VersionUpgradePreview } from "@/lib/version-upgrade";
-import { BranchPicker } from "./BranchPicker";
 import type { GitDiffSelection } from "@/lib/git-workspace";
-
-// MergeBranchPicker delegates to the shared picker, which renders the accessible
-// role="combobox" / role="listbox" control and uses git.selectBranch as its fallback label.
+import { GitPushDialog, type GitPushPreview } from "./GitPushDialog";
 
 type GitFileStatus = {
   filePath: string;
@@ -42,15 +39,22 @@ type GitSummary = {
   /// 勾了「记住」不会真的落盘，勾选框应置灰并说明。
   canRememberCredential: boolean;
   operation: "merge" | "rebase" | "cherry-pick" | "revert" | null;
-  branches: string[];
   tags: string[];
   changes: { files: GitFileStatus[]; additions: number; deletions: number };
   untrackedPaths: string[];
 };
 
-type Action = "stage" | "unstage" | "discard" | "discard_all" | "commit" | "fetch" | "pull" | "push" | "merge" | "continue" | "abort" | "set_remote_url" | "create_tag" | "delete_tag" | "push_tag" | "summarize" | `bump_${VersionUpgradeLevel}`;
+type GitAction = "stage" | "unstage" | "discard" | "discard_all" | "commit" | "fetch" | "pull" | "push" | "continue" | "abort" | "set_remote_url" | "create_tag" | "delete_tag" | "push_tag";
+type Action = GitAction | "commit_and_push" | "summarize" | `bump_${VersionUpgradeLevel}`;
+
+function isRemoteAction(action: GitAction) {
+  return action === "fetch" || action === "pull" || action === "push" || action === "push_tag";
+}
 
 const SAVED_CREDENTIAL_MASK = "••••••••";
+
+type CredentialDraft = { username: string; secret: string; rememberCredential: boolean };
+type PullPrompt = { cwd: string; remote: string | null; kind: "https" | "ssh"; rebase: boolean };
 
 type InstallPlatform = "windows" | "mac" | "linux";
 
@@ -87,8 +91,9 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
   const { locale, t } = useI18n();
   const [summary, setSummary] = useState<GitSummary | null>(null);
   const [message, setMessage] = useState("");
-  const [mergeBranch, setMergeBranch] = useState("");
   const [pullRebase, setPullRebase] = useState(false);
+  const [pullPrompt, setPullPrompt] = useState<PullPrompt | null>(null);
+  const [pushPrompt, setPushPrompt] = useState<{ cwd: string; committed: boolean } | null>(null);
   const [username, setUsername] = useState("");
   const [secret, setSecret] = useState("");
   const [rememberCredential, setRememberCredential] = useState(false);
@@ -157,6 +162,8 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
   useEffect(() => {
     setSummary(null);
     setError(null);
+    setPullPrompt(null);
+    setPushPrompt(null);
     setVersionPreview(null);
     setVersionResult(null);
   }, [cwd]);
@@ -174,29 +181,35 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
     setCheckedUpdate(true);
   }, [summary, checkedUpdate]);
 
-  const run = useCallback(async (action: Action, extra: Record<string, unknown> = {}) => {
+  const run = useCallback(async (
+    action: GitAction | "commit_and_push",
+    extra: Record<string, unknown> = {},
+    draft: CredentialDraft | null = { username, secret, rememberCredential },
+  ) => {
     setBusy(action);
     setError(null);
-    try {
-      // 远程动作都要带上凭据：推标签同样可能遇到 HTTPS token。
-      const isRemoteAction = action === "fetch" || action === "pull" || action === "push" || action === "push_tag";
+    const firstAction = action === "commit_and_push" ? "commit" : action;
+    const request = async (gitAction: GitAction, payload: Record<string, unknown> = {}) => {
       const credentialKind = summary?.credentialKind;
-      const credential = isRemoteAction && secret && secret !== SAVED_CREDENTIAL_MASK && (credentialKind === "https" || credentialKind === "ssh")
-        ? { kind: credentialKind, secret, ...(credentialKind === "https" ? { username } : {}) }
+      const credential = isRemoteAction(gitAction) && draft?.secret && draft.secret !== SAVED_CREDENTIAL_MASK && (credentialKind === "https" || credentialKind === "ssh")
+        ? { kind: credentialKind, secret: draft.secret, ...(credentialKind === "https" ? { username: draft.username } : {}) }
         : undefined;
-      const res = await fetch("/api/git", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cwd, action, ...extra, ...(credential ? { credential, rememberCredential } : {}) }) });
-      const data = await readApiJson<GitSummary>(res, { hint: t("git.serverErrorHint") });
+      const res = await fetch("/api/git", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cwd, action: gitAction, ...payload, ...(credential && draft ? { credential, rememberCredential: draft.rememberCredential } : {}) }) });
+      return readApiJson<GitSummary>(res, { hint: t("git.serverErrorHint") });
+    };
+    try {
+      const data = await request(firstAction, extra);
+      if (firstAction === "commit") setMessage("");
       setSummary(data);
+      if (action === "commit_and_push") setPushPrompt({ cwd, committed: true });
       // 只在 Git 确认推送成功后清除对应版本标签的提示。
       if (action === "push_tag") {
         setVersionResult((result) => result?.cwd === cwd && extra.tag === result.tag ? null : result);
       }
-      if (action === "commit") setMessage("");
       if (action === "create_tag") {
         setNewTag("");
         setTagMessage("");
       }
-      if (action === "merge") setMergeBranch("");
       if (action === "set_remote_url") {
         setEditingRemote(false);
         setRemoteDraft("");
@@ -205,15 +218,43 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
         setRememberCredential(false);
         prefilledKeyRef.current = null;
       }
-      if (isRemoteAction) setSecret(data.hasSavedCredential ? SAVED_CREDENTIAL_MASK : "");
-      onChanged();
+      if (isRemoteAction(firstAction) && draft !== null) {
+        setSecret(data.hasSavedCredential ? SAVED_CREDENTIAL_MASK : "");
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-      void refresh().catch(() => undefined);
+      const detail = reason instanceof Error ? reason.message : String(reason);
+      if (!(action === "push" && extra.previewToken)) {
+        setError(detail);
+        void refresh().catch(() => undefined);
+      }
+      return detail;
     } finally {
       setBusy(null);
     }
+    onChanged();
+    return null;
   }, [cwd, onChanged, refresh, rememberCredential, secret, summary?.credentialKind, t, username]);
+
+  const confirmPush = async (preview: GitPushPreview) => {
+    const error = await run("push", { previewToken: preview.token }, preview.usesPanelCredential ? undefined : null);
+    if (error === null) setPushPrompt(null);
+    return error;
+  };
+
+  const pull = (rebase: boolean, draft?: CredentialDraft) => {
+    setCheckedUpdate(true);
+    void run("pull", { rebase }, draft);
+  };
+
+  const requestPull = () => {
+    if (busy || !summary?.isGitRepository) return;
+    const { credentialKind: kind, hasSavedCredential, remote } = summary;
+    if (!hasSavedCredential && (kind === "https" || kind === "ssh")) {
+      setPullPrompt({ cwd, remote, kind, rebase: pullRebase });
+      return;
+    }
+    pull(pullRebase);
+  };
 
   const versionUpgrade = useCallback(async (level: VersionUpgradeLevel, preview?: VersionUpgradePreview) => {
     setBusy(`bump_${level}`);
@@ -326,7 +367,7 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
   // changes (untracked files are never discarded and stay out of this set).
   const hasDiscardableChanges = unstaged.some((file) => file.status !== "untracked");
   const conflictCount = summary?.changes.files.filter((file) => file.status === "conflict").length ?? 0;
-  const mergeBranches = summary?.branches.filter((branch) => branch !== summary.branch) ?? [];
+  const canCommit = Boolean(message.trim()) && staged.length > 0 && conflictCount === 0;
   const disabled = busy !== null;
   const needsHttpsCredential = summary?.credentialKind === "https";
   const needsSshCredential = summary?.credentialKind === "ssh";
@@ -393,26 +434,6 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
           </div>}
           {summary?.gitAvailable !== false && summary && !summary.isGitRepository && <div className="git-hint">{t("git.notRepository")}</div>}
           {summary?.gitAvailable !== false && summary?.isGitRepository && <>
-            {summary.upstream && summary.behind > 0 && !checkedUpdate && (
-              <div className="git-note">
-                <span className="git-note-text">{t("git.availableUpdate", { count: summary.behind })}</span>
-                <ActionButton label={t("git.updateNow")} action="pull" busy={busy} onClick={() => { setCheckedUpdate(true); void run("pull", { rebase: pullRebase }); }} />
-              </div>
-            )}
-            {summary.operation && <div className="git-note" data-tone="warn"><span className="git-note-text">{t("git.operationInProgress", { operation: t(`git.operation.${summary.operation}`) })}{conflictCount ? ` ${t("git.operationConflicts", { count: conflictCount })}` : ""}</span><div className="git-note-actions"><ActionButton label={t("git.continue")} busy={busy} action="continue" onClick={() => void run("continue")} /><ActionButton label={t("git.abort")} busy={busy} action="abort" danger onClick={() => void run("abort")} /></div></div>}
-            <div className="git-section">
-              <SectionTitle title={t("git.changesSummary", { additions: summary.changes.additions, deletions: summary.changes.deletions })} action={<>{unstaged.length > 0 && <ActionButton label={t("git.stageAll")} action="stage" busy={busy} onClick={() => void run("stage", { paths: unstaged.map((file) => file.filePath) })} />}{summary?.changes.files.length > 0 && <ActionButton label={t("git.discardAll")} action="discard_all" busy={busy} danger disabled={conflictCount > 0} title={t("git.discardAllTitle")} onClick={() => setConfirmingDiscardAll(true)} />}</>} />
-              <FileList files={unstaged} empty={t("git.noUnstagedChanges")} busy={busy} selectedPath={activeWorktreeFile?.scope === "unstaged" ? activeWorktreeFile.path : undefined} onOpenDiff={(file) => onSelectFile({ scope: "unstaged", path: file.filePath })} onStage={(filePath) => void run("stage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} />
-            </div>
-            <div className="git-section">
-              <SectionTitle title={t("git.stagedSummary", { count: staged.length })} action={staged.length > 0 ? <ActionButton label={t("git.unstageAll")} action="unstage" busy={busy} onClick={() => void run("unstage", { paths: staged.map((file) => file.filePath) })} /> : undefined} />
-              <FileList files={staged} empty={t("git.nothingStaged")} busy={busy} selectedPath={activeWorktreeFile?.scope === "staged" ? activeWorktreeFile.path : undefined} onOpenDiff={(file) => onSelectFile({ scope: "staged", path: file.filePath })} onUnstage={(filePath) => void run("unstage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} />
-            </div>
-            <div className="git-section">
-              <SectionTitle title={t("git.commit")} />
-              <textarea className="git-textarea" value={message} onChange={(event) => setMessage(event.target.value)} placeholder={t("git.commitMessage")} disabled={disabled} rows={6} />
-              <div className="git-commit-actions"><ActionButton label={t("git.summarizeCommit")} action="summarize" busy={busy} disabled={staged.length === 0 || conflictCount > 0} title={t("git.summarizeCommitTitle")} onClick={() => void summarizeCommitMessage()} /><ActionButton label={t("git.commitStaged")} action="commit" busy={busy} disabled={!message.trim() || staged.length === 0 || conflictCount > 0} onClick={() => void run("commit", { message })} /></div>
-            </div>
             <div className="git-section">
               <SectionTitle title={t("git.remote")} />
               {summary.remote && !editingRemote && <div className="git-actions-row" style={{ marginBottom: 9, flexWrap: "nowrap" }}>
@@ -430,9 +451,32 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
                 {!summary.canRememberCredential && <div className="git-hint">{t("git.rememberCredentialUnavailable")}</div>}
               </div>}
               {summary.credentialKind === "none" && summary.remote?.startsWith("git://") && <div className="git-hint" style={{ marginBottom: 10 }}>{t("git.nativeProtocolAnonymous")}</div>}
-              <div className="git-actions-row"><ActionButton label={t("git.fetch")} action="fetch" busy={busy} onClick={() => void run("fetch")} /><ActionButton label={t(pullRebase ? "git.pullRebase" : "git.pullMerge")} action="pull" busy={busy} onClick={() => void run("pull", { rebase: pullRebase })} /><ActionButton label={t("git.push")} action="push" busy={busy} onClick={() => void run("push")} /><label className="git-check"><input type="checkbox" checked={pullRebase} onChange={(event) => setPullRebase(event.target.checked)} disabled={disabled} /> {t("git.rebaseWhenPulling")}</label></div>
+              <div className="git-actions-row"><ActionButton label={t("git.fetch")} action="fetch" busy={busy} onClick={() => void run("fetch")} /><ActionButton label={t(pullRebase ? "git.pullRebase" : "git.pullMerge")} action="pull" busy={busy} onClick={requestPull} /><ActionButton label={t("git.push")} action="push" busy={busy} onClick={() => setPushPrompt({ cwd, committed: false })} /><label className="git-check"><input type="checkbox" checked={pullRebase} onChange={(event) => setPullRebase(event.target.checked)} disabled={disabled} /> {t("git.rebaseWhenPulling")}</label></div>
             </div>
-            <div className="git-section"><SectionTitle title={t("git.mergeBranch")} /><div className="git-actions-row"><MergeBranchPicker branches={mergeBranches} value={mergeBranch} disabled={disabled} onChange={setMergeBranch} /><ActionButton label={t("git.merge")} action="merge" busy={busy} disabled={!mergeBranch || mergeBranches.length === 0} onClick={() => void run("merge", { branch: mergeBranch })} /></div></div>
+            {summary.upstream && summary.behind > 0 && !checkedUpdate && (
+              <div className="git-note">
+                <span className="git-note-text">{t("git.availableUpdate", { count: summary.behind })}</span>
+                <ActionButton label={t("git.updateNow")} action="pull" busy={busy} onClick={requestPull} />
+              </div>
+            )}
+            {summary.operation && <div className="git-note" data-tone="warn"><span className="git-note-text">{t("git.operationInProgress", { operation: t(`git.operation.${summary.operation}`) })}{conflictCount ? ` ${t("git.operationConflicts", { count: conflictCount })}` : ""}</span><div className="git-note-actions"><ActionButton label={t("git.continue")} busy={busy} action="continue" onClick={() => void run("continue")} /><ActionButton label={t("git.abort")} busy={busy} action="abort" danger onClick={() => void run("abort")} /></div></div>}
+            <div className="git-section">
+              <SectionTitle title={t("git.changesSummary", { additions: summary.changes.additions, deletions: summary.changes.deletions })} action={<>{unstaged.length > 0 && <ActionButton label={t("git.stageAll")} action="stage" busy={busy} onClick={() => void run("stage", { paths: unstaged.map((file) => file.filePath) })} />}{summary?.changes.files.length > 0 && <ActionButton label={t("git.discardAll")} action="discard_all" busy={busy} danger disabled={conflictCount > 0} title={t("git.discardAllTitle")} onClick={() => setConfirmingDiscardAll(true)} />}</>} />
+              <FileList files={unstaged} empty={t("git.noUnstagedChanges")} busy={busy} selectedPath={activeWorktreeFile?.scope === "unstaged" ? activeWorktreeFile.path : undefined} onOpenDiff={(file) => onSelectFile({ scope: "unstaged", path: file.filePath })} onStage={(filePath) => void run("stage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} />
+            </div>
+            <div className="git-section">
+              <SectionTitle title={t("git.stagedSummary", { count: staged.length })} action={staged.length > 0 ? <ActionButton label={t("git.unstageAll")} action="unstage" busy={busy} onClick={() => void run("unstage", { paths: staged.map((file) => file.filePath) })} /> : undefined} />
+              <FileList files={staged} empty={t("git.nothingStaged")} busy={busy} selectedPath={activeWorktreeFile?.scope === "staged" ? activeWorktreeFile.path : undefined} onOpenDiff={(file) => onSelectFile({ scope: "staged", path: file.filePath })} onUnstage={(filePath) => void run("unstage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} />
+            </div>
+            <div className="git-section">
+              <SectionTitle title={t("git.commit")} />
+              <textarea className="git-textarea" value={message} onChange={(event) => setMessage(event.target.value)} placeholder={t("git.commitMessage")} disabled={disabled} rows={6} />
+              <div className="git-commit-actions">
+                <ActionButton label={t("git.summarizeCommit")} action="summarize" busy={busy} disabled={staged.length === 0 || conflictCount > 0} title={t("git.summarizeCommitTitle")} onClick={() => void summarizeCommitMessage()} />
+                <ActionButton label={t("git.commit")} action="commit" busy={busy} disabled={!canCommit} onClick={() => void run("commit", { message })} />
+                <ActionButton label={t("git.commitAndPush")} action="commit_and_push" busy={busy} disabled={!canCommit} onClick={() => void run("commit_and_push", { message })} />
+              </div>
+            </div>
             {/* 标签推送需要 origin，未配置远程时禁用各标签的推送按钮。 */}
             <div className="git-section">
               <SectionTitle title={t("git.tags")} action={summary.tags.length > 0 ? t("git.tagCount", { count: summary.tags.length }) : undefined} />
@@ -458,6 +502,16 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
             </div>
           </>}
         </div>
+        {pushPrompt?.cwd === cwd && <GitPushDialog
+          cwd={cwd} committed={pushPrompt.committed} onCancel={() => setPushPrompt(null)} onPush={confirmPush}
+        />}
+        {pullPrompt?.cwd === cwd && summary?.isGitRepository && pullPrompt.remote === summary.remote && pullPrompt.kind === summary.credentialKind && <PullCredentialDialog
+          kind={pullPrompt.kind}
+          initialDraft={{ username, secret: secret === SAVED_CREDENTIAL_MASK ? "" : secret, rememberCredential }}
+          canRememberCredential={summary.canRememberCredential}
+          onCancel={() => setPullPrompt(null)}
+          onConfirm={(draft) => { setPullPrompt(null); pull(pullPrompt.rebase, draft); }}
+        />}
         {versionPreview && summary?.isGitRepository && <div ref={versionDialogRef} tabIndex={-1} role="alertdialog" aria-modal="true" aria-label={t("git.versionUpgradeConfirm", { version: versionPreview.data.version })} className="git-version-confirm">
           <div className="git-confirm-panel">
             <p className="git-confirm-text">{t("git.versionUpgradeConfirm", { version: versionPreview.data.version })}</p>
@@ -473,6 +527,56 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
         {confirmingDiscardAll && summary?.isGitRepository && <DiscardAllConfirmDialog summary={summary} untrackedPaths={untrackedPaths} busy={busy} onCancel={() => setConfirmingDiscardAll(false)} onConfirm={() => { setConfirmingDiscardAll(false); void run("discard_all"); }} />}
         {confirmingDeleteTag && summary?.isGitRepository && <DeleteTagConfirmDialog tag={confirmingDeleteTag} busy={busy} onCancel={() => setConfirmingDeleteTag(null)} onConfirm={() => { const tag = confirmingDeleteTag; setConfirmingDeleteTag(null); void run("delete_tag", { tag }); }} />}
     </section>
+  );
+}
+
+function PullCredentialDialog({ kind, initialDraft, canRememberCredential, onCancel, onConfirm }: {
+  kind: PullPrompt["kind"];
+  initialDraft: CredentialDraft;
+  canRememberCredential: boolean;
+  onCancel: () => void;
+  onConfirm: (draft: CredentialDraft) => void;
+}) {
+  const { t } = useI18n();
+  const titleId = useId();
+  const hintId = useId();
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [draft, setDraft] = useState(initialDraft);
+  const isHttps = kind === "https";
+  useLayoutEffect(() => {
+    const element = dialog.current;
+    element?.showModal();
+    return () => { if (element?.open) element.close(); };
+  }, []);
+
+  return (
+    <dialog ref={dialog} className="git-pull-dialog" aria-labelledby={titleId} aria-describedby={hintId}
+      onKeyDown={(event) => { if (event.key === "Escape") event.stopPropagation(); }}
+      onCancel={(event) => { event.preventDefault(); onCancel(); }}>
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        onConfirm({ ...draft, username: draft.username.trim(), rememberCredential: canRememberCredential && Boolean(draft.secret) && draft.rememberCredential });
+      }}>
+        <h2 id={titleId}>{t("git.pullCredentialTitle")}</h2>
+        <p id={hintId} className="git-confirm-note">{t(isHttps ? "git.pullHttpsHint" : "git.pullSshHint")}</p>
+        {isHttps && <label className="git-field-label">{t("git.username")}
+          <input className="git-input" autoComplete="username" value={draft.username} required={Boolean(draft.secret)}
+            onChange={(event) => setDraft({ ...draft, username: event.target.value })} />
+        </label>}
+        <label className="git-field-label">{t(isHttps ? "git.passwordOrToken" : "git.keyPassphrase")}
+          <input className="git-input" type="password" autoComplete="current-password" value={draft.secret}
+            onChange={(event) => setDraft({ ...draft, secret: event.target.value })} />
+        </label>
+        {canRememberCredential && <label className="git-check">
+          <input type="checkbox" checked={Boolean(draft.secret) && draft.rememberCredential} disabled={!draft.secret}
+            onChange={(event) => setDraft({ ...draft, rememberCredential: event.target.checked })} /> {t("git.rememberCredential")}
+        </label>}
+        <div className="git-confirm-actions">
+          <button className="git-btn" type="button" onClick={onCancel}>{t("git.cancelEditRemote")}</button>
+          <button className="git-btn" type="submit">{t("git.confirmPull")}</button>
+        </div>
+      </form>
+    </dialog>
   );
 }
 
@@ -575,7 +679,4 @@ function DiscardAllConfirmDialog({ summary, untrackedPaths, busy, onCancel, onCo
       </div>
     </div>
   );
-}
-function MergeBranchPicker({ branches, value, disabled, onChange }: { branches: string[]; value: string; disabled: boolean; onChange: (branch: string) => void }) {
-  return <BranchPicker branches={branches} value={value} disabled={disabled} placement="above" onChange={onChange} />;
 }

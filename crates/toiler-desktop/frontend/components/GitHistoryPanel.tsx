@@ -4,7 +4,9 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSPrope
 import { ChevronRight, FileText, GitBranch, GitCommitHorizontal, GitMerge, History, MoreHorizontal, RefreshCw, Search, Tag } from "lucide-react";
 import type { GitDiffSelection } from "@/lib/git-workspace";
 import { useI18n } from "@/hooks/useI18n";
+import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { readApiJson } from "@/lib/api-json";
+import { GIT_HISTORY_REFS_DEFAULT_WIDTH, GIT_HISTORY_REFS_MAX_WIDTH, GIT_HISTORY_REFS_MIN_WIDTH, getGitHistoryRefsDefaultWidth, getGitHistoryRefsMaxWidth } from "@/lib/panel-layout";
 import { historyFilterParams, layoutGitHistory, shortRef, type GitHistoryCriteria, type GitHistoryBranch, type GitHistoryCommit, type GitHistoryPage, type GitHistoryRef, type GitHistoryRefs } from "@/lib/git-history";
 import { CommitActionMenu, CommitResetDialog, type CommitActionAnchor, type CommitActionTarget, type GitResetMode } from "./GitHistoryActions";
 import { GitRefActions, type RefActionAnchor } from "./GitRefActions";
@@ -60,6 +62,37 @@ function LoadState({ error, retry }: { error?: string; retry: () => void }) {
 export function GitHistoryPanel({ cwd, refreshKey, onSelectFile, selectedFile, onChanged }: { cwd: string; refreshKey: number; onSelectFile: (file: GitDiffSelection) => void; selectedFile: GitDiffSelection | null; onChanged: () => void }) {
   const { t } = useI18n();
   const panel = useRef<HTMLElement>(null);
+  const refsId = useId();
+  const refsWidth = useRef(GIT_HISTORY_REFS_DEFAULT_WIDTH);
+  const [panelWidth, setPanelWidth] = useState(0);
+  const getDefaultRefsWidth = useCallback(
+    () => getGitHistoryRefsDefaultWidth(panelWidth || panel.current?.clientWidth || 0),
+    [panelWidth],
+  );
+  const getMaxRefsWidth = useCallback(
+    () => getGitHistoryRefsMaxWidth(panelWidth || panel.current?.clientWidth || 0),
+    [panelWidth],
+  );
+  const refsResizer = useResizablePanel({
+    ariaLabel: t("gitHistory.resizeRefs"),
+    cssVariable: "--git-history-refs-width",
+    defaultWidth: GIT_HISTORY_REFS_DEFAULT_WIDTH,
+    getDefaultWidth: getDefaultRefsWidth,
+    getMaxWidth: getMaxRefsWidth,
+    growthDirection: "right",
+    maxWidth: GIT_HISTORY_REFS_MAX_WIDTH,
+    minWidth: GIT_HISTORY_REFS_MIN_WIDTH,
+    storageKey: "toiler-git-history-refs-width",
+    widthRef: refsWidth,
+  });
+  useEffect(() => {
+    const element = panel.current;
+    if (!element) return;
+    // 打开主侧栏也会改变历史区宽度，此时窗口本身不会触发 resize。
+    const observer = new ResizeObserver(([entry]) => setPanelWidth(entry.contentRect.width));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   const searchButton = useRef<HTMLButtonElement>(null);
   const formId = useId();
   const [showFilters, setShowFilters] = useState(false);
@@ -219,9 +252,9 @@ export function GitHistoryPanel({ cwd, refreshKey, onSelectFile, selectedFile, o
           {t(`gitHistory.${name}`)}
         </button>)}
       </nav>
-      {!data ? <LoadState error={resource.error} retry={resource.retry} /> :
-        <div className={styles.columns}>
-          <section className={`${styles.column} ${styles.refs}`} aria-label={t("gitHistory.refs")}>
+      <div ref={refsResizer.panelRef} className={data ? styles.columns : undefined}>
+        {!data ? <LoadState error={resource.error} retry={resource.retry} /> : <>
+          <section id={refsId} className={`${styles.column} ${styles.refs}`} aria-label={t("gitHistory.refs")}>
             <div className={styles.refToolbar}>
               <label className={styles.search}>
                 <Search size={14} aria-hidden="true" />
@@ -272,8 +305,11 @@ export function GitHistoryPanel({ cwd, refreshKey, onSelectFile, selectedFile, o
               })}
             </div>
           </section>
+          <div {...refsResizer.separatorProps} aria-controls={refsId} className={styles.refsDivider}
+            data-resizing={refsResizer.isResizing} title={t("layout.resizeHint")} />
           <CommitHistory key={`${version}:${selectedRef}:${searchKey}`} cwd={cwd} reference={selectedRef} params={params} filtered={filtered} refs={data.refs} onOpenDetails={() => showPane("details")} onSelectFile={onSelectFile} selectedFile={selectedFile} onCommitMenu={openMenu} />
-        </div>}
+        </>}
+      </div>
       {menu && <CommitActionMenu anchor={menu} canWrite={canWrite} onClose={closeMenu}
         onCherryPick={() => { const target = menuTarget(); closeMenu(true); if (target) void runAction(target); }}
         onReset={() => { const target = menuTarget(); closeMenu(false); if (target) setResetTarget(target); }} />}

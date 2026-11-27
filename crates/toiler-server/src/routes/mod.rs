@@ -210,6 +210,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/git/history", get(crate::routes::git::history_page))
         .route("/api/git/commit", get(crate::routes::git::history_commit))
         .route(
+            "/api/git/push-preview",
+            get(crate::routes::git::push_preview),
+        )
+        .route(
             "/api/git/history-action",
             post(crate::routes::git::history_action),
         )

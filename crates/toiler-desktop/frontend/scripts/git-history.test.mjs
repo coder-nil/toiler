@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createJiti } from "jiti";
 
-const { historyFilterParams, layoutGitHistory, shortRef } = await createJiti(import.meta.url).import("../lib/git-history.ts");
+const jiti = createJiti(import.meta.url);
+const { historyFilterParams, layoutGitHistory, shortRef } = await jiti.import("../lib/git-history.ts");
+const { getGitHistoryRefsDefaultWidth, getGitHistoryRefsMaxWidth } = await jiti.import("../lib/panel-layout.ts");
 const commit = (hash, ...parents) => ({ hash, parents });
 
 test("合并的两条线在共同祖先汇合，翻页不移动已有节点", () => {
@@ -36,4 +39,22 @@ test("提交查询按本地日期发送半开区间，保留摘要中的字面�
     before: String(new Date(2025, 0, 1).getTime() / 1000),
   });
   assert.deepEqual(historyFilterParams({ commitId: "", subject: " ", author: "", fromDate: "", toDate: "" }), {});
+});
+
+test("分支栏保留原有默认宽度，并根据历史区宽度限制拖动范围", () => {
+  assert.equal(getGitHistoryRefsDefaultWidth(680), 129);
+  assert.equal(getGitHistoryRefsDefaultWidth(1000), 190);
+  assert.equal(getGitHistoryRefsDefaultWidth(1600), 235);
+  assert.equal(getGitHistoryRefsMaxWidth(680), 214);
+  assert.equal(getGitHistoryRefsMaxWidth(900), 371);
+  assert.equal(getGitHistoryRefsMaxWidth(1600), 480);
+  assert.equal(getGitHistoryRefsMaxWidth(679), 480);
+});
+
+test("分隔条位于分支栏与提交记录之间，窄屏标签页不显示分隔条", async () => {
+  const component = await readFile(new URL("../components/GitHistoryPanel.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../components/GitHistoryPanel.module.css", import.meta.url), "utf8");
+  assert.match(component, /id=\{refsId\}[\s\S]*?\.\.\.refsResizer\.separatorProps\} aria-controls=\{refsId\}[\s\S]*?<CommitHistory/);
+  assert.match(styles, /grid-template-columns: var\(--git-history-refs-width,/);
+  assert.match(styles, /@container git-history \(width < 680px\)[\s\S]*?\.refsDivider,[\s\S]*?\{ display: none; \}/);
 });

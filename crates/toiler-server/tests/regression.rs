@@ -3904,6 +3904,86 @@ fn history_fixture_git(sandbox: &Path, repo: &Path, args: &[&str]) -> String {
         .to_string()
 }
 
+/// Git 操作区的预览只读本地跟踪引用；确认只推所见提交，旧预览不能推新提交。
+#[tokio::test]
+async fn git_push_preview_pins_the_destination_and_commit() {
+    let sandbox = fixture_root("git-push-preview");
+    let repo = sandbox.join("repo");
+    let store = sandbox.join("store");
+    let remote = sandbox.join("remote.git");
+    for path in [&repo, &store, &remote] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let git = |args: &[&str]| history_fixture_git(&sandbox, &repo, args);
+    let remote_git = |args: &[&str]| history_fixture_git(&sandbox, &remote, args);
+    remote_git(&["init", "--bare", "-q", "-b", "review"]);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", remote.to_str().unwrap()]);
+    git(&["commit", "--allow-empty", "-qm", "base"]);
+    git(&["push", "-u", "origin", "main:review"]);
+    let base = git(&["rev-parse", "HEAD"]);
+    std::fs::write(repo.join("review.txt"), "preview\n").unwrap();
+    git(&["add", "review.txt"]);
+    git(&["commit", "-qm", "review summary", "-m", "review body"]);
+    let tip = git(&["rev-parse", "HEAD"]);
+    git(&["tag", "-a", "local-only", "-m", "stay local"]);
+    git(&["config", "push.followTags", "true"]);
+    let router = app_with_agent_dir(&store, &repo, Some(&store));
+    let cwd = url_encode(&repo.to_string_lossy());
+    let url = format!("/api/git/push-preview?cwd={cwd}");
+    let first = get(router.clone(), &url).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text());
+    let preview = first.json();
+    assert_eq!(preview["branch"], "main");
+    assert_eq!(preview["remote"], "origin");
+    assert_eq!(preview["targetBranch"], "review");
+    assert_eq!(preview["hasTrackingRef"], true);
+    assert_eq!(preview["usesPanelCredential"], true);
+    assert_eq!(preview["commits"].as_array().unwrap().len(), 1);
+    assert_eq!(preview["commits"][0]["hash"], tip);
+    assert_eq!(preview["commits"][0]["subject"], "review summary");
+    assert_eq!(remote_git(&["rev-parse", "refs/heads/review"]), base);
+    let detail = get(
+        router.clone(),
+        &format!("/api/git/commit?cwd={cwd}&hash={tip}"),
+    )
+    .await
+    .json();
+    assert_eq!(detail["files"][0]["path"], "review.txt");
+    assert!(detail["message"].as_str().unwrap().contains("review body"));
+    let push = |preview: Value| {
+        let body = json!({"cwd": repo, "action": "push", "previewToken": preview["token"]});
+        let router = router.clone();
+        async move { call(router, "POST", "/api/git", Some(&body.to_string()), &[]).await }
+    };
+    git(&["commit", "--allow-empty", "-qm", "new commit"]);
+    let new_tip = git(&["rev-parse", "HEAD"]);
+    let stale = push(preview).await;
+    assert_eq!(stale.status, StatusCode::BAD_REQUEST, "{}", stale.text());
+    assert_eq!(remote_git(&["rev-parse", "refs/heads/review"]), base);
+    let current = get(router.clone(), &url).await.json();
+    assert_eq!(current["commits"].as_array().unwrap().len(), 2);
+    let pushed = push(current).await;
+    assert_eq!(pushed.status, StatusCode::OK, "{}", pushed.text());
+    assert_eq!(remote_git(&["rev-parse", "refs/heads/review"]), new_tip);
+    assert_eq!(
+        remote_git(&[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/tags"
+        ]),
+        "refs/heads/review"
+    );
+    assert_eq!(get(router.clone(), &url).await.json()["commits"], json!([]));
+    git(&["checkout", "-qb", "topic"]);
+    let new_branch = get(router, &url).await.json();
+    assert_eq!(new_branch["targetBranch"], "topic");
+    assert_eq!(new_branch["hasTrackingRef"], false);
+    assert_eq!(new_branch["commits"][0]["hash"], new_tip);
+    std::fs::remove_dir_all(sandbox).unwrap();
+}
+
 /// 三栏历史面板依赖全名引用、第一父提交文件列表和完整的分支归属。
 #[tokio::test]
 async fn git_history_lists_refs_and_reads_root_rename_and_merge_details() {
@@ -4317,6 +4397,100 @@ async fn git_history_ref_menu_uses_the_selected_ref_and_checked_out_target() {
         remote_git(&["for-each-ref", "--format=%(refname)", "refs/heads"]),
         "refs/heads/main"
     );
+    std::fs::remove_dir_all(sandbox).unwrap();
+}
+
+/// 侧栏和历史的删除菜单按列表区分同名引用，只有本地分支可明确跳过合并检查。
+#[tokio::test]
+async fn git_ref_delete_keeps_same_named_branches_and_linked_worktrees_separate() {
+    let sandbox = fixture_root("git-delete-ref-scope");
+    let repo = sandbox.join("repo");
+    let store = sandbox.join("store");
+    let remote = sandbox.join("remote.git");
+    let linked = sandbox.join("linked");
+    for path in [&repo, &store, &remote] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let git = |args: &[&str]| history_fixture_git(&sandbox, &repo, args);
+    let remote_git = |args: &[&str]| history_fixture_git(&sandbox, &remote, args);
+    remote_git(&["init", "--bare", "-q", "-b", "main"]);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", remote.to_str().unwrap()]);
+    git(&["commit", "--allow-empty", "-qm", "base"]);
+    let base = git(&["rev-parse", "HEAD"]);
+    git(&[
+        "push",
+        "origin",
+        "HEAD:refs/heads/main",
+        "HEAD:refs/heads/topic/feature",
+    ]);
+    git(&[
+        "worktree",
+        "add",
+        "-qb",
+        "topic/feature",
+        linked.to_str().unwrap(),
+    ]);
+    history_fixture_git(
+        &sandbox,
+        &linked,
+        &["commit", "--allow-empty", "-qm", "local only"],
+    );
+    let local_tip = git(&["rev-parse", "refs/heads/topic/feature"]);
+    git(&["tag", "topic/feature"]);
+    git(&["branch", "origin/topic/feature"]);
+    let router = app_with_agent_dir(&store, &repo, Some(&store));
+    let list = get(
+        router.clone(),
+        &format!("/api/worktrees?cwd={}", url_encode(&repo.to_string_lossy())),
+    )
+    .await
+    .json();
+    assert!(list["branches"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("topic/feature")));
+    assert!(list["remoteBranches"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("origin/topic/feature")));
+    let delete = |reference: &str, force: bool| {
+        let router = router.clone();
+        let body = json!({"cwd": repo, "ref": reference, "action": "delete", "force": force});
+        async move {
+            call(
+                router,
+                "POST",
+                "/api/git/ref-action",
+                Some(&body.to_string()),
+                &[],
+            )
+            .await
+        }
+    };
+    let local = "refs/heads/topic/feature";
+    let tracking = "refs/remotes/origin/topic/feature";
+    assert_eq!(delete(local, true).await.status, StatusCode::BAD_REQUEST);
+    assert!(linked.is_dir());
+    assert_eq!(git(&["rev-parse", local]), local_tip);
+    git(&["worktree", "remove", linked.to_str().unwrap()]);
+    assert_eq!(delete(local, false).await.status, StatusCode::BAD_REQUEST);
+    let removed = delete(local, true).await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.text());
+    assert_eq!(git(&["for-each-ref", "--format=%(refname)", local]), "");
+    assert_eq!(git(&["rev-parse", tracking]), base);
+    assert_eq!(remote_git(&["rev-parse", local]), base);
+    git(&["branch", "topic/feature", &local_tip]);
+    assert_eq!(delete(tracking, true).await.status, StatusCode::BAD_REQUEST);
+    let removed = delete(tracking, false).await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.text());
+    assert_eq!(
+        remote_git(&["for-each-ref", "--format=%(refname)", local]),
+        ""
+    );
+    assert_eq!(git(&["rev-parse", local]), local_tip);
+    assert_eq!(git(&["rev-parse", "refs/heads/origin/topic/feature"]), base);
+    assert_eq!(git(&["rev-parse", "refs/tags/topic/feature"]), base);
     std::fs::remove_dir_all(sandbox).unwrap();
 }
 

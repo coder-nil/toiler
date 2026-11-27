@@ -10,6 +10,10 @@
   box-shadow: var(--shadow-overlay);
   font-size: 13px;
 }
+.menu, .menu * {
+  -webkit-user-select: none;
+  user-select: none;
+}
 .menu[data-wide="true"] {
   width: max-content;
   max-width: calc(100vw - 12px);

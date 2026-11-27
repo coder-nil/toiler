@@ -34,7 +34,10 @@ pub(crate) enum RefAction {
     Rename {
         new_branch: String,
     },
-    Delete,
+    Delete {
+        #[serde(default)]
+        force: bool,
+    },
     PushTag,
 }
 
@@ -294,9 +297,13 @@ pub(crate) fn apply(root: &Path, reference: &str, action: RefAction) -> Result<(
             branch_name(root, &new_branch)?;
             mutate(root, &["branch", "-m", "--", local.unwrap(), &new_branch])
         }
-        RefAction::Delete => {
+        RefAction::Delete { force } => {
             if let Some(branch) = local {
-                mutate(root, &["branch", "-d", "--", branch])
+                // 即使明确跳过合并检查，也由 Git 拒绝删除仍被工作树检出的分支。
+                let flag = if force { "-D" } else { "-d" };
+                mutate(root, &["branch", flag, "--", branch])
+            } else if force {
+                Err(err("Force delete is only available for local branches"))
             } else if let Some(name) = remote {
                 let (server, branch) = remote_parts(root, name)?;
                 let destination = format!("{LOCAL}{branch}");

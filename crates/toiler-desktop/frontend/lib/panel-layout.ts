@@ -9,6 +9,24 @@ export const RIGHT_PANEL_FALLBACK_WIDTH = 560;
 export const RIGHT_PANEL_MIN_WIDTH = 300;
 export const RIGHT_PANEL_MAX_WIDTH = 1200;
 
+export const GIT_HISTORY_REFS_DEFAULT_WIDTH = 180;
+export const GIT_HISTORY_REFS_MIN_WIDTH = 122;
+export const GIT_HISTORY_REFS_MAX_WIDTH = 480;
+
+/** 详情列维持原宽度，分支栏加宽时给提交列表保留至少 260px。 */
+export function getGitHistoryRefsMaxWidth(panelWidth: number): number {
+  // 窄屏使用标签页，不应因分栏隐藏而把分支栏宽度压到最小。
+  if (panelWidth < 680) return GIT_HISTORY_REFS_MAX_WIDTH;
+  const detailWidth = Math.max(180, Math.min(panelWidth * 0.29, 390));
+  return Math.min(GIT_HISTORY_REFS_MAX_WIDTH, Math.floor(panelWidth - detailWidth - 8 - 260));
+}
+
+export function getGitHistoryRefsDefaultWidth(panelWidth: number): number {
+  return panelWidth < 680
+    ? GIT_HISTORY_REFS_DEFAULT_WIDTH
+    : clampPanelWidth(panelWidth * 0.19, GIT_HISTORY_REFS_MIN_WIDTH, 235);
+}
+
 /**
  * Chat minimap track width.
  *

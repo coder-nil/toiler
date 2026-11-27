@@ -14,12 +14,22 @@ export interface RefActionAnchor extends HistoryActionAnchor {
 }
 
 type RequestAction =
-  | { action: "checkout" | "update" | "push_tag" | "delete" }
+  | { action: "checkout" | "update" | "push_tag" }
+  | { action: "delete"; force?: boolean }
   | { action: "merge"; expectedBranch: string }
   | { action: "create_branch" | "rename"; newBranch: string }
   | { action: "push"; remote: string; targetBranch: string };
 
 type Confirmation = { ref: string; action: "checkout" | "create_branch" | "rename" | "delete" | "push"; remotes: string[]; upstream?: GitHistoryRefs["upstreams"][string] };
+
+export async function requestGitRefAction(cwd: string, ref: string, command: RequestAction) {
+  const response = await fetch("/api/git/ref-action", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cwd, ref, ...command }),
+  });
+  await readApiJson<{ ok: true }>(response);
+}
 
 export function GitRefActions({ cwd, data, anchor, onClose, onChanged, onSelection, restoreFocus }: {
   cwd: string;
@@ -43,12 +53,7 @@ export function GitRefActions({ cwd, data, anchor, onClose, onChanged, onSelecti
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch("/api/git/ref-action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd, ref, ...command }),
-      });
-      await readApiJson<{ ok: true }>(response);
+      await requestGitRefAction(cwd, ref, command);
       if (command.action === "checkout" || command.action === "create_branch") onSelection(ref, "HEAD");
       if (command.action === "rename") onSelection(ref, `refs/heads/${command.newBranch}`);
       setConfirmation(null);
@@ -98,7 +103,7 @@ export function GitRefActions({ cwd, data, anchor, onClose, onChanged, onSelecti
         return <button key={action} type="button" role="menuitem" tabIndex={-1} disabled={disabled}
           data-danger={action === "delete"} onClick={() => choose(action)}
           title={action === "update" && !data.upstreams[ref] ? t("git.noUpstream") : undefined}>
-          {t(`gitRefs.${action}`, { branch, into: into || t("gitRefs.currentBranch") })}
+          {t(action === "delete" ? deleteLabel(kind) : `gitRefs.${action}`, { branch, into: into || t("gitRefs.currentBranch") })}
         </button>;
       })}
     </HistoryActionMenu>}
@@ -106,6 +111,21 @@ export function GitRefActions({ cwd, data, anchor, onClose, onChanged, onSelecti
       onCancel={() => { setConfirmation(null); setError(null); requestAnimationFrame(restoreFocus); }}
       onConfirm={(command) => void run(confirmation.ref, command)} />}
   </>;
+}
+
+function deleteLabel(kind: ReturnType<typeof historyRefKind>) {
+  return kind === "local" ? "sidebar.deleteLocalBranch" : kind === "remote" ? "sidebar.deleteRemoteBranch" : "git.deleteTag";
+}
+
+export function DeleteBranchDialog({ reference, busy, error, onCancel, onConfirm }: {
+  reference: string;
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: (force: boolean) => void;
+}) {
+  return <RefActionDialog key={reference} target={{ ref: reference, action: "delete", remotes: [] }} busy={busy} error={error}
+    onCancel={onCancel} onConfirm={(command) => { if (command.action === "delete") onConfirm(command.force === true); }} />;
 }
 
 function RefActionDialog({ target, busy, error, onCancel, onConfirm }: {
@@ -124,6 +144,9 @@ function RefActionDialog({ target, busy, error, onCancel, onConfirm }: {
   const kind = historyRefKind(target.ref);
   const isPush = target.action === "push";
   const isDelete = target.action === "delete";
+  const canForceDelete = isDelete && kind === "local";
+  const [forceDelete, setForceDelete] = useState(false);
+  const title = isDelete ? deleteLabel(kind) : `gitRefs.title.${target.action}`;
   const hasName = isPush || target.action === "create_branch" || target.action === "rename";
   const defaultRemote = target.remotes.includes(target.upstream?.remote ?? "") ? target.upstream!.remote
     : target.remotes.includes("origin") ? "origin" : target.remotes[0] ?? "";
@@ -145,9 +168,10 @@ function RefActionDialog({ target, busy, error, onCancel, onConfirm }: {
       if (busy || (hasName && !name.trim())) return;
       if (target.action === "push") onConfirm({ action: "push", remote, targetBranch: name.trim() });
       else if (target.action === "create_branch" || target.action === "rename") onConfirm({ action: target.action, newBranch: name.trim() });
+      else if (target.action === "delete") onConfirm(canForceDelete && forceDelete ? { action: "delete", force: true } : { action: "delete" });
       else onConfirm({ action: target.action });
     }}>
-      <h2 id={titleId}>{t(`gitRefs.title.${target.action}`)}</h2>
+      <h2 id={titleId}>{t(title)}</h2>
       <p className={styles.target}><code>{source}</code></p>
       {description && <p className={styles.muted}>{t(description)}</p>}
       {isPush && <label className={styles.refField}>{t("gitRefs.remoteLabel")}
@@ -158,11 +182,15 @@ function RefActionDialog({ target, busy, error, onCancel, onConfirm }: {
       {hasName && <label className={styles.refField}>{t(isPush ? "gitRefs.targetName" : "gitRefs.branchName")}
         <input ref={input} value={name} onChange={(event) => setName(event.target.value)} required disabled={busy} spellCheck={false} autoComplete="off" />
       </label>}
+      {canForceDelete && <label className={styles.mode}>
+        <input type="checkbox" checked={forceDelete} disabled={busy} onChange={(event) => setForceDelete(event.target.checked)} />
+        <span><strong>{t("gitRefs.forceDelete")}</strong><small>{t("gitRefs.forceDeleteHint")}</small></span>
+      </label>}
       {error && <p className={styles.error} role="alert">{error}</p>}
       <div className={styles.actions}>
         <button ref={cancel} type="button" disabled={busy} onClick={onCancel}>{t("sidebar.cancel")}</button>
         <button type="submit" data-primary data-danger={isDelete} disabled={busy || (hasName && !name.trim()) || (isPush && !remote)}>
-          {t(busy ? "gitRefs.working" : `gitRefs.title.${target.action}`)}
+          {t(busy ? "gitRefs.working" : canForceDelete && forceDelete ? "gitRefs.forceDelete" : title)}
         </button>
       </div>
     </form>

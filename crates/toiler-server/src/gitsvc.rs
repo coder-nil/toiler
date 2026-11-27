@@ -859,15 +859,19 @@ pub fn upstream_status(cwd: &Path) -> (Option<String>, u64, u64) {
 }
 
 fn branches(root: &Path, prefix: &str) -> Vec<String> {
-    let format = "--format=%(refname:short)";
-    let Ok(raw) = run_git(root, &["for-each-ref", format, prefix], STATUS_TIMEOUT) else {
+    let Ok(raw) = run_git(
+        root,
+        &["for-each-ref", "--format=%(refname)", prefix],
+        STATUS_TIMEOUT,
+    ) else {
         return Vec::new();
     };
+    // 显示名只去掉当前列表的命名空间，不能用 Git 为消歧而生成的“短名”拼回完整引用。
+    let prefix = format!("{prefix}/");
     let mut out: Vec<String> = raw
         .lines()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+        .filter_map(|name| name.strip_prefix(&prefix))
+        .map(str::to_owned)
         .collect();
     out.sort();
     out.dedup();
@@ -1525,18 +1529,28 @@ fn run_remote_action_with_store(
     let remote = run_git(root, &["remote", "get-url", "origin"], STATUS_TIMEOUT)
         .ok()
         .filter(|s| !s.is_empty());
-    let kind = credential_kind(remote.as_deref());
+    run_remote_action_for_url(root, args, body, store, remote.as_deref())
+}
+
+fn run_remote_action_for_url(
+    root: &Path,
+    args: &[&str],
+    body: &Value,
+    store: &CredentialStore,
+    remote: Option<&str>,
+) -> Result<(), GitError> {
+    let kind = credential_kind(remote);
 
     // 1. 显式传入的凭据优先；没传就看存过的有没有。
-    let credential = resolve_credential(store, remote.as_deref(), kind, body)?;
+    let credential = resolve_credential(store, remote, kind, body)?;
 
-    run_network(root, args, credential.clone(), remote.as_deref())?;
+    run_network(root, args, credential.clone(), remote)?;
 
     // 2. 只有这次真的用了凭据、且用户勾了记住，才写盘。失败不回滚主操作：
     //    推送已经成功了，没必要因为存不下凭据就把整次操作报成失败。
     if let Some((kind, username, secret)) = credential {
         if body.get("rememberCredential").and_then(Value::as_bool) == Some(true) {
-            let Some(url) = remote.as_deref() else {
+            let Some(url) = remote else {
                 return Ok(());
             };
             let entry = GitCredential::new(kind.as_str(), username.clone(), secret.clone());
@@ -1552,7 +1566,7 @@ fn run_remote_action_with_store(
             }
             // credential helper 只管 HTTPS；对 SSH 传 password 进去是错的。
             if kind == "https" {
-                remember_credential(remote.as_deref(), username.as_deref(), &secret);
+                remember_credential(remote, username.as_deref(), &secret);
             }
         }
     }
@@ -1653,6 +1667,9 @@ pub fn action(cwd: &Path, body: &Value) -> Result<Value, GitError> {
         "commit" => {
             let message = require_str(body, "message")?;
             run_git(&root, &["commit", "-m", message], ACTION_TIMEOUT)?;
+        }
+        "push" if body.get("previewToken").is_some() => {
+            history::push::confirm(&root, body, require_str(body, "previewToken")?)?;
         }
         "fetch" | "pull" | "push" => {
             let args: Vec<&str> = match action {

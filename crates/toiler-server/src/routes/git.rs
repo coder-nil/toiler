@@ -101,6 +101,16 @@ pub async fn command(
             }
         }
     }
+    if body.get("action").and_then(Value::as_str) == Some("push")
+        && body.get("previewToken").is_some()
+    {
+        return in_history_repository(
+            state,
+            Some(cwd.to_string_lossy().into_owned()),
+            move |root| gitsvc::action(root, &body),
+        )
+        .await;
+    }
     match blocking_git(move || gitsvc::action(&cwd, &body)).await {
         Ok(value) => Json(value).into_response(),
         Err(message) => git_error(400, &message),
@@ -264,6 +274,28 @@ pub async fn history_commit(
 ) -> Response {
     in_history_repository(state, query.cwd, move |root| {
         gitsvc::history::commit(root, &query.hash)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct PushPreviewQuery {
+    cwd: Option<String>,
+    offset: Option<usize>,
+    token: Option<String>,
+}
+
+pub async fn push_preview(
+    State(state): State<AppState>,
+    _trusted: Trusted,
+    Query(query): Query<PushPreviewQuery>,
+) -> Response {
+    in_history_repository(state, query.cwd, move |root| {
+        gitsvc::history::push::preview(
+            root,
+            query.offset.unwrap_or_default(),
+            query.token.as_deref(),
+        )
     })
     .await
 }
