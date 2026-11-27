@@ -1,4 +1,6 @@
-//! 工作树历史面板只读本地引用和提交对象，不刷新远端或读取工作区文件。
+//! 工作树历史与引用操作；浏览接口只读本地引用和提交对象。
+
+pub(crate) mod refs_action;
 
 use super::{
     err, is_binary, operation_in_progress, parse_porcelain, read_git_stdout, repo_lock,
@@ -10,8 +12,8 @@ use std::path::Path;
 
 const REF_PREFIXES: [&str; 3] = ["refs/heads/", "refs/remotes/", "refs/tags/"];
 pub(crate) const PAGE_SIZE: usize = 100;
-const SUMMARY_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%aI%x00%s";
-const SEARCH_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%aI%x00%s%x00%at";
+const SUMMARY_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%aI%x00%s%x00%ae";
+const SEARCH_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%aI%x00%s%x00%ae%x00%at";
 const DETAIL_FORMAT: &str = "--format=%H%x00%P%x00%an%x00%aI%x00%s%x00%ae%x00%B";
 const LOG_OPTIONS: &[&str] = &[
     "--no-patch",
@@ -55,6 +57,14 @@ pub(crate) struct Refs {
     repository_root: String,
     head_branch: Option<String>,
     refs: Vec<Reference>,
+    remotes: Vec<String>,
+    upstreams: std::collections::BTreeMap<String, Upstream>,
+}
+
+#[derive(Serialize)]
+struct Upstream {
+    remote: String,
+    branch: String,
 }
 
 #[derive(Serialize)]
@@ -75,17 +85,29 @@ pub(crate) fn refs(root: &Path) -> Result<Refs, GitError> {
         &[
             "for-each-ref",
             "--sort=refname",
-            "--format=%(refname)%00%(symref)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)",
+            "--format=%(refname)%00%(symref)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)%00%(upstream:remotename)%00%(upstream:remoteref)",
             "refs/heads",
             "refs/remotes",
             "refs/tags",
         ],
     )?;
+    let mut upstreams = std::collections::BTreeMap::new();
     let refs = raw
         .lines()
         .filter_map(|line| {
-            let [name, symref, kind, oid, target_kind, target] =
+            let [name, symref, kind, oid, target_kind, target, remote, upstream] =
                 line.split('\0').collect::<Vec<_>>().try_into().ok()?;
+            if name.starts_with(REF_PREFIXES[0]) && !remote.is_empty() {
+                if let Some(branch) = upstream.strip_prefix(REF_PREFIXES[0]) {
+                    upstreams.insert(
+                        name.into(),
+                        Upstream {
+                            remote: remote.into(),
+                            branch: branch.into(),
+                        },
+                    );
+                }
+            }
             // origin/HEAD 等只是同组分支的别名，不是一条新分支。
             symref.is_empty().then(|| Reference {
                 name: name.into(),
@@ -101,7 +123,16 @@ pub(crate) fn refs(root: &Path) -> Result<Refs, GitError> {
         repository_root: root.to_string_lossy().into_owned(),
         head_branch: head_branch(root),
         refs,
+        remotes: refs_action::remotes(root)?,
+        upstreams,
     })
+}
+
+/// 使用工作树生效的 Git 邮箱，而不是靠姓名判断是否为自己的提交。
+fn configured_author_email(root: &Path) -> Option<String> {
+    let email = read(root, &["config", "--get", "user.email"]).ok()?;
+    let email = email.trim();
+    (!email.is_empty()).then(|| email.to_owned())
 }
 
 #[derive(Serialize)]
@@ -110,17 +141,19 @@ struct Summary {
     hash: String,
     parents: Vec<String>,
     author: String,
+    is_own_author: bool,
     authored_at: String,
     subject: String,
 }
 
 impl Summary {
-    fn parse(fields: &[&str]) -> Result<Self, GitError> {
+    fn parse(fields: &[&str], own_email: Option<&str>) -> Result<Self, GitError> {
         match fields {
-            [hash, parents, author, authored_at, subject, ..] if is_oid(hash) => Ok(Self {
+            [hash, parents, author, authored_at, subject, email, ..] if is_oid(hash) => Ok(Self {
                 hash: (*hash).into(),
                 parents: parents.split_whitespace().map(str::to_owned).collect(),
                 author: (*author).into(),
+                is_own_author: own_email.is_some_and(|own| own.eq_ignore_ascii_case(email)),
                 authored_at: (*authored_at).into(),
                 subject: (*subject).into(),
             }),
@@ -199,8 +232,12 @@ pub(crate) fn apply_action(
     let branch = head_branch(root)
         .filter(|branch| branch.starts_with("refs/heads/"))
         .ok_or_else(|| err("No local branch is checked out"))?;
-    if branch != expected_branch || !resolve_commit(root, "HEAD")?.eq_ignore_ascii_case(expected_head) {
-        return Err(err("The checked-out branch or HEAD changed; refresh history and try again"));
+    if branch != expected_branch
+        || !resolve_commit(root, "HEAD")?.eq_ignore_ascii_case(expected_head)
+    {
+        return Err(err(
+            "The checked-out branch or HEAD changed; refresh history and try again",
+        ));
     }
     if operation_in_progress(root).is_some() {
         return Err(err("Finish or abort the current Git operation first"));
@@ -217,7 +254,13 @@ pub(crate) fn apply_action(
             vec!["reset", flag, &target, "--"]
         }
     };
-    run_git_inner(root, &history_args(&args), ACTION_TIMEOUT, &read_only_env(), true)?;
+    run_git_inner(
+        root,
+        &history_args(&args),
+        ACTION_TIMEOUT,
+        &read_only_env(),
+        true,
+    )?;
     Ok(())
 }
 
@@ -264,7 +307,7 @@ impl HistoryFilters {
             && self.before.is_none()
     }
 
-    fn matches(&self, fields: &[Vec<u8>; 6]) -> bool {
+    fn matches(&self, fields: &[Vec<u8>; 7]) -> bool {
         if !fields[0].starts_with(self.commit_id.as_bytes())
             || (!self.subject.is_empty()
                 && !String::from_utf8_lossy(&fields[4])
@@ -280,7 +323,7 @@ impl HistoryFilters {
         if self.from.is_none() && self.before.is_none() {
             return true;
         }
-        String::from_utf8_lossy(&fields[5])
+        String::from_utf8_lossy(&fields[6])
             .parse::<i64>()
             .ok()
             .is_some_and(|at| {
@@ -295,6 +338,7 @@ fn search(
     start: &str,
     offset: usize,
     filters: HistoryFilters,
+    own_email: Option<String>,
 ) -> Result<Vec<Summary>, GitError> {
     let mut args = vec!["log", "--topo-order", SEARCH_FORMAT];
     args.extend(LOG_OPTIONS);
@@ -308,7 +352,7 @@ fn search(
         &read_only_env(),
         move |stdout| {
             let mut reader = BufReader::new(stdout);
-            let mut fields: [Vec<u8>; 6] = Default::default();
+            let mut fields: [Vec<u8>; 7] = Default::default();
             let mut skipped = 0;
             let mut commits = Vec::new();
             loop {
@@ -336,6 +380,7 @@ fn search(
                     .map(|field| String::from_utf8_lossy(field));
                 commits.push(Summary::parse(
                     &text.each_ref().map(|field| field.as_ref()),
+                    own_email.as_deref(),
                 )?);
                 if commits.len() > PAGE_SIZE {
                     // 仍要读完管道，让 Git 正常退出并保留真实错误。
@@ -394,10 +439,11 @@ pub(crate) fn page(
     if offset > (i32::MAX as usize) - PAGE_SIZE {
         return Err(err("Git history offset is out of range"));
     }
+    let own_email = configured_author_email(root);
     let mut commits = if filters.is_empty() {
-        unfiltered(root, &start, offset)?
+        unfiltered(root, &start, offset, own_email.as_deref())?
     } else {
-        search(root, &start, offset, filters)?
+        search(root, &start, offset, filters, own_email)?
     };
     let next_offset = (commits.len() > PAGE_SIZE).then(|| offset + PAGE_SIZE);
     commits.truncate(PAGE_SIZE);
@@ -408,7 +454,12 @@ pub(crate) fn page(
     })
 }
 
-fn unfiltered(root: &Path, start: &str, offset: usize) -> Result<Vec<Summary>, GitError> {
+fn unfiltered(
+    root: &Path,
+    start: &str,
+    offset: usize,
+    own_email: Option<&str>,
+) -> Result<Vec<Summary>, GitError> {
     let skip = format!("--skip={offset}");
     let count = format!("--max-count={}", PAGE_SIZE + 1);
     let mut args = vec!["log", "--topo-order", SUMMARY_FORMAT, &skip, &count];
@@ -416,10 +467,13 @@ fn unfiltered(root: &Path, start: &str, offset: usize) -> Result<Vec<Summary>, G
     args.extend([start, "--"]);
     let raw = read(root, &args)?;
     let fields = raw.split_terminator('\0').collect::<Vec<_>>();
-    if fields.len() % 5 != 0 {
+    if fields.len() % 6 != 0 {
         return Err(err("Invalid Git commit output"));
     }
-    fields.chunks(5).map(Summary::parse).collect()
+    fields
+        .chunks(6)
+        .map(|fields| Summary::parse(fields, own_email))
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -643,7 +697,7 @@ pub(crate) fn commit(root: &Path, hash: &str) -> Result<Commit, GitError> {
         .unwrap_or(&data)
         .splitn(7, '\0')
         .collect::<Vec<_>>();
-    let summary = Summary::parse(&fields)?;
+    let summary = Summary::parse(&fields, configured_author_email(root).as_deref())?;
     let [.., author_email, message] = fields.as_slice() else {
         return Err(err("Invalid Git commit output"));
     };

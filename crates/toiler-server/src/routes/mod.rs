@@ -209,7 +209,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/git/refs", get(crate::routes::git::history_refs))
         .route("/api/git/history", get(crate::routes::git::history_page))
         .route("/api/git/commit", get(crate::routes::git::history_commit))
-        .route("/api/git/history-action", post(crate::routes::git::history_action))
+        .route(
+            "/api/git/history-action",
+            post(crate::routes::git::history_action),
+        )
+        .route("/api/git/ref-action", post(crate::routes::git::ref_action))
         .route(
             "/api/git/workspace-diff",
             get(crate::routes::git::workspace_diff),

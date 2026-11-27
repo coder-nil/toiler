@@ -7,6 +7,22 @@ export interface GitHistoryRefs {
   repositoryRoot: string;
   headBranch: string | null;
   refs: GitHistoryRef[];
+  remotes: string[];
+  upstreams: Record<string, { remote: string; branch: string }>;
+}
+
+export const REF_ACTIONS = {
+  local: ["checkout", "create_branch", "merge", "update", "push", "rename", "delete"],
+  remote: ["checkout", "create_branch", "merge", "delete"],
+  tag: ["checkout", "merge", "push_tag", "delete"],
+} as const;
+
+export type RefKind = keyof typeof REF_ACTIONS;
+export type RefAction = (typeof REF_ACTIONS)[RefKind][number];
+
+export function historyRefKind(reference: string): RefKind {
+  if (reference.startsWith("refs/tags/")) return "tag";
+  return reference.startsWith("refs/remotes/") ? "remote" : "local";
 }
 
 export interface GitHistorySummary {
@@ -14,6 +30,7 @@ export interface GitHistorySummary {
   parents: string[];
   subject: string;
   author: string;
+  isOwnAuthor: boolean;
   authoredAt: string;
 }
 

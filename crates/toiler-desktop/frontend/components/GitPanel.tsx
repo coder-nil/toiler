@@ -76,13 +76,14 @@ interface GitPanelProps {
   sessionId: string | null;
   refreshTarget: HTMLElement | null;
   refreshButtonClassName: string;
+  historyMutation: number;
   onClose: () => void;
   onChanged: () => void;
   onSelectFile: (file: GitDiffSelection) => void;
   selectedFile: GitDiffSelection | null;
 }
 
-export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName, onClose, onChanged, onSelectFile, selectedFile }: GitPanelProps) {
+export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName, historyMutation, onClose, onChanged, onSelectFile, selectedFile }: GitPanelProps) {
   const { locale, t } = useI18n();
   const [summary, setSummary] = useState<GitSummary | null>(null);
   const [message, setMessage] = useState("");
@@ -160,7 +161,7 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
     setVersionResult(null);
   }, [cwd]);
 
-  useEffect(() => { void refresh().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))); }, [refresh]);
+  useEffect(() => { void refresh().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))); }, [refresh, historyMutation]);
 
   // When the panel opens and there are remote updates (behind > 0), show a gentle reminder.
   useEffect(() => {

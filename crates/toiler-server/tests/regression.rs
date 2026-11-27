@@ -4102,6 +4102,224 @@ async fn git_history_lists_refs_and_reads_root_rename_and_merge_details() {
     std::fs::remove_dir_all(sandbox).unwrap();
 }
 
+async fn history_action_request(router: axum::Router, body: Value) -> Reply {
+    call(
+        router,
+        "POST",
+        "/api/git/history-action",
+        Some(&body.to_string()),
+        &[],
+    )
+    .await
+}
+
+/// 右键重置的四种模式必须分别处理 HEAD、暂存区和工作树，且拒绝过期的确认框。
+#[tokio::test]
+async fn git_history_reset_modes_and_stale_head() {
+    let sandbox = fixture_root("history-reset");
+    let repo = sandbox.join("repo");
+    let store = sandbox.join("store");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::create_dir(&store).unwrap();
+    let git = |args: &[&str]| history_fixture_git(&sandbox, &repo, args);
+    git(&["init", "-q", "-b", "main"]);
+    let tracked = repo.join("tracked.txt");
+    let local = repo.join("local.txt");
+    std::fs::write(&tracked, "old\n").unwrap();
+    std::fs::write(&local, "original\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "old"]);
+    let target = git(&["rev-parse", "HEAD"]);
+    std::fs::write(&tracked, "new\n").unwrap();
+    git(&["commit", "-qam", "new"]);
+    let tip = git(&["rev-parse", "HEAD"]);
+    let router = app_with_agent_dir(&store, &repo, Some(&store));
+    let payload = |mode: &str, branch: &str, head: &str| json!({ "cwd": repo, "hash": target, "expectedBranch": branch, "expectedHead": head, "action": "reset", "mode": mode });
+    for (branch, head) in [
+        ("refs/heads/other", tip.as_str()),
+        ("refs/heads/main", target.as_str()),
+    ] {
+        let denied = history_action_request(router.clone(), payload("hard", branch, head)).await;
+        assert_eq!(denied.status, StatusCode::BAD_REQUEST, "{}", denied.text());
+        assert_eq!(git(&["rev-parse", "HEAD"]), tip);
+    }
+    for (mode, index, worktree, local_text) in [
+        ("soft", "new", "new\n", "local\n"),
+        ("mixed", "old", "new\n", "local\n"),
+        ("keep", "old", "old\n", "local\n"),
+        ("hard", "old", "old\n", "original\n"),
+    ] {
+        git(&["reset", "--hard", &tip]);
+        std::fs::write(&local, "local\n").unwrap();
+        let reply =
+            history_action_request(router.clone(), payload(mode, "refs/heads/main", &tip)).await;
+        assert_eq!(reply.status, StatusCode::OK, "{mode}: {}", reply.text());
+        assert_eq!(git(&["rev-parse", "HEAD"]), target);
+        assert_eq!(git(&["symbolic-ref", "HEAD"]), "refs/heads/main");
+        assert_eq!(git(&["show", ":tracked.txt"]), index);
+        assert_eq!(std::fs::read_to_string(&tracked).unwrap(), worktree);
+        assert_eq!(std::fs::read_to_string(&local).unwrap(), local_text);
+    }
+    std::fs::remove_dir_all(sandbox).unwrap();
+}
+
+/// 右键优选将历史提交应用到当前分支，冲突不会被吞掉或自动中止。
+#[tokio::test]
+async fn git_history_cherry_pick_keeps_conflicts_for_resolution() {
+    let sandbox = fixture_root("history-pick");
+    let repo = sandbox.join("repo");
+    let store = sandbox.join("store");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::create_dir(&store).unwrap();
+    let git = |args: &[&str]| history_fixture_git(&sandbox, &repo, args);
+    git(&["init", "-q", "-b", "main"]);
+    let file = repo.join("tracked.txt");
+    std::fs::write(&file, "base\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "base"]);
+    let base = git(&["rev-parse", "HEAD"]);
+    git(&["checkout", "-qb", "feature"]);
+    std::fs::write(&file, "picked\n").unwrap();
+    git(&["commit", "-qam", "feature"]);
+    let target = git(&["rev-parse", "HEAD"]);
+    git(&["checkout", "-q", "main"]);
+    git(&["commit", "--allow-empty", "-qm", "main"]);
+    let head = git(&["rev-parse", "HEAD"]);
+    let router = app_with_agent_dir(&store, &repo, Some(&store));
+    let body = |hash: &str, head: &str| json!({ "cwd": repo, "hash": hash, "expectedBranch": "refs/heads/main", "expectedHead": head, "action": "cherry_pick" });
+    let rejected = history_action_request(router.clone(), body(&target[..8], &head)).await;
+    assert_eq!(rejected.status, StatusCode::BAD_REQUEST);
+    let picked = history_action_request(router.clone(), body(&target, &head)).await;
+    assert_eq!(picked.status, StatusCode::OK, "{}", picked.text());
+    assert_eq!(git(&["rev-parse", "HEAD^"]), head);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "picked\n");
+    git(&["reset", "--hard", &base]);
+    std::fs::write(&file, "main conflict\n").unwrap();
+    git(&["commit", "-qam", "conflict"]);
+    let conflict_head = git(&["rev-parse", "HEAD"]);
+    let conflict = history_action_request(router.clone(), body(&target, &conflict_head)).await;
+    assert_eq!(conflict.status, StatusCode::BAD_REQUEST);
+    assert_eq!(git(&["rev-parse", "CHERRY_PICK_HEAD"]), target);
+    assert_eq!(git(&["rev-parse", "HEAD"]), conflict_head);
+    let reset = history_action_request(router, json!({ "cwd": repo, "hash": base, "expectedBranch": "refs/heads/main", "expectedHead": conflict_head, "action": "reset", "mode": "hard" })).await;
+    assert_eq!(reset.status, StatusCode::BAD_REQUEST);
+    assert_eq!(git(&["rev-parse", "CHERRY_PICK_HEAD"]), target);
+    std::fs::remove_dir_all(sandbox).unwrap();
+}
+
+/// 分支与标签菜单使用全名引用，对临时远端执行实际推送、更新和删除。
+#[tokio::test]
+async fn git_history_ref_menu_uses_the_selected_ref_and_checked_out_target() {
+    let sandbox = fixture_root("history-refs-actions");
+    let repo = sandbox.join("repo");
+    let store = sandbox.join("store");
+    let remote = sandbox.join("remote.git");
+    for path in [&repo, &store, &remote] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let git = |args: &[&str]| history_fixture_git(&sandbox, &repo, args);
+    let remote_git = |args: &[&str]| history_fixture_git(&sandbox, &remote, args);
+    remote_git(&["init", "--bare", "-q", "-b", "main"]);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["remote", "add", "origin", remote.to_str().unwrap()]);
+    git(&["commit", "--allow-empty", "-qm", "base"]);
+    let base = git(&["rev-parse", "HEAD"]);
+    git(&["push", "-u", "origin", "main"]);
+    git(&["tag", "feature"]);
+    git(&["checkout", "-qb", "feature"]);
+    git(&["commit", "--allow-empty", "-qm", "feature change"]);
+    let tip = git(&["rev-parse", "HEAD"]);
+    git(&["checkout", "-q", "main"]);
+    let router = app_with_agent_dir(&store, &repo, Some(&store));
+    let call_ref = |reference: &str, mut payload: Value| {
+        payload["cwd"] = json!(repo);
+        payload["ref"] = json!(reference);
+        let router = router.clone();
+        async move {
+            call(
+                router,
+                "POST",
+                "/api/git/ref-action",
+                Some(&payload.to_string()),
+                &[],
+            )
+            .await
+        }
+    };
+    let run = |reference: &str, payload: Value| {
+        let reply = call_ref(reference, payload);
+        async move {
+            let reply = reply.await;
+            assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+        }
+    };
+    run(
+        "refs/heads/feature",
+        json!({"action":"push","remote":"origin","targetBranch":"review"}),
+    )
+    .await;
+    assert_eq!(remote_git(&["rev-parse", "refs/heads/review"]), tip);
+    let refs = get(
+        router.clone(),
+        &format!("/api/git/refs?cwd={}", url_encode(&repo.to_string_lossy())),
+    )
+    .await
+    .json();
+    assert_eq!(
+        refs["upstreams"]["refs/heads/feature"],
+        json!({"remote":"origin","branch":"review"})
+    );
+    run("refs/remotes/origin/review", json!({"action":"checkout"})).await;
+    assert_eq!(git(&["symbolic-ref", "HEAD"]), "refs/heads/review");
+    run(
+        "refs/remotes/origin/review",
+        json!({"action":"create_branch","newBranch":"trial"}),
+    )
+    .await;
+    assert_eq!(git(&["rev-parse", "refs/heads/trial"]), tip);
+    run(
+        "refs/heads/trial",
+        json!({"action":"rename","newBranch":"renamed"}),
+    )
+    .await;
+    assert_eq!(git(&["symbolic-ref", "HEAD"]), "refs/heads/renamed");
+    run("refs/heads/main", json!({"action":"checkout"})).await;
+    let refused = call_ref(
+        "refs/remotes/origin/review",
+        json!({"action":"merge","expectedBranch":"refs/heads/feature"}),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert_eq!(git(&["rev-parse", "HEAD"]), base);
+    run(
+        "refs/remotes/origin/review",
+        json!({"action":"merge","expectedBranch":"refs/heads/main"}),
+    )
+    .await;
+    assert_eq!(git(&["rev-parse", "HEAD"]), tip);
+    git(&["commit", "--allow-empty", "-qm", "new remote tip"]);
+    let advanced = git(&["rev-parse", "HEAD"]);
+    git(&["push", "origin", "main:review"]);
+    run("refs/heads/feature", json!({"action":"update"})).await;
+    assert_eq!(git(&["rev-parse", "refs/heads/feature"]), advanced);
+    assert_eq!(git(&["symbolic-ref", "HEAD"]), "refs/heads/main");
+    let missing = call_ref("refs/heads/local-copy", json!({"action":"delete"})).await;
+    assert_eq!(missing.status, StatusCode::BAD_REQUEST);
+    run("refs/tags/feature", json!({"action":"checkout"})).await;
+    assert_eq!(git(&["rev-parse", "HEAD"]), base);
+    run("refs/tags/feature", json!({"action":"push_tag"})).await;
+    run("refs/tags/feature", json!({"action":"delete"})).await;
+    assert_eq!(remote_git(&["rev-parse", "refs/tags/feature"]), base);
+    run("refs/heads/main", json!({"action":"checkout"})).await;
+    run("refs/heads/renamed", json!({"action":"delete"})).await;
+    run("refs/remotes/origin/review", json!({"action":"delete"})).await;
+    assert_eq!(
+        remote_git(&["for-each-ref", "--format=%(refname)", "refs/heads"]),
+        "refs/heads/main"
+    );
+    std::fs::remove_dir_all(sandbox).unwrap();
+}
+
 /// 共用差异区必须分别比较工作区、暂存区和历史快照，不从磁盘读取已删除的历史文件。
 #[tokio::test]
 async fn git_workspace_diff_keeps_compare_scopes_separate() {
@@ -4177,6 +4395,59 @@ async fn git_workspace_diff_keeps_compare_scopes_separate() {
     )
     .await;
     assert_eq!(forbidden.status, StatusCode::BAD_REQUEST);
+    std::fs::remove_dir_all(sandbox).unwrap();
+}
+
+/// 提交人高亮以邮箱而非同名为准，普通历史、搜索和详情的标记一致。
+#[tokio::test]
+async fn git_history_identifies_own_commits_by_repository_email() {
+    let sandbox = fixture_root("git-history-author");
+    let repo = sandbox.join("repo");
+    let store = sandbox.join("store");
+    std::fs::create_dir(&repo).unwrap();
+    std::fs::create_dir(&store).unwrap();
+    let git = |args: &[&str]| history_fixture_git(&sandbox, &repo, args);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "ME@example.invalid"]);
+    git(&[
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "mine",
+        "--author=同名 <me@example.invalid>",
+    ]);
+    let own = git(&["rev-parse", "HEAD"]);
+    git(&[
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "other",
+        "--author=同名 <other@example.invalid>",
+    ]);
+    let router = app_with_agent_dir(&store, &repo, Some(&store));
+    let cwd = url_encode(&repo.to_string_lossy());
+    let uri = format!("/api/git/history?cwd={cwd}");
+    let plain = get(router.clone(), &uri).await.json();
+    assert_eq!(plain["commits"][0]["author"], "同名");
+    assert_eq!(plain["commits"][0]["isOwnAuthor"], false);
+    assert_eq!(plain["commits"][1]["isOwnAuthor"], true);
+    assert!(plain["commits"][1].get("authorEmail").is_none());
+    let search = get(router.clone(), &format!("{uri}&subject=mine"))
+        .await
+        .json();
+    assert_eq!(search["commits"][0]["isOwnAuthor"], true);
+    let detail = get(
+        router.clone(),
+        &format!("/api/git/commit?cwd={cwd}&hash={own}"),
+    )
+    .await
+    .json();
+    assert_eq!(detail["isOwnAuthor"], true);
+    git(&["config", "user.email", ""]);
+    assert_eq!(
+        get(router, &uri).await.json()["commits"][1]["isOwnAuthor"],
+        false
+    );
     std::fs::remove_dir_all(sandbox).unwrap();
 }
 

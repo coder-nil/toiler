@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronRight, FileText, GitBranch, GitCommitHorizontal, GitMerge, History, RefreshCw, Search, Tag } from "lucide-react";
+import { ChevronRight, FileText, GitBranch, GitCommitHorizontal, GitMerge, History, MoreHorizontal, RefreshCw, Search, Tag } from "lucide-react";
 import type { GitDiffSelection } from "@/lib/git-workspace";
 import { useI18n } from "@/hooks/useI18n";
 import { readApiJson } from "@/lib/api-json";
 import { historyFilterParams, layoutGitHistory, shortRef, type GitHistoryCriteria, type GitHistoryBranch, type GitHistoryCommit, type GitHistoryPage, type GitHistoryRef, type GitHistoryRefs } from "@/lib/git-history";
 import { CommitActionMenu, CommitResetDialog, type CommitActionAnchor, type CommitActionTarget, type GitResetMode } from "./GitHistoryActions";
+import { GitRefActions, type RefActionAnchor } from "./GitRefActions";
 import styles from "./GitHistoryPanel.module.css";
 
 type Pane = "refs" | "commits" | "details";
@@ -72,6 +73,7 @@ export function GitHistoryPanel({ cwd, refreshKey, onSelectFile, selectedFile, o
   const [filter, setFilter] = useState("");
   const [reload, setReload] = useState(0);
   const [menu, setMenu] = useState<CommitActionAnchor | null>(null);
+  const [refMenu, setRefMenu] = useState<RefActionAnchor | null>(null);
   const [resetTarget, setResetTarget] = useState<CommitActionTarget | null>(null);
   const actionTrigger = useRef<HTMLButtonElement | null>(null);
   const actionPending = useRef(false);
@@ -94,8 +96,21 @@ export function GitHistoryPanel({ cwd, refreshKey, onSelectFile, selectedFile, o
     if (restoreFocus) restoreActionFocus();
   }, [restoreActionFocus]);
 
+  const closeRefMenu = useCallback((restoreFocus: boolean) => {
+    setRefMenu(null);
+    if (restoreFocus) restoreActionFocus();
+  }, [restoreActionFocus]);
+
+  function openRefMenu(anchor: RefActionAnchor) {
+    if (actionPending.current) return;
+    actionTrigger.current = anchor.trigger;
+    setMenu(null);
+    setRefMenu(anchor);
+  }
+
   function openMenu(anchor: CommitActionAnchor) {
     if (actionPending.current) return;
+    setRefMenu(null);
     actionTrigger.current = anchor.trigger;
     setActionError(null);
     setMenu(anchor);
@@ -170,6 +185,8 @@ export function GitHistoryPanel({ cwd, refreshKey, onSelectFile, selectedFile, o
         <button type="button" className={styles.iconButton} onClick={() => setReload((value) => value + 1)}
           aria-label={t("gitHistory.refresh")} title={t("gitHistory.refresh")}><RefreshCw size={15} aria-hidden="true" /></button>
       </header>
+      <GitRefActions cwd={cwd} data={data} anchor={refMenu} onClose={closeRefMenu} onChanged={onChanged} restoreFocus={restoreActionFocus}
+        onSelection={(ref, next) => setReference((value) => next === "HEAD" || value === ref ? next : value)} />
       {!resetTarget && actionError && <p className={styles.actionError} role="alert">{actionError}</p>}
       {!resetTarget && actionBusy && <p className={styles.actionStatus} role="status">{t("gitHistory.cherryPickBusy")}</p>}
       <form id={formId} hidden={!showFilters} className={styles.queryForm} aria-label={t("gitHistory.search")}
@@ -226,12 +243,31 @@ export function GitHistoryPanel({ cwd, refreshKey, onSelectFile, selectedFile, o
                 if (query && group.length === 0) return null;
                 return <details className={styles.refGroup} open key={prefix}>
                   <summary><ChevronRight size={13} aria-hidden="true" />{t(label)}<span>{group.length}</span></summary>
-                  {group.map((item) => <button type="button" key={item.name} className={styles.refRow}
-                    aria-pressed={selectedRef === item.name} onClick={() => selectRef(item.name)} title={item.name}>
-                    <Icon size={14} aria-hidden="true" />
-                    <span className={styles.ellipsis}>{shortRef(item.name)}</span>
-                    {item.name === data.headBranch && <span className={styles.current}>HEAD</span>}
-                  </button>)}
+                  {group.map((item) => <div key={item.name} className={styles.refItem} data-active={refMenu?.item.name === item.name}>
+                    <button type="button" className={styles.refRow} aria-pressed={selectedRef === item.name}
+                      onClick={() => selectRef(item.name)} title={item.name} aria-haspopup="menu"
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        openRefMenu({ item, trigger: event.currentTarget, x: event.clientX, y: event.clientY });
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+                        event.preventDefault();
+                        const { left, bottom } = event.currentTarget.getBoundingClientRect();
+                        openRefMenu({ item, trigger: event.currentTarget, x: left, y: bottom });
+                      }}>
+                      <Icon size={14} aria-hidden="true" />
+                      <span className={styles.ellipsis}>{shortRef(item.name)}</span>
+                      {item.name === data.headBranch && <span className={styles.current}>HEAD</span>}
+                    </button>
+                    <button type="button" className={styles.refMore} aria-haspopup="menu" aria-expanded={refMenu?.item.name === item.name}
+                      aria-label={t("gitRefs.actions", { branch: shortRef(item.name) })} onClick={(event) => {
+                        const { left, bottom } = event.currentTarget.getBoundingClientRect();
+                        openRefMenu({ item, trigger: event.currentTarget, x: left, y: bottom });
+                      }}>
+                      <MoreHorizontal size={14} aria-hidden="true" />
+                    </button>
+                  </div>)}
                 </details>;
               })}
             </div>
@@ -336,7 +372,7 @@ function CommitHistory({ cwd, reference, params, filtered, refs, onOpenDetails, 
                     {labels.length > 1 && <span>+{labels.length - 1}</span>}
                   </span>}
                 </span>
-                <span className={`${styles.ellipsis} ${styles.author}`} title={commit.author}>{commit.author}</span>
+                <span className={`${styles.ellipsis} ${styles.author}`} data-own={commit.isOwnAuthor || undefined} title={commit.author}>{commit.author}</span>
                 <time className={styles.time} dateTime={commit.authoredAt} title={commit.authoredAt}>{formatDate(date, commit.authoredAt)}</time>
               </button>
             </li>;

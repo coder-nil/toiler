@@ -30,6 +30,7 @@ export function GitWorkspace({ cwd, sessionId, sidebarOpen, refreshKey, onToggle
   const [selection, setSelection] = useState<GitDiffSelection | null>(null);
   const [pane, setPane] = useState<Pane>("changes");
   const [refreshTarget, setRefreshTarget] = useState<HTMLDivElement | null>(null);
+  const [historyMutation, setHistoryMutation] = useState(0);
   const body = useRef<HTMLDivElement>(null);
   const back = useRef<HTMLButtonElement>(null);
   useEffect(() => { back.current?.focus({ preventScroll: true }); }, []);
@@ -69,11 +70,12 @@ export function GitWorkspace({ cwd, sessionId, sidebarOpen, refreshKey, onToggle
         <section className={styles.changes} aria-label={t("gitWorkspace.changes")}>
           <header className={styles.paneBar}><h2>{t("gitWorkspace.changes")}</h2><div ref={setRefreshTarget} /></header>
           <GitPanel cwd={cwd} sessionId={sessionId} refreshTarget={refreshTarget} refreshButtonClassName={styles.iconButton}
-            onClose={onClose} onChanged={onChanged} onSelectFile={selectFile} selectedFile={selection} />
+            historyMutation={historyMutation} onClose={onClose} onChanged={onChanged} onSelectFile={selectFile} selectedFile={selection} />
         </section>
         <WorkspaceDiff cwd={cwd} selection={selection} refreshKey={refreshKey} />
         <div className={styles.history}>
-          <GitHistoryPanel cwd={cwd} refreshKey={refreshKey} onSelectFile={selectFile} selectedFile={selection} />
+          <GitHistoryPanel cwd={cwd} refreshKey={refreshKey} onSelectFile={selectFile} selectedFile={selection}
+            onChanged={() => { setHistoryMutation((value) => value + 1); onChanged(); }} />
         </div>
       </div>
     </div>

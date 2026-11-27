@@ -94,7 +94,13 @@
 .refGroup summary::-webkit-details-marker { display: none; }
 .refGroup summary span { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 400; }
 .refGroup[open] summary svg { transform: rotate(90deg); }
-.refGroup .refRow { padding-left: 24px; }
+.refGroup .refRow { padding-left: 14px; min-width: 0; flex: 1; }
+.refItem { display: flex; align-items: stretch; min-width: 0; }
+.refMore { display: grid; place-items: center; flex: 0 0 23px; color: var(--text-muted); border-radius: var(--radius-xs); }
+.refMore:hover, .refItem[data-active="true"] .refMore { background: var(--bg-hover); color: var(--text); }
+@media (hover: hover) and (pointer: fine) {
+  .refItem:not(:hover, :focus-within, [data-active="true"]) .refMore { opacity: 0; }
+}
 .refGroup summary:hover, .refRow:hover { background: var(--bg-hover); }
 .refRow[aria-pressed="true"] { background: var(--history-selected); }
 
@@ -114,7 +120,7 @@
   background: var(--history-row);
 }
 .commits[data-filtered="true"] .commitGrid { grid-template-columns: var(--commit-fields); }
-button.commitGrid[data-merge="true"] { color: var(--text-muted); }
+button.commitGrid[data-merge="true"] { color: #818594; }
 button.commitGrid:hover { --history-row: var(--bg-hover); }
 button.commitGrid[aria-pressed="true"] { --history-row: var(--history-selected); }
 .commitHead { position: sticky; top: 0; z-index: 1; min-height: 26px; --history-row: var(--bg-chrome); border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
@@ -126,8 +132,7 @@ button.commitGrid[aria-pressed="true"] { --history-row: var(--history-selected);
 .subject { display: flex; align-items: center; min-width: 0; gap: 6px; }
 .decoration { display: flex; align-items: center; flex: 0 0 auto; max-width: 34%; gap: 4px; padding: 0 4px; border-radius: var(--radius-xs); color: var(--text-muted); background: var(--bg-panel); font-size: 10px; }
 .decoration > svg { flex: none; color: var(--accent); }
-.author, .time { color: var(--text-muted); font-size: 12px; }
-.time { font-variant-numeric: tabular-nums; }
+.author[data-own="true"] { color: light-dark(#000, var(--text)); font-weight: 700; }
 .pageControls { display: flex; justify-content: center; padding: 12px; border-top: 1px solid var(--border); }
 .hint { margin: 0; padding: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
 .actionError, .actionStatus { margin: 0; max-height: 35%; overflow: auto; padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -55,6 +55,8 @@ export function useGlobalKeyboardShortcuts(
 
   useEffect(() => {
     const handler = (e: KeyboardEvent): void => {
+      // 提交菜单和重置对话框自己处理键盘，Esc 不应中断后台的会话。
+      if (e.target instanceof Element && e.target.closest("[data-git-history-action]")) return;
       // ---- Esc: stop agent ----
       if (e.key === "Escape") {
         if (!globalAbortHandler) return;

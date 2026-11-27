@@ -7,6 +7,7 @@
 //! | `GET  /api/git/status?cwd=` | 只要「变更文件 + 增删行数」 |
 //! | `GET  /api/git/diff?cwd=&path=` | 单文件补丁 |
 //! | `GET  /api/git/refs`、`/api/git/history`、`/api/git/commit` | 只读工作树提交历史 |
+//! | `POST /api/git/ref-action` | 历史列表中的分支和标签操作 |
 //! | `POST /api/git/history-action` | 在当前检出分支优选或重置到指定提交 |
 //! | `POST /api/git/commit-message` | 暂存区 diff → 模型生成 commit message（NDJSON 流） |
 //! | `GET/POST/DELETE /api/worktrees` | 列出 / 新建（或 checkout） / 删除 worktree |
@@ -284,7 +285,34 @@ pub async fn history_action(
     Json(body): Json<HistoryActionBody>,
 ) -> Response {
     in_history_repository(state, body.cwd, move |root| {
-        gitsvc::history::apply_action(root, body.action, &body.hash, &body.expected_branch, &body.expected_head)?;
+        gitsvc::history::apply_action(
+            root,
+            body.action,
+            &body.hash,
+            &body.expected_branch,
+            &body.expected_head,
+        )?;
+        Ok(json!({ "ok": true }))
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct RefActionBody {
+    cwd: Option<String>,
+    #[serde(rename = "ref")]
+    reference: String,
+    #[serde(flatten)]
+    action: gitsvc::history::refs_action::RefAction,
+}
+
+pub async fn ref_action(
+    State(state): State<AppState>,
+    _trusted: Trusted,
+    Json(body): Json<RefActionBody>,
+) -> Response {
+    in_history_repository(state, body.cwd, move |root| {
+        gitsvc::history::refs_action::apply(root, &body.reference, body.action)?;
         Ok(json!({ "ok": true }))
     })
     .await
