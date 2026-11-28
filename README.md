@@ -1,596 +1,106 @@
 # Toiler
 
-基于 [pi-rust (`rpi`)](https://crates.io/crates/rpi-harness) 的桌面编程工作台。
-`rpi` 作为**未修改的 crates.io 依赖**引入，升级只需改版本号。
+Toiler 是一个桌面 AI 编程工作台。你可以在同一窗口里与模型对话、浏览项目文件、运行终端，以及审阅和提交 Git 改动。它沿用 pi-desktop 的界面基础和 v3 会话格式，后端由 Rust 重写，桌面运行不需要 Node.js。
 
-当前锁定 **rpi 0.25.0**：[`Cargo.lock`](Cargo.lock) 中的 `rpi-ai`、`rpi-agent`、
-`rpi-tools`、`rpi-harness` 均为 `0.25.0`。
+[下载安装包](https://github.com/coder-nil/toiler/releases/latest) · [查看更新记录](./CHANGELOG.md)
 
-当前状态：**阶段 0–5 全部完成**（PoC → v3 会话层 → HTTP 服务 → 全部 route →
-Tauri 单进程 → 回归）。四项关键验证全部通过；560 个真实 pi 会话全量可读、
-可原地续聊，且 pi 自己能复读 toiler 追加过的文件。
+## 安装与上手
 
-## 四项验证结论（rpi 0.21.2 历史记录）
+从 [GitHub Releases](https://github.com/coder-nil/toiler/releases) 下载对应平台的安装包。发布页附有 `SHA256SUMS.txt`，可用于校验下载文件。
 
-| # | 验证项 | 结果 |
-|---|---|---|
-| 1 | crates.io 上的 rpi 能被独立项目引入编译 | ✅ `rpi-ai 0.21.2` / `rpi-harness 0.21.2` |
-| 2 | `openai-responses` 对自定义 baseUrl 真实流式出字 | ✅ `coding.apisets.com` + `gpt-6-astra` |
-| 3 | pi 的 `models.json` 可直接映射为 rpi 的 `Model` | ✅ 无需改写配置 |
-| 4 | v3 会话文件可被 rpi 读取 | ✅ 99,132 / 99,132 条消息直接通过 |
+| 平台 | 安装包 | 注意事项 |
+| --- | --- | --- |
+| macOS（Apple Silicon / Intel） | `.dmg` | 应用采用 ad-hoc 签名，未做 Developer ID 签名和公证。确认来源后，如被 Gatekeeper 拦截，可在「系统设置 → 隐私与安全性」选择「仍要打开」。详见 [macOS 发布说明](./docs/macos-release.md)。 |
+| Windows（x64） | NSIS `.exe` 或 `.msi` | 发布前进行 Defender 扫描，但安装包未做代码签名。遇到拦截请先查看保护历史记录，不要关闭防护。详见 [Windows 发布说明](./docs/windows-release.md)。 |
+| Linux（x64） | `.deb` 或 `.AppImage` | 按发行版和使用习惯选择。 |
 
-## 升级方式
+1. 打开 Toiler，在侧栏选择项目目录。如果以前用过 pi，可以在会话列表中查看已导入的历史。
+2. 在「设置 → 模型」配置供应商凭据，启用所需模型，再新建对话或继续历史会话。兼容的供应商可刷新模型列表；也可以配置自定义供应商。
+3. 从侧栏打开文件浏览器或 Git 工作区。Git 功能依赖本机的 `git`，内置终端只在桌面应用中提供。
 
-升级时统一修改根目录 [`Cargo.toml`](Cargo.toml) 的 `[workspace.dependencies]`。
-当前声明如下：
+## 主要功能
 
-```toml
-rpi-ai = "0.25"
-rpi-agent = "0.25"
-rpi-tools = "0.25"
-rpi-harness = "0.25"
+- **对话与项目文件**：支持流式对话、历史搜索、上下文续聊和对话导航；可在聊天中引用项目文件，在文件面板中预览文本、Markdown、图片和 DOCX。
+- **Git 工作区**：集中处理暂存、提交、拉取和推送，查看文件差异、提交关系图与分支标签。历史可按提交 ID、摘要、作者和日期筛选。推送前可核对目标分支、待推送的提交和文件改动；取消推送不会撤销本地提交。
+- **合并冲突**：拉取合并遇到冲突时，可在文件对比区使用三栏编辑器，左侧看本地版本、右侧看传入版本、中间编辑结果。点击「应用」才保存并暂存；全部解决后点击「继续合并」，不会自动推送。内置编辑器支持不超过 256 KiB 的 UTF-8 文本，其他文件可在终端处理。
+- **技能与插件**：可从 skills.sh 搜索技能，并从 GitHub 安装。插件面板支持查找、安装、更新和卸载 npm 包，但不会加载 Pi 的 TypeScript 扩展。只有 npm 插件管理需要本机的 Node.js 和 npm，可用 `TOILER_NPM` 指定 npm 路径。
+- **手机访问**：在「设置 → 手机访问」设置密码并开启局域网访问，再用手机扫码打开。需要外网访问时，可配置依赖 `cloudflared` 的 Cloudflare 隧道。密码校验由桌面的手机访问代理负责，手机端不提供内置终端。
+- **桌面界面**：用 `⌘`（macOS）或 `Ctrl`（Windows / Linux）加 `+`、`-` 或 `0` 放大、缩小或还原界面。新建对话页的插画与运行中的应用图标按四立交节时刻换季，可离线显示。
+
+Git 面板还可为兼容的项目执行补丁、次要或主要版本升级：先预览变更记录，确认后才同步版本文件、创建本地版本提交和标签，不自动推送。详见 [版本升级说明](./docs/version-upgrade.md)。
+
+当前限制：MCP 面板可维护配置与探活，但不会加载 MCP 服务器或把工具注入会话；订阅 OAuth 仅实现 Qoder CN。兼容性细节见 [接口契约](./docs/contracts/README.md)。
+
+## 数据与 pi 兼容性
+
+Toiler 默认使用独立的数据目录：
+
+```text
+~/.agents/
+└── toiler/
+    ├── configs/       模型、凭据、偏好、信任和手机访问配置
+    ├── sessions/      pi v3 JSONL 会话
+    ├── plugins/       Toiler 安装的插件
+    ├── workspace/     未选中有效项目时的桌面兜底目录
+    └── work.sqlite    项目列表与选中项
 ```
 
-```bash
-cargo update -p rpi-ai -p rpi-agent -p rpi-tools -p rpi-harness
-cargo build                   # 若 API 变了，编译器直接告诉你
-```
+- 启动时会尝试从 `~/.pi/agent` 复制配置和缺失的会话；首次创建项目库时会尝试从旧项目库导入。原文件不移动、不删除，已经复制的会话不会被覆盖，两边的修改也不会同步。
+- 续聊保留 pi v3 格式，只向 Toiler 的会话文件末尾追加，不改写原有条目。追加后的文件仍可由 pi 读取。
+- 桌面启动若没有可用的当前目录，会优先使用上次选中的有效项目，再回退到专用 `workspace/`，而不是把用户主目录当作兜底项目。
 
-不改 rpi 源码，不用 `[patch]`，不用 path 依赖。
+## 从源码运行
 
-## 运行
+桌面构建需要 Rust stable、[Tauri 平台依赖](https://v2.tauri.app/start/prerequisites/) 和用于构建前端的 Node.js。本地前端开发统一使用 nvm 管理的 Node **22.23.5**；发布 CI 的各平台依赖见 [发布工作流](./.github/workflows/release.yml)。
 
-两种形态，用同一个 axum 服务与同一份配置。
-
-### 桌面应用（正式形态）
-
-macOS 用 `⌘`，Windows/Linux 用 `Ctrl`，搭配 `+`（也可用 `=`）、`-`、`0` 放大、缩小或恢复界面。
-每次调整 10 个百分点，范围 50%–300%；不改变窗口尺寸、最大化或全屏状态。
-同一窗口刷新和打开完整历史时保留倍率，重启应用恢复 100%。
+以下命令从仓库根目录执行（macOS / Linux 的 Bash）：
 
 ```bash
-# 首次：装前端依赖
-tools/run-desktop.sh     # 会提示先装；或手动：
-                         # cd crates/toiler-desktop/frontend && npm install
-
-# 日常：前端有改动才重建，然后编译 + 启动（一条命令搞定）
+source "${NVM_DIR:-$HOME/.nvm}/nvm.sh" &&
+nvm use 22.23.5 &&
+node --version &&
+(cd crates/toiler-desktop/frontend && npm ci) &&
 tools/run-desktop.sh
 ```
 
-`tools/run-desktop.sh` 做的事：前端源码比 `dist/` 新才重跑 `npm run build`
-（否则秒过）→ `cargo build --release` → 停掉旧实例 → 启动 → 打印实际端口。
+脚本按需重建前端、编译桌面应用，然后重启同路径下的旧实例。可用 `--rebuild-frontend` 强制重建、`--skip-frontend` 复用已有产物、`--no-build` 只重启，或 `--foreground` 直接查看终端日志。
 
-| 参数 | 用途 |
-|---|---|
-| `--rebuild-frontend` | 强制重建前端（改了 `next.config.ts` 或依赖时） |
-| `--skip-frontend` | 完全不碰前端，只编译 Rust（调后端时最快） |
-| `--no-build` | 只重启，不编译（二进制已是最新时） |
-| `--foreground` / `-f` | 前台运行，日志直接打终端 |
-
-手工分步也可以：
+只构建、不启动时，在同一 Node 环境下执行：
 
 ```bash
-cd crates/toiler-desktop/frontend && npm run build   # 产物到 dist/
-cargo build --release -p toiler-desktop              # build.rs 自动捡 dist/
-./target/release/toiler-desktop
+(cd crates/toiler-desktop/frontend && npm run build) &&
+cargo build --release -p toiler-desktop
 ```
 
-前端源码就在 `crates/toiler-desktop/frontend/`（来自 pi-desktop 的 Next 应用，
-已去掉 Node 后端部分）。产物由 `crates/toiler-server/build.rs` 自动发现，不需要
-手动复制或设环境变量。
+前端静态产物位于 `crates/toiler-desktop/frontend/dist/`，会由 `toiler-server` 的构建脚本自动嵌入二进制。未构建前端时，直接用 Cargo 编译得到的程序只显示占位页，API 仍可用；`tools/run-desktop.sh` 在编译时要求有实际前端产物。
 
-如果在 macOS 的 Node **22.13.0** 下构建报 `Cannot find module 'next/package.json'`，
-但 `node -p 'require.resolve("next/package.json")'` 能找到文件，先尝试更新 Node：
-本机同一份源码与依赖在 **22.23.5** 下已验证构建成功，无需修改依赖锁文件。
-也可以只为这次构建使用指定版本，不替换系统 Node：
+### 独立运行 HTTP 服务
+
+不需要桌面窗口时，可运行同一个 Rust 服务。若需要浏览器界面，先按上面的步骤生成前端产物。
 
 ```bash
-cd crates/toiler-desktop/frontend
-npm exec --yes --package=node@22.23.5 -- node scripts/build.mjs
-```
-
-从 Finder 双击也行（`bundle` 见 `crates/toiler-desktop/tauri.conf.json`）。
-启动后只监听 `127.0.0.1:<随机端口>`，手机访问要另外在设置页开关。
-
-运行中的应用图标按中国传统四季轮换：立春入春、立夏入夏、立秋入秋、立冬入冬。
-使用离线天文历计算到秒的交节时刻，统一按 UTC 比较，不受本机时区影响。
-启动即生效，临近交节会定时到该时刻；休眠唤醒或修改系统时间后重新判断。macOS 更新 Dock，Windows/Linux
-更新窗口图标；Finder、启动器和固定快捷方式仍用原版静态图标，不改已签名应用包。
-
-新建对话页内置春、夏、秋、冬四张透明季节小景，与应用图标共用同一份四立日历。
-四季保持同一处溪流、小屋与树木，分别呈现新芽、树荫、落叶和积雪，不含品牌标志或文字。
-图片随前端静态产物嵌入二进制，可离线显示，不请求外部素材服务；仅空白的新对话页展示。
-交节、恢复前台后自动更新，读取季节或图片失败时保留已显示插画或回退到原品牌标记。
-
-### Git 工作区
-
-点击侧栏分支行、文件浏览器或子仓库旁的 Git 按钮，在消息区域打开 Git 工作区并收起侧栏；点击「返回聊天」会重新展开侧栏，保留原会话和草稿。
-左侧用于暂存、提交和同步；右上方统一显示已暂存、未暂存或历史提交的文件对比；右下方显示可筛选的提交历史、提交关系图和详情。
-「拉取（合并）」遇到冲突时，Git 操作区会列出未解决的文件。打开冲突文件时，三栏合并编辑器会占用右上的「文件对比」区域。左栏是本地版本，右栏是传入版本，中栏是可编辑的结果；查看其他文件的差异时会保留当前冲突草稿和撤销记录，重新点冲突文件即可回来。在编辑器内用 `Ctrl+Z`（macOS 用 `⌘Z` 或「Edit → Undo」）撤销编辑或采纳，用 `Ctrl+Shift+Z`（macOS 用 `⌘⇧Z`）重做。点击「应用」才保存并暂存当前文件。全部解决后，点击「继续合并」，不会自动推送。内置编辑器支持 256 KiB 以内的 UTF-8 文本；其他类型请在终端处理。
-在合并编辑器的工具栏点击「合并非冲突改动」，只合并冲突标记里面能与共同祖先逐行对齐、互不重叠的改动；两边都改了同一行、无法对齐或已手动编辑的块会保留。操作只更新草稿，可以一次撤销。
-在宽屏布局中，上下拖动文件对比与提交历史之间的分隔条即可调整两区高度；分隔条获得焦点后也可用方向键调整，双击恢复默认。历史区内仍可拖动「分支与标签」栏右缘调整宽度。
-在提交历史中可以组合查询 8 位提交 ID、摘要、提交人和日期范围；查询覆盖所选分支或标签的完整历史。
-详情按本地与远程跟踪分支列出包含该提交的分支，并标记直接指向它的分支。历史筛选不会切换工作树，也不会自动拉取远程。
-右键分支或标签（或点击行尾的「⋯」）可操作该引用。合并以当前检出的本地分支为目标；更新只允许快进；远程分支删除需要明确确认。
-右键提交可优选到当前检出的分支，或选择「重置…」后以软、混合、硬、保留模式重置该分支；硬重置会丢弃未提交的改动。两项操作都不会自动推送。
-
-### Git 面板版本升级
-
-“创建标签”后提供补丁、次要、主要版本升级：先预览完整提交范围的变更记录，
-确认后同步项目版本文件、创建版本提交和普通本地标签，不自动推送。
-升级逻辑用 Rust 实现，不需要本机装 Python；入口只在桌面窗口出现，手机端不提供。
-需要与 `tools/bump-version.py` 兼容的项目结构。
-详见 [版本升级说明](./docs/version-upgrade.md)。
-
-### macOS 安装与签名现状
-
-DMG 安装包当前**未做代码签名与公证**，首次打开会被 Gatekeeper 拦截。
-用户侧只有一种可靠做法：**系统设置 → 隐私与安全性 → 底部「仍要打开」**，
-或执行 `xattr -dr com.apple.quarantine /Applications/Toiler.app`。
-
-> 旧文档里的「右键 →「打开」」在新版 macOS 上已失效，Apple 移除了这个绕过入口。
-
-`spctl` 只认 **Apple 公证** 或 **用户在系统设置里手动放行**；自制的 ad-hoc
-签名（`codesign -s -`）能通过签名自检，但 Gatekeeper 照样拒绝，不能省掉这一步。
-彻底的解法是接入 Apple Developer Program 证书 + 公证，改动清单、坑点与验收标准见
-[macOS 发布：签名与公证规划](./docs/macos-release.md)。
-
-### Windows 安装与拦截排查
-
-Release 提供 NSIS（`.exe`）和 MSI（`.msi`）安装包，发布前在 Windows CI 上扫描
-应用本体与安装器，并附带 `SHA256SUMS.txt` 校验清单。当前仍未做代码签名，扫描
-通过也不保证所有终端都不拦截。Defender 若隔离或删除文件，应先查看保护历史记录，
-不要直接关闭防护或恢复运行。详见 [Windows 发布与签名说明](./docs/windows-release.md)。
-
-双击启动时进程 cwd 是 `/`，默认项目按「上次选中的项目 →
-`~/.agents/toiler/workspace/`」的顺序确定，**不会**退回主目录——那样会让
-agent 的工作目录变成 `$HOME`，`find` / `grep` 一递归就撞进 `Documents` /
-`Desktop` / `Pictures` / `Music`，触发 macOS 的隐私授权弹窗。
-
-### 插件使用的 Node.js
-
-Toiler 启动不需要 Node.js。只有安装、更新和卸载 npm 插件时，才会检查本机的
-`node` 和 `npm` 是否能一起运行。优先尊重 `TOILER_NPM` 和当前 `PATH`；当桌面启动器
-没有继承终端环境时，再查找 nvm 或常见安装目录。这里不会运行登录脚本，也不会修改系统 `PATH`。
-
-| 平台 | 支持的常见安装方式 |
-|---|---|
-| macOS | 官方安装包、Homebrew、nvm |
-| Linux | 发行版软件包、`/usr/local/bin`、nvm |
-| Windows | 官方安装包、nvm-windows（`NVM_SYMLINK` / `NVM_HOME`） |
-
-同时装有多个版本时，从终端执行 `nvm use` 后启动 Toiler，可让插件优先使用终端选中的版本。
-非标准安装可以把 `TOILER_NPM` 指向 npm 文件的绝对路径（Windows 可指定标准的 `npm.cmd`）。
-找不到可用的一套时，插件面板会报错，不会自动下载 Node.js。
-
-### 纯服务（开发 / 远程访问）
-
-```bash
-cargo build --release -p toiler-server
+cargo build --release -p toiler-server &&
 ./target/release/toiler-server --port 8787 --cwd /path/to/project
 ```
 
-打开 `http://127.0.0.1:8787/`。
+打开 `http://127.0.0.1:8787/`。桌面应用则默认使用 `127.0.0.1` 上的随机端口。
 
-> 前端产物是否存在决定二进制里是「真界面」还是「占位页」：
-> 跑过 `crates/toiler-desktop/frontend` 里的 `npm run build` 就有界面，
-> 否则 `cargo build` 仍然能过，但内嵌的是 `crates/toiler-server/frontend/`
-> 的占位页（API 全可用）。启动日志会打印实际嵌入的产物目录与
-> `已嵌入 / 占位页`，以它为准。
+> 独立服务的 Host / Origin 校验不等于用户认证。直接改成 `--host 0.0.0.0` 不会启用桌面的访问密码。建议保持回环监听；若必须远程部署，请在受控反向代理上配置认证和 TLS，不要直接暴露服务端口。
 
-参数：
+## 开发与维护
 
-| 参数 | 默认 | 说明 |
-|---|---|---|
-| `--host` | `127.0.0.1` | 监听地址；改 `0.0.0.0` 会对局域网开放（需自行设密码） |
-| `--port` | `8787` | 端口；`0` = 内核分配 |
-| `--sessions-root` | `~/.agents/toiler/sessions` | 会话根 |
-| `--cwd` | 进程当前目录 | 默认项目目录 |
+| 目录 | 职责 |
+| --- | --- |
+| [`crates/toiler-desktop`](./crates/toiler-desktop) | Tauri 桌面应用、Next.js 前端、内置终端和手机访问代理 |
+| [`crates/toiler-server`](./crates/toiler-server) | axum HTTP/SSE 服务、模型配置、Git、文件与静态资源托管 |
+| [`crates/toiler-session`](./crates/toiler-session) | pi v3 会话读写和诊断命令行 |
+| [`crates/toiler-poc`](./crates/toiler-poc) | 保留的早期兼容性探针，不参与产品运行 |
 
-数据位置（详见 `docs/contracts/README.md`）：
-
-```
-~/.agents/toiler/
-├── configs/      auth.json / models.json / settings.json / trust.json / desktop-access*
-├── sessions/     会话
-├── workspace/    兜底项目目录（双击启动且没有上次项目时）
-└── work.sqlite   项目列表
-```
-
-首次启动会自动从 `~/.pi/agent` 复制一份配置与会话（旧文件保留）。
-
-### 诊断工具
+桌面端在 Tauri 进程内运行 axum，界面和 `/api` 同源。Agent 运行时使用 crates.io 上未修改的 `rpi`；实际版本以 [`Cargo.lock`](./Cargo.lock) 为准。升级依赖时统一修改根 [`Cargo.toml`](./Cargo.toml) 的 `[workspace.dependencies]`，再执行：
 
 ```bash
-cargo run -p toiler-poc --bin toiler-poc -- info     # 只做 models.json → rpi 的映射
-cargo run -p toiler-poc --bin v3probe                # 扫描 pi 会话的 v3 兼容性
+cargo update -p rpi-ai -p rpi-agent -p rpi-tools -p rpi-harness
 ```
 
-## 关键发现
-
-### 1. provider 差距是假问题
-
-pi 有 93 个 provider，rpi 只有 4 个（anthropic / openai-completions /
-openai-responses / faux）。但实际配置里两个 provider 都是标准
-`openai-responses`：
-
-```json
-"OpenAI":   { "api": "openai-responses", "baseUrl": "https://coding.apisets.com/v1" }
-"pleasure": { "api": "openai-responses", "baseUrl": "https://api.pleasure2ai.top/v1" }
-```
-
-`rpi-cli` 的 `provider_to_models()` 直接认这三个 api 值，字段名
-（`baseUrl`/`apiKey`/`contextWindow`/`maxTokens`/`reasoning`/`input`）全对得上。
-
-### 2. 会话 v3 兼容性比预期好得多
-
-- **543/544** 个文件是 v3 header（1 个是早期无 header 的裸条目文件，可跳过）
-- **101,359** 条条目，时间戳 100% 可解析（ISO → unix ms 需要自己转）
-- **99,138 / 99,138** 条 message 直接反序列化成 `rpi_ai::Message`
-
-只有两处需要适配层归一：
-
-| 差异 | 影响 | 处理 |
-|---|---|---|
-| `stopReason: "toolUse"` vs rpi 要 `"tooluse"` | 40,799 条 assistant | 字段归一，一行代码 |
-| `bashExecution` 缺 `content` 字段 | 6 条 | `output` 转成文本块，映射成 `CustomMessage` |
-
-**注意 rpi 有两层消息类型**，别混淆：
-
-```
-rpi_ai::Message         tag = "role"   ← pi 的线格式，v3 直接兼容 ✅
-rpi_agent::AgentMessage tag = "kind"   ← rpi 自己的持久化格式 ❌
-```
-
-v3 文件要映射到 `rpi_ai::Message`，绕开 `AgentMessage`。
-
-### 3. v3 条目缺 `seq`
-
-v3 条目没有 `seq` 字段，而 rpi 的 `EntryBase` 要求它（`SessionState` 有
-连续 seq 不变量）。自定义 `SessionStorage` 实现时按行号补即可。
-
-### 4. rpi 的 jsonl 层不能直接用
-
-`rpi-harness` 的 `JsonlSessionRepo` / `JsonlSessionStorage` 只认 v4：
-
-```rust
-// session/jsonl/codec.rs:119（0.21.2）
-if version != 4 {
-    return Err(schema("has unsupported session version"));
-}
-```
-
-**正解**：实现 `rpi_harness::session::types::SessionStorage`
-（`pub trait SessionStorage: Send + Sync`，纯 async trait，公开），
-自己解析 v3 并继续 append v3。绕开 jsonl 层，零文件改动。
-
-### 5. 首字延迟是端点特性，不是 rpi 的问题
-
-`gpt-6-astra` 开启 reasoning 后，思考 tokens 走完才出第一个文本 delta，延迟随
-端点负载波动（曾测到 37~71 秒，0.21.2 复测为 4.6 秒）。同一端点用 pi 走也一样。
-
-## 已知缺口（rpi 侧没有，需要自己补或明确砍掉）
-
-| 能力 | pi | rpi | 处理 |
-|---|---|---|---|
-| MCP | ✅ 内置 | ❌ | 自己实现，或砍掉 |
-| TS 扩展 / 插件目录 | ✅ | ❌（只有 Rust cdylib ABI） | 添加插件页可浏览和搜索 [Pi 官网目录](https://pi.dev/packages) 的社区包；安装后不加载 TS 扩展 |
-| 技能市场 | ✅ | ❌ | 通过 skills.sh 搜索并从 GitHub 安装技能 |
-| models.dev 定价目录 | ✅ | ❌ | 砍掉 |
-| 供应商目录（44 家 provider） | ✅ provider 目录 | ❌ | 写死在 server 端：`builtin_providers.rs` |
-| OAuth 登录 | ✅ | 仅扩展内 | 只有 `qoder-cn` 自己实现了（见 `qoder_cn/`） |
-| 内置工具 | read/write/edit/bash/grep/find/ls… | 同左 + powershell | ✅ 够用 |
-
-## 阶段 1：v3 会话层（`crates/toiler-session`）
-
-目标：不迁移、不改格式，**直接读写 pi 的 v3 `.jsonl`**，让 pi 与 toiler 并行打开同一份历史。
-
-```bash
-cargo run -p toiler-session --bin toiler-session -- init      # 初始化 ~/.toiler/agent/sessions
-cargo run -p toiler-session --bin toiler-session -- list       # 列会话
-cargo run -p toiler-session --bin toiler-session -- load <file>
-cargo run -p toiler-session --bin toiler-session -- append <file> "文本"   # 追加一轮
-cargo run -p toiler-session --bin toiler-session -- verify ~/.pi/agent/sessions  # 全量回归
-```
-
-### 实现骨架：委托 + 写穿
-
-`SessionStorage` 有 30+ 个方法（entries / records / lanes / progress / 分页 / 统计）。
-手写一遍既慢又容易和 rpi 语义跑偏，所以：
-
-- **读**：v3 文件逐行回放成 `SessionState`，灌进 rpi 自己的
-  `InMemorySessionStorage::from_state`。所有读方法直接转发，分支查询、分页、
-  统计全部由 rpi 原生实现负责。
-- **写**：`append_entry` 先落内存（拿到 rpi 盖好 `seq`/`parentId` 的 `Entry`），
-  再按 v3 格式 append 一行到文件尾。**老行永不重写**，所以 pi 仍能打开同一文件，
-  也不会因为字段丢失（rpi 没有 `durationMs` 之类）而破坏历史。
-
-### 回放时补的三处 v3 缺口
-
-| 缺口 | 处理 |
-|---|---|
-| v3 条目没有 `seq` | 按**成功落地**的顺序递增；失败的行不推进，避免「一条坏行 → 整串非连续」的级联 |
-| v3 是 `parentId` 链，rewind/edit 会让 `parentId` 指向非叶子 | rpi 要求 `parentId == lane 叶子`，所以先把 main 叶子退回到 parent 再 append |
-| `stopReason: "toolUse"` vs rpi 要 `"tooluse"` | 读时小写、写时还原 camelCase |
-
-### 又发现两处 pi 侧约束
-
-1. **pi 的自定义消息 role 必须是 `"custom"`**（`dist/core/messages.js` 的
-   `convertToLlm` 只认 `bashExecution|branchSummary|compactionSummary|custom|system`）。
-   不在这个集合里的 role，写进 v3 时降级成 `role:"custom"` + `customType`。
-2. **pi 的 v3 加载是宽松的**：`JSON.parse` 失败只跳过该行。所以「pi 能读」很容易，
-   真正要保证的是 `buildSessionContext` 能把追加的消息纳入上下文——已验证。
-
-### 验收证据
-
-| 项 | 结果 |
-|---|---|
-| 554 个真实 pi 会话全量回放 | 554/554，102,572 条目，0 行跳过 |
-| 复制真实会话到 `~/.toiler` | 可列出 / 可加载 / 可追加 |
-| 追加后老字节 | 完全一致（append-only） |
-| pi 侧复读追加后的文件 | `loadEntriesFromFile` 270 条全解析；`buildSessionContext` 纳入追加的两条 |
-
-## 阶段 2：HTTP/SSE 服务（`crates/toiler-server`）
-
-把 pi-desktop 的 `/api` 契约用 axum 复刻。**契约从 `.next` 编译产物逐字逆向**，
-结论固化在 [`docs/contracts/README.md`](./docs/contracts/README.md)，逆向工具在
-`tools/pi-contract/extract.py`（可重新抽任意 route / 共享模块）。
-
-```bash
-cargo run -p toiler-server -- --port 8787          # 会话根默认 ~/.pi/agent/sessions
-cargo run -p toiler-server --bin catalog-probe     # 只看 models.json → provider 映射
-```
-
-### 关键事实（与直觉相反的两处）
-
-1. **没有 Basic Auth**。pi-desktop 用的是「Host 白名单 + Origin 同源」校验
-   （`lib/request-security.ts`）：Host 必须是 localhost / 任意 IP / 白名单主机，
-   且 Origin 同源或缺失。我们 1:1 复刻，含 `export` 的 navigate 例外。
-2. **pi 的 v3 读取是宽松的**，所以「能读」不难；难的是 `tree`/`paging`/`totalActiveMs`
-   这些前端形状 —— 都是 `.next` 里的压缩函数，逐个复刻（见 `session_view.rs`，
-   每个函数注释标了产物模块号）。
-
-### agent 运行时
-
-```
-POST /api/agent/{id} {type:"prompt"} 
-  → AgentHarness::create(allow_existing_session: true, models = models.json 的 providers)
-  → lane.send_message(user message)          ← 真实调用 provider
-  → AgentEvent 投影成 pi 的 SSE 形状 → broadcast → GET /events
-  → 消息按 v3 写进同一个 .jsonl             ← 阶段 1 的写穿
-```
-
-默认模型取「上次用的模型」（最近会话里最后一个 `model_change`），可用
-`TOILER_MODEL=provider/id` 覆盖。
-
-### 已验收
-
-| 项 | 结果 |
-|---|---|
-| 555 个历史会话 | 可列 / 可读，字段与 pi 对齐 |
-| 真实一轮对话 | `agent_start → message_start → message_update×18 → tool_execution_* → agent_end` |
-| 工具调用 | `ls` 真的执行，toolResult 入档 |
-| 多轮续聊 | 第二轮正确引用第一轮上下文 |
-| 写出的 v3 文件 | pi 的 `loadEntriesFromFile` + `buildSessionContext` 均正常 |
-| 测试 | 阶段 2 结束时 72 个（安全 6 + 视图 12 + 列表 2 + 搜索 5 + HTTP 契约 10 + 会话层 …） |
-
-## 阶段 3：剩余 route（auth / models-config / git / projects）
-
-`docs/contracts/README.md` 的「实现进度」表已全量更新。要点：
-
-- **配置自己的目录**：`~/.agents/` 放跨工具通用的东西（`skills/`/`mcp/`/
-  `commands/`/`tools/`），`~/.agents/toiler/` 放 toiler 专属的
-  `configs/`（auth/models/settings/trust/desktop-access）、`sessions/`、
-  `plugins/` 与 `work.sqlite`。首次启动从 `~/.pi/agent` **复制**一份过来
-  （旧文件保留不删），之后各管各的。
-- **项目库独立**：`~/.agents/toiler/work.sqlite`（`added_projects` /
-  `app_preferences`）；首次创建时从旧的 `~/.pi/agent/pi.sqlite` **只读**
-  导入一次，之后两边各自独立演进。
-- **git 走 CLI**：24 个动作、worktree、diff 全部包在 `gitsvc.rs`，每个仓库一把锁；
-  凭据走临时 `GIT_ASKPASS`（不落明文到命令行），勾了「记住」则 AES-256-GCM
-  加密存进 `configs/git-credentials.json`（密钥在 macOS 钥匙串，与 pi 共用条目）。
-- **真模型的三处调用**：`auto-name`（起标题）、`git/commit-message`（写提交信息）、
-  `models-config/test`（连通性自检）都复用 `oneshot.rs` 的一次性补全。
-- **`projectRoot` 修好了**：改成真 `git rev-parse` 探测，worktree 会话会带
-  `worktreeBranch`（阶段 2 的已知差异 1 已消）。
-
-```bash
-cargo test                      # 101 个测试
-cargo run -p toiler-server -- --port 8787
-curl -s "localhost:8787/api/git?cwd=$PWD" | jq .
-curl -s "localhost:8787/api/auth/providers" | jq .
-```
-
-### 仍未做
-
-`files?type=diff` 与图片缩略、手机端消息二次裁剪、模型价格目录（models.dev 已按
-计划砍掉）、除 `qoder-cn` 之外的 OAuth 登录（返回 501）。前端联调已在阶段 4 打通（见下）。
-
-`qoder-cn`（Qoder 国内版订阅）是完整移植：设备码登录、COSY 签名、请求体改写、
-SSE 信封解包、远端模型目录刷新、15 个内置模型兜底 —— 见 `crates/toiler-server/src/qoder_cn/`。
-rpi 的 provider 不允许注入传输层，所以模型的 `baseUrl` 指向本进程的
-`/qoder-cn/<token>/v1/chat/completions`，由它完成改写（等价 pi 的 `withQoderCnFetch`）。
-
-供应商目录（pi 面板里那 44 家）已经补齐：写死在
-`crates/toiler-server/src/builtin_providers.rs`（pi SDK 目录 42 家 + pi-desktop
-自注册的 `apisets` / `qoder-cn`），由 `/api/auth/providers`（10 家订阅）
-与 `/api/auth/all-providers`（42 家 API Key）输出。**API Key 详情页提供「刷新模型列表」**：
-服务端用已保存的凭据请求供应商 `/models`，结果放入 `models-store.json` 并注入运行时目录，
-不会覆盖用户的 `models.json` 或 `enabledModels` 白名单。刷新失败保留旧目录；成功后
-新模型可在设置中勾选。普通供应商只在手动刷新时联网，重启复用缓存。
-订阅供应商也共用同一位置的刷新图标；已实现的 Qoder CN 用 OAuth 凭据走 COSY 签名的
-官方 `model/list`，按账号缓存并更新对话转发层。其它尚未实现订阅目录的供应商会明确提示，
-不会把订阅令牌误当 API Key。
-要求供应商提供兼容模型列表接口，且模型协议是当前支持的 `openai-completions`、
-`openai-responses` 或 `anthropic-messages`；其它协议或缺少 Base URL 时明确报错，
-仍可通过自定义 Provider 导入模型。
-
-`apisets`（设置页里显示为 **Coding**，`https://coding.apisets.com`）的模型清单**不在
-静态表里**，而是运行时拉上游 `GET /v1/models` 并缓存在 `<configs>/models-store.json`
-（格式与 pi 逐字一致：`etag = apisets-models-api-v2`、30 分钟有效期）—— 见
-`crates/toiler-server/src/apisets.rs`。它的 18 个模型横跳两套协议（`gpt-*` →
-`openai-responses`，其余 → `anthropic-messages`），而 rpi 只按 `model.provider`
-解析 provider，所以那里另有一个按 `model.api` 分发的 `ApiSetsProvider`。
-
-## 阶段 4：Tauri 单进程（`crates/toiler-desktop`）
-
-一个可执行文件里同时跑壳、后端与前端：**没有 node，没有子进程**。
-
-```bash
-# 不嵌真实前端（二进制里是占位页，API 照常可用）
-cargo run -p toiler-desktop
-
-# 嵌前端源码构建出的产物（在 frontend/ 里先跑 npm run build）
-cd crates/toiler-desktop/frontend && npm run build && cd -
-cargo build -p toiler-desktop --release
-./target/release/toiler-desktop
-```
-
-### 结构
-
-| 模块 | 作用 |
-|---|---|
-| `toiler_server::boot` | 启动引导：会话根 → 模型目录 → `AppState` → `bind` / `serve`；CLI 与桌面壳共用 |
-| `toiler_server::assets` | `include_dir!` 嵌前端；`_next/static` immutable、目录 index、RSC `.txt`、客户端路由兜底 |
-| `toiler-desktop::server` | 把 `bind(127.0.0.1:0)` → `tauri::async_runtime::spawn(serve)`，顺手预热会话列表 |
-| `toiler-desktop::frontend` | **前端源码**（Next 应用，源自 pi-desktop）；`npm run build` 产出 `dist/` |
-| `toiler-desktop::shell` | Tauri 的资源目录（`frontendDist`）：只有窗口占位页与启动失败页 |
-| `toiler-desktop::terminal` | 内置终端的 PTY（`portable-pty`）：四个 Tauri 命令 + 两个事件，见下面的「内置终端」 |
-| `toiler-desktop::{lan_proxy,tunnel}` | 从 pi 原样移植的手机访问件（局域网反代 + Cloudflare 隧道） |
-
-三处与 pi 的关键差别：
-
-1. **同源**：窗口直接加载 `http://127.0.0.1:<port>/`（pi 是 `index.html` + 另一个
-   API origin）。`/api` 与前端一个端口，SSE/fetch 不用处理跨域。
-2. **端口由内核分配**（`port = 0`）：不再抢 8787，也不会出现「端口被占用」。
-3. **没有启动探测**：`bind` 完成即可用（pi 是轮询 45s 等 node 起来）。
-
-### 内置终端
-
-`terminal.rs` 给前端的 `TerminalPanel`（xterm）提供真 PTY，与 pi 同版本依赖、
-同一套协议：
-
-| 方向 | 接口 |
-|---|---|
-| 前端 → 后端 | `terminal_start({cwd, cols, rows}) → terminalId`、`terminal_write({terminalId, data: number[]})`、`terminal_resize({terminalId, cols, rows})`、`terminal_close({terminalId})` |
-| 后端 → 前端 | `terminal-output`（`{terminalId, data: number[]}`）、`terminal-exit`（`{terminalId}`） |
-
-几个刻意的选择（改之前先看 `terminal.rs` 的头注释与测试）：
-
-- **只在桌面壳里**：它开的是任意 shell；服务端要对局域网和隧道暴露 `/api`，
-  所以起进程的能力不能放在那边。手机链路天然没有这条路径。
-- **cwd 必须是绝对路径且真实存在**：从访达启动时进程 cwd 是 `/`，相对路径会解析
-  到 `Toiler.app/Contents/MacOS/` 里。
-- **继承的 locale 不是 UTF-8 就补 `LC_ALL`/`LC_CTYPE`**：GUI 启动没有 `LANG`，
-  zsh 会把中文输入法送来的字节按单字节回显（「。」变成 `\M-ã<0080><0082>`）。
-- **关面板 = 杀进程组**：只杀 shell 会留下 `npm run dev` 之类的子进程。
-
-### 前端
-
-前端源码在 `crates/toiler-desktop/frontend/`，是从 pi-desktop 搬过来完整 Next
-应用（排除 Node 后端部分）。三个目录各管一件事，不要混：
-
-| 路径 | 内容 | 进 git |
-|---|---|---|
-| `crates/toiler-desktop/frontend/` | Next 源码（`app/` `components/` `hooks/` `lib/` `data/` `public/`） | 是 |
-| `crates/toiler-desktop/frontend/dist/` | `npm run build` 的静态导出产物 | 否 |
-| `crates/toiler-server/frontend/` | `include_dir!` 的嵌入目录（占位页） | 是 |
-| `crates/toiler-desktop/shell/` | Tauri 的 `frontendDist`（窗口占位页 + 启动失败页） | 是 |
-
-`build.rs` 选目录的顺序：`TOILER_FRONTEND_DIR` → `frontend/dist/`（存在
-`index.html` 时）→ `crates/toiler-server/frontend/` 占位页。即使本轮选择占位页，
-也会监听 `dist/` 及其 `index.html`：之后首次生成前端会使 Cargo 缓存失效，
-不需要 `cargo clean`。`tools/run-desktop.sh` 则要求存在前端产物，缺失时直接
-停止，不会悄悄启动占位界面（`--skip-frontend` 仅跳过重建）。所以日常开发只用：
-
-```bash
-cd crates/toiler-desktop/frontend && npm install   # 首次
-npm run build                                       # 产出 dist/
-cargo build -p toiler-desktop                       # 自动嵌入 dist/
-```
-
-与 pi 的前端差异（都是为了去掉 Node 后端）：
-
-| 项 | pi | toiler |
-|---|---|---|
-| `output` | 按目标在 `standalone` / `export` 间切 | 恒为 `export` |
-| `distDir` | `.next` / `.next-desktop-dev` / `.next-desktop-frontend` | 恒为 `dist` |
-| `app/api/` | pi 的 Node 后端共 40+ route | **不搬**，`/api` 由 axum 提供 |
-| `app/m/` | 手机页面（`force-dynamic`） | 静态导出入口，查询参数在客户端读取，通过 Rust `/api/mobile/state` 与 SSE 同步 |
-| `proxy.ts` / `serverExternalPackages` / `headers()` | pi 的 server 侧特性 | 删掉；安全头改由 `assets.rs` 发 |
-
-> 旧 Node 服务模块和 `@earendil-works/pi-*` 依赖已移除。`lib/` 只保留界面所需的
-> 浏览器逻辑与本地接口类型；`samePath` 不再依赖 Node 的 `path` 模块。
-> Node 仅用于构建与测试，不参与应用运行。代码边界及验证命令见
-> [前端说明](./crates/toiler-desktop/frontend/README.md)。
-
-### 验收
-
-| 项 | 结果 |
-|---|---|
-| 冷启动（exec → 首页 200） | 中位 **114ms** |
-| 二进制 | 51MB（含 24MB 前端）；pi 的 `.app` 是 255MB |
-| 前端渲染 | 真实 pi 产物内嵌后界面完整：会话列表 / 项目切换 / 模型选择 / 文件面板（含 git 状态） |
-| `/api/sessions` | 559 个会话；首次扫描 7.8s → **1.68s**（并行），预热后 13ms |
-| 手机访问 | LAN 代理 200（Basic Auth）/ 无凭据 401；隧道起停正常，退出不留孤儿 |
-| 测试 | 151 个全绿 |
-
-## 阶段 5：回归（258 个测试全绿）
-
-一个阶段的价值不在「写了多少」，而在「走查时抓到多少测试抓不到的问题」。
-阶段 5 用真实前端产物 + 真实模型 + 真实手机链路走了一遍，修掉 6 个致命缺陷
-（详见 [PLAN.md](./PLAN.md) 阶段 5）：
-
-| 缺陷 | 症状 |
-|---|---|
-| `context` 不做 `toolCall` 归一化 | **打开任何带工具调用的历史会话整页白屏** |
-| `with_binding` 在 clone 后 panic | **应用一启动就 Abort trap** |
-| `copy_stream` 把 `EAGAIN` 当致命错误 | **手机端 1.29MB 的 JS chunk 只收到 290KB，白屏** |
-| 壳没注入 `PI_WEB_*` 环境变量 | 配对地址永远停在 `starting` |
-| `LiveAgent` 忽略 `settings.json` 默认模型 | 续聊用错模型 |
-| `/api/mobile/state` 直接下发原始消息 | 一屏 474KB（图片 base64 占 682KB）→ 54KB |
-
-主要补齐：
-
-- **`/api/files` 全量重写**：六种 `type`（`list`/`read`/`download`/`meta`/`preview`/`watch`）
-  + 三种写方法（`PUT`/`PATCH`/`POST` multipart），`Range` 206/416、SSE 命名事件、
-  两层授权（词法 + realpath）+ `sessionId` 引用通道
-- **DOCX 预览**：自己解 OOXML（无 Node 依赖），标题/粗斜体/列表/表格
-- **手机访问接口**：`/api/mobile/access`（读写配置）+ `/api/mobile/pair`（地址推导，不含凭据）
-- **手机消息投影**（`mobile_view`）：图片转占位、思考/工具入参截断、30 条窗口 + 40 条内保留细节
-
-验收（真实数据）：
-
-| 项 | 结果 |
-|---|---|
-| 测试 | 258 个全绿，0 warning |
-| 历史会话 | 560/560 可读（104,986 条目 / 103,318 消息，0 失败） |
-| 真实续聊 | 老字节一字不改；pi 自己的 `SessionManager` 复读得 388 条目 / 385 context 消息 |
-| 桌面界面 | 会话/文件/图片/语法高亮/Markdown 预览/手机设置页全部实测 |
-| 手机 | Basic Auth 401/401/200；390×844 视口完整渲染；named 隧道 4 条连接注册 |
-
-## 阶段 7：内置终端（348 个测试全绿）
-
-阶段 4 当时把内建终端留成了四个「明确报错」的命令占位，前端 `TerminalPanel`（xterm）
-与 `capabilities/default.json` 一直是完整的——只差后端。新增 `toiler-desktop::terminal`：
-
-- `portable-pty` 0.9（与 pi 同版本）→ `terminal_start/write/resize/close` 四个命令，
-  `terminal-output` / `terminal-exit` 两个事件
-- unix 用 `$SHELL`，Windows 用 `powershell.exe`；`TERM=xterm-256color`
-- cwd 必须是**绝对路径**且真实存在；同时最多 16 个终端；单次键入上限 1MB
-- 关面板 / 退出应用时杀**前台进程组**，不留 `npm run dev` 这类子进程
-- 继承的 locale 不是 UTF-8 时就补 `LC_ALL`/`LC_CTYPE`（访达拉起的进程没有 `LANG`，
-  中文输入法会回显成 `\M-ã<0080><0082>`）
-
-它**只在桌面壳里**：起的是任意 shell，而 `toiler-server` 还要对局域网与隧道暴露 `/api`。
-细节见 [README.md](./README.md) 阶段 4 的「内置终端」与 [PLAN.md](./PLAN.md) 阶段 7。
-
-| 项 | 结果 |
-|---|---|
-| 测试 | 348 个全绿，0 warning（debug + clippy） |
-| 真实 PTY | 起 `/bin/sh` 验证键入回显 / `pwd` / `stty size` 反映 resize（`30 100`） |
-| 进程回收 | drop 会话后 shell 被 SIGKILL（`kill(pid, 0)` 返回 -1） |
-
-## 后续阶段
-
-见 [PLAN.md](./PLAN.md)。
+- 构建与验证规范：[AGENTS.md](./AGENTS.md)、[前端说明](./crates/toiler-desktop/frontend/README.md)。涉及前端的验证应先生成真实产物，再运行 Rust 构建与测试。
+- 修改 `/api` 前先查阅 [接口契约](./docs/contracts/README.md)；历史实施与验收记录见 [PLAN.md](./PLAN.md)，版本变化见 [CHANGELOG.md](./CHANGELOG.md)。

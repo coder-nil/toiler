@@ -328,5 +328,5 @@ scope 用 crate 短名：`server` / `session` / `desktop` / `poc` / `docs` / `to
 | OAuth 登录（`qoder-cn` 例外，已实现） | 其它家当前配置不需要 |
 | models.dev 定价目录 | 可选，后补 |
 
-> 注：`PLAN.md` 里「阶段 2」标着「进行中，主体已完成」，但阶段 3–6 都是已完成；
-> README 的口径（阶段 0–5 全部完成）与实际代码一致，以 README 为准。
+> [PLAN.md](./PLAN.md) 保留各阶段的实施与验收记录，其中的状态和实验数据属于历史记录。
+> 当前安装、运行方式和功能边界见 [README.md](./README.md)；`/api` 细节以接口契约为准。

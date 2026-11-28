@@ -166,10 +166,12 @@ fn windows_launcher_uses_node_and_preserves_arguments() {
     ]);
     let cmd = command.as_std();
     assert_eq!(cmd.get_program(), node.as_os_str());
+    // Windows 将 `/` 和 `\` 都视为路径分隔符，只有脚本路径按路径语义比较。
+    let mut args = cmd.get_args();
+    assert_eq!(args.next().map(Path::new), Some(cli.as_path()));
     assert_eq!(
-        cmd.get_args().collect::<Vec<_>>(),
+        args.collect::<Vec<_>>(),
         [
-            cli.as_os_str(),
             OsStr::new("install"),
             OsStr::new("@scope/plugin@^1.2.3"),
             OsStr::new("--prefix"),
