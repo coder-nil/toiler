@@ -6,6 +6,9 @@ import { createJiti } from "jiti";
 const jiti = createJiti(import.meta.url);
 const { subscribeToWindowForeground } = await jiti.import("../lib/window-foreground.ts");
 const { getGitWorkspaceSplitBounds } = await jiti.import("../lib/panel-layout.ts");
+const { PRIMARY_SHORTCUT_BINDINGS, KEYBOARD_SHORTCUTS, matchesPrimaryShortcut } = await jiti.import("../lib/keyboard-shortcuts.ts");
+const { zhCNLocale } = await jiti.import("../lib/i18n/messages/zh-CN.ts");
+const { enLocale } = await jiti.import("../lib/i18n/messages/en.ts");
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 const sidebar = await read("components/SessionSidebar.tsx");
@@ -15,6 +18,20 @@ const workspace = await read("components/GitWorkspace.tsx");
 const history = await read("components/GitHistoryPanel.tsx");
 const conflictEditor = await read("components/GitConflictEditor.tsx");
 const explorer = sidebar.match(/<section className=\{styles\.explorer\}[\s\S]*?<\/section>/)?.[0];
+
+test("Ctrl/Cmd+G 切换 Git 工作区，与侧栏入口用同一个 cwd", () => {
+  assert.equal(PRIMARY_SHORTCUT_BINDINGS.toggleGitWorkspace.code, "KeyG");
+  const item = KEYBOARD_SHORTCUTS.find((shortcut) => shortcut.id === "toggle-git-workspace");
+  assert.ok(item);
+  assert.equal(item.group, "global");
+  assert.deepEqual(item.combos, [["Ctrl/Cmd", "G"]]);
+  assert.ok(zhCNLocale.messages[item.labelKey]);
+  assert.ok(enLocale.messages[item.labelKey]);
+  const evt = { key: "g", code: "KeyG", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false };
+  assert.equal(matchesPrimaryShortcut(evt, "toggleGitWorkspace"), true);
+  assert.equal(matchesPrimaryShortcut({ ...evt, shiftKey: true }, "toggleGitWorkspace"), false);
+  assert.match(shell, /onToggleGitWorkspace: \(\) => \{\s*const cwd = selectedSession\?\.cwd \?\? newSessionCwd \?\? activeCwd;\s*if \(cwd\) toggleGitWorkspace\(cwd, cwd\);/);
+});
 
 test("侧栏项目和子仓库入口打开同一个 Git 工作区，不替换文件树", () => {
   assert.ok(explorer);

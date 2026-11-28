@@ -2691,6 +2691,84 @@ span.token.table {
   font-size: 12px;
 }
 
+/* Git 操作区的加载占位。骨架沿用各分区的真实尺寸(区块间距、文件行 30px、
+   字段高度),整组一起呼吸,不给每一条单独加动画:几十个元素各跑一条
+   动画既费电又乱。减少动效偏好下直接改成静态灰块。 */
+.git-skeleton {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.git-skeleton-bar,
+.git-skeleton-pill,
+.git-skeleton-code,
+.git-skeleton-field {
+  display: block;
+  border-radius: var(--radius-xs);
+  background: var(--bg-panel);
+}
+
+.git-skeleton-bar {
+  height: 7px;
+}
+
+/* 骨架把各分区包进一个容器,`.git-panel-body > .git-section:first-child` 的就近
+   判定会失效;不补这一条,骨架首块会比真实内容多出 30px 顶部空白,数据一到
+   整块内容就往上跳。 */
+.git-skeleton > .git-section:first-child {
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.git-skeleton-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.git-skeleton-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.git-skeleton-actions-end {
+  justify-content: flex-end;
+  margin-top: 7px;
+}
+
+.git-skeleton-pill {
+  width: 46px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+}
+
+.git-skeleton-row {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 8px;
+}
+
+.git-skeleton-code {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  margin-right: 8px;
+}
+
+.git-skeleton-field {
+  height: 130px;
+  border-radius: var(--radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .git-skeleton {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
 /* 出错条与「有更新 / 操作进行中」提示共用一条左侧 3px 强调边：彩色底 + 同色
    字在两套主题里总有一边对比不足，底部与边着色、正文留 --text 最稳。 */
 .git-alert,

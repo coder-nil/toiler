@@ -139,6 +139,18 @@ button.commitGrid:hover { --history-row: var(--bg-hover); }
 button.commitGrid[aria-pressed="true"] { --history-row: var(--history-selected); }
 .commitHead { position: sticky; top: 0; z-index: 1; min-height: 26px; --history-row: var(--bg-chrome); border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
 .scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: auto; scrollbar-gutter: stable; }
+
+/* 加载骨架:三栏沿用真实行高(28/30px),数据到达时只换内容、不跳高度。
+   整组一起呼吸,不给每一行单独加动画;减少动效偏好下直接改成静态灰块。 */
+.skeleton { padding: 6px 8px; animation: git-history-skeleton-pulse 1.6s ease-in-out infinite; }
+.skeletonRow { display: flex; align-items: center; min-height: 28px; }
+.skeletonBar { display: block; height: 7px; border-radius: var(--radius-xs); background: var(--bg-panel); }
+.loadError { grid-column: 1 / -1; }
+@keyframes git-history-skeleton-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; opacity: 0.7; }
+}
+
 .list { list-style: none; margin: 0; padding: 0; }
 .scroll > .list { min-width: calc(var(--graph-width) + 510px); }
 .commitShortId { padding-left: 2px; color: var(--text-muted); font: 11px/1.5 var(--font-mono); }

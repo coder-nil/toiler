@@ -30,6 +30,8 @@ interface UseGlobalKeyboardShortcutsOptions {
   onToggleConsole?: () => void;
   /** Called when Ctrl/Cmd+O is pressed to open the directory picker. */
   onOpenDirectory?: () => void;
+  /** Called when Ctrl/Cmd+G is pressed to toggle the Git workspace. */
+  onToggleGitWorkspace?: () => void;
   /** The currently selected project directory (sidebar cwd). */
   activeCwd?: string | null;
 }
@@ -42,6 +44,8 @@ interface UseGlobalKeyboardShortcutsOptions {
  *   Ctrl/Cmd+N   – create a new session in the active project directory
  *   Ctrl/Cmd+B   – show the sidebar
  *   Ctrl/Cmd+`   – toggle the console
+ *   Ctrl/Cmd+O   – open the directory picker
+ *   Ctrl/Cmd+G   – toggle the Git workspace for the active project
  *
  * Note: Esc inside <textarea> or <input> is deliberately NOT handled here.
  * ChatInput manages its own Esc logic (closing slash / @ file menus, stopping
@@ -51,7 +55,7 @@ interface UseGlobalKeyboardShortcutsOptions {
 export function useGlobalKeyboardShortcuts(
   options: UseGlobalKeyboardShortcutsOptions,
 ): void {
-  const { onNewSession, onShowSidebar, onToggleConsole, onOpenDirectory, activeCwd } = options;
+  const { onNewSession, onShowSidebar, onToggleConsole, onOpenDirectory, onToggleGitWorkspace, activeCwd } = options;
 
   useEffect(() => {
     const handler = (e: KeyboardEvent): void => {
@@ -99,11 +103,19 @@ export function useGlobalKeyboardShortcuts(
         if (!onOpenDirectory) return;
         e.preventDefault();
         onOpenDirectory();
+        return;
+      }
+
+      // ---- Ctrl/Cmd+G: toggle Git workspace ----
+      if (matchesPrimaryShortcut(e, "toggleGitWorkspace")) {
+        if (!onToggleGitWorkspace) return;
+        e.preventDefault();
+        onToggleGitWorkspace();
       }
     };
 
     // Capture before editor/input handlers can stop propagation of browser-level shortcuts.
     document.addEventListener("keydown", handler, true);
     return () => document.removeEventListener("keydown", handler, true);
-  }, [activeCwd, onNewSession, onShowSidebar, onToggleConsole, onOpenDirectory]);
+  }, [activeCwd, onNewSession, onShowSidebar, onToggleConsole, onOpenDirectory, onToggleGitWorkspace]);
 }

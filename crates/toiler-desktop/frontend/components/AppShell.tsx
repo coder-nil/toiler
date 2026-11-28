@@ -1108,6 +1108,10 @@ export function AppShell() {
     onShowSidebar: handleSidebarShow,
     onToggleConsole: handleOpenConsole,
     onOpenDirectory: () => setOpenDirectoryRequest((value) => value + 1),
+    onToggleGitWorkspace: () => {
+      const cwd = selectedSession?.cwd ?? newSessionCwd ?? activeCwd;
+      if (cwd) toggleGitWorkspace(cwd, cwd);
+    },
     activeCwd,
   });
 

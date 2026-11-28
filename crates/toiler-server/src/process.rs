@@ -19,6 +19,28 @@ pub fn grouped_command(program: impl AsRef<OsStr>) -> Command {
     command_with_process_group(program, true)
 }
 
+/// 不继承启动应用的控制终端。仅重定向 stdin 或另建进程组都挡不住 `/dev/tty`。
+pub(crate) fn detached_command(program: impl AsRef<OsStr>) -> Command {
+    // Windows 沿用 CREATE_NO_WINDOW；Unix 需要另开会话，而不只是另开进程组。
+    let command = command(program);
+    #[cfg(unix)]
+    let command = {
+        use std::os::unix::process::CommandExt;
+        let mut command = command;
+        // SAFETY: fork 与 exec 之间只调用 setsid；失败时按 errno 返回，不继续启动。
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        command
+    };
+    command
+}
+
 fn command_with_process_group(program: impl AsRef<OsStr>, grouped: bool) -> Command {
     let mut command = Command::new(program);
     #[cfg(windows)]
@@ -55,6 +77,35 @@ mod tests {
         .expect("命令应能启动");
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detached_command_does_not_inherit_the_terminal_session() {
+        const PROBE: &str = "TOILER_TEST_DETACHED_COMMAND_PROBE";
+        if std::env::var_os(PROBE).is_some() {
+            // CI 本身可能没有终端；检查会话 ID，防止单靠 /dev/tty 的断言误通过。
+            assert_eq!(
+                unsafe { libc::getsid(0) },
+                std::process::id() as libc::pid_t
+            );
+            assert!(std::fs::File::open("/dev/tty").is_err());
+            return;
+        }
+        let output = detached_command(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "process::tests::detached_command_does_not_inherit_the_terminal_session",
+            ])
+            .env(PROBE, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "子进程仍在原控制终端的会话：{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[cfg(windows)]
@@ -99,7 +150,7 @@ mod tests {
             }
             Ok("launcher") => {
                 assert!(unsafe { GetConsoleWindow() }.is_null());
-                for mut child in [command(&exe), grouped_command(&exe)] {
+                for mut child in [command(&exe), grouped_command(&exe), detached_command(&exe)] {
                     assert_output(
                         child.args(ARGS).env(STAGE, "probe").output().unwrap(),
                         PROBED,

@@ -471,7 +471,7 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
         )}
         <div className="git-panel-body" inert={Boolean(versionPreview)}>
           {error && <div role="alert" className="git-alert">{error}{sshAuthFailed && <div className="git-alert-detail">{t("git.sshKeyAuthFailed")}</div>}</div>}
-          {!summary && !error && <div className="git-hint">{t("git.loadingRepository")}</div>}
+          {!summary && !error && <GitPanelSkeleton />}
           {summary?.gitAvailable === false && <div className="git-hint" role="alert">
             <strong style={{ display: "block", marginBottom: 6 }}>{t("git.missingTitle")}</strong>
             <span style={{ display: "block" }}>{t("git.missingBody")}</span>
@@ -640,6 +640,52 @@ function PullCredentialDialog({ kind, initialDraft, canRememberCredential, onCan
         </div>
       </form>
     </dialog>
+  );
+}
+
+/**
+ * 数据到达前的骨架:按各分区最终的样子占位(远程 / 变更 / 暂存 / 提交)。
+ *
+ * 原来这里只有一行「正在加载仓库...」,`/api/git` 返回后整块面板从一行文字
+ * 撑成六七屏控件,滚动位置与鼠标落点都会跳。骨架先把分区结构立起来,数据到了
+ * 只换内容。加载提示只保留给读屏(`role="status"`),视觉上由骨架自己表达。
+ */
+function GitPanelSkeleton() {
+  const { t } = useI18n();
+  return (
+    <>
+      <span className="sr-only" role="status">{t("git.loadingRepository")}</span>
+      <div className="git-skeleton" aria-hidden="true">
+        <div className="git-section">
+          <div className="git-skeleton-title"><span className="git-skeleton-bar" style={{ width: "24%" }} /></div>
+          <div className="git-skeleton-row"><span className="git-skeleton-bar" style={{ width: "72%" }} /></div>
+        </div>
+        <div className="git-section">
+          <div className="git-skeleton-title">
+            <span className="git-skeleton-bar" style={{ width: "32%" }} />
+            <span className="git-skeleton-actions"><span className="git-skeleton-pill" /><span className="git-skeleton-pill" /></span>
+          </div>
+          <div className="git-file-list">
+            {[0, 1, 2].map((row) => <div key={row} className="git-file-row">
+              <span className="git-skeleton-code" /><span className="git-skeleton-bar" style={{ width: `${58 - row * 9}%` }} />
+            </div>)}
+          </div>
+        </div>
+        <div className="git-section">
+          <div className="git-skeleton-title"><span className="git-skeleton-bar" style={{ width: "26%" }} /></div>
+          <div className="git-file-list">
+            {[0, 1].map((row) => <div key={row} className="git-file-row">
+              <span className="git-skeleton-code" /><span className="git-skeleton-bar" style={{ width: `${52 - row * 8}%` }} />
+            </div>)}
+          </div>
+        </div>
+        <div className="git-section">
+          <div className="git-skeleton-title"><span className="git-skeleton-bar" style={{ width: "18%" }} /></div>
+          <div className="git-skeleton-field" />
+          <div className="git-skeleton-actions git-skeleton-actions-end"><span className="git-skeleton-pill" /><span className="git-skeleton-pill" /></div>
+        </div>
+      </div>
+    </>
   );
 }
 

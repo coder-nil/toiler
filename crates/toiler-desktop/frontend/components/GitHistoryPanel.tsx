@@ -51,11 +51,24 @@ function useResource<T>(uri: string | null) {
 
 function LoadState({ error, retry }: { error?: string; retry: () => void }) {
   const { t } = useI18n();
-  if (!error) return <p className={styles.hint} role="status">{t("gitHistory.loading")}</p>;
+  if (!error) return <><span className="sr-only" role="status">{t("gitHistory.loading")}</span><SkeletonRows /></>;
   return <div className={styles.hint} role="alert">
     <strong>{t("gitHistory.loadError")}</strong>
     <p>{error}</p>
     <button className={styles.secondaryButton} type="button" onClick={retry}>{t("gitHistory.retry")}</button>
+  </div>;
+}
+
+/**
+ * 加载中的行骨架。三处资源(分支列表、提交记录、提交详情文件)共用:
+ * 数据到达后都是同高的一列行,先占出这些行的位置,列表就不会从上往下“长”出来。
+ * 加载文案由调用方挂在 `sr-only` 的 `role="status"` 上,骨架自己不读屏。
+ */
+function SkeletonRows({ rows = 6 }: { rows?: number }) {
+  return <div className={styles.skeleton} aria-hidden="true">
+    {Array.from({ length: rows }, (_, row) => <div key={row} className={styles.skeletonRow}>
+      <span className={styles.skeletonBar} style={{ width: `${72 - (row % 3) * 13}%` }} />
+    </div>)}
   </div>;
 }
 
@@ -252,8 +265,18 @@ export function GitHistoryPanel({ cwd, refreshKey, onSelectFile, selectedFile, o
           {t(`gitHistory.${name}`)}
         </button>)}
       </nav>
-      <div ref={refsResizer.panelRef} className={data ? styles.columns : undefined}>
-        {!data ? <LoadState error={resource.error} retry={resource.retry} /> : <>
+      <div ref={refsResizer.panelRef} className={styles.columns}>
+        {!data && !resource.error && <>
+          {/* 首屏就把三栏骨架立起来:分支栏、提交列表、提交详情各就各位,数据到达后
+              只换内容,不再从一行「正在加载...」直接撑成三栏布局。 */}
+          <span className="sr-only" role="status">{t("gitHistory.loading")}</span>
+          <section className={`${styles.column} ${styles.refs}`} aria-hidden="true"><SkeletonRows rows={7} /></section>
+          <div className={styles.refsDivider} aria-hidden="true" />
+          <section className={`${styles.column} ${styles.commits}`} aria-hidden="true"><SkeletonRows rows={9} /></section>
+          <section className={`${styles.column} ${styles.details}`} aria-hidden="true"><SkeletonRows rows={4} /></section>
+        </>}
+        {!data && resource.error && <div className={styles.loadError}><LoadState error={resource.error} retry={resource.retry} /></div>}
+        {data && <>
           <section id={refsId} className={`${styles.column} ${styles.refs}`} aria-label={t("gitHistory.refs")}>
             <div className={styles.refToolbar}>
               <label className={styles.search}>

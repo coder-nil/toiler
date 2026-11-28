@@ -175,10 +175,9 @@ pub fn run_git_with_env(
 }
 
 pub(crate) fn git_command() -> Command {
-    // 桌面发布版没有控制台，后台刷新启动 Git 时也不能让 Windows 新建控制台。
-    // 走统一的 [`crate::process`]：全项目一个地方管窗口策略，避免以后
-    // 新增的 git（或其他）调用忘了传标志又闪出黑窗。
-    crate::process::command("git")
+    // SSH 会直接打开 /dev/tty；即使 stdin 是空的，GIT_TERMINAL_PROMPT=0 也只管 Git。
+    // 服务端 Git 不能借用启动应用的终端；面板凭据仍可通过显式 askpass 传入。
+    crate::process::detached_command("git")
 }
 
 fn run_git_inner(
@@ -844,6 +843,8 @@ pub fn refresh_remote_refs(cwd: &Path) {
         &[
             ("GCM_INTERACTIVE", "never".into()),
             ("GIT_ASKPASS", String::new()),
+            // 自动刷新不能继承外部 askpass；不支持 REQUIRE 的旧版 SSH 也不能弹窗。
+            ("SSH_ASKPASS", String::new()),
             ("SSH_ASKPASS_REQUIRE", "never".into()),
         ],
     );
