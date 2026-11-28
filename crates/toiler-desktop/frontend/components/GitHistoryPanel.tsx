@@ -481,7 +481,7 @@ function CommitDetails({ cwd, hash, onSelectFile, selectedFile }: { cwd: string;
         </dl>
         <div className={styles.message}>{commit.message || t("gitHistory.noSubject")}</div>
         <dl className={styles.metadata}>
-          <dt>{t("gitHistory.author")}</dt><dd>{commit.author}{commit.authorEmail && <span className={styles.email}>{`<${commit.authorEmail}>`}</span>}</dd>
+          <dt>{t("gitHistory.author")}</dt><dd>{commit.author}{commit.authorEmail && <span className={styles.email}>{` <${commit.authorEmail}>`}</span>}</dd>
           <dt>{t("gitHistory.time")}</dt><dd><time dateTime={commit.authoredAt}>{formatDate(date, commit.authoredAt)}</time></dd>
           {commit.parents.length > 0 && <><dt>{t("gitHistory.parents")}</dt><dd className={styles.parents}>
             {commit.parents.map((parent) => <code key={parent} title={parent}>{parent.slice(0, 8)}</code>)}

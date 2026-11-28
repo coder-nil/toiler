@@ -178,7 +178,6 @@ button.commitGrid[aria-pressed="true"] { --history-row: var(--history-selected);
 .metadata code { font: 11px/1.5 var(--font-mono); }
 .commitId { margin: 0 0 12px; }
 .commitId code { user-select: text; }
-.email { display: block; }
 .parents { display: flex; flex-wrap: wrap; gap: 4px 8px; }
 .containingBranches { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .containingBranches h4 { margin: 0 0 8px; font-size: inherit; font-weight: 650; }
