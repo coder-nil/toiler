@@ -33,6 +33,7 @@ use serde_json::{json, Value};
 
 use crate::git_credentials::{CredentialStore, GitCredential};
 
+pub(crate) mod conflicts;
 pub(crate) mod history;
 
 /// 单文件参与 diff / 行数统计的上限（pi 的 `1060._4`，256 KiB）。
@@ -735,6 +736,12 @@ pub fn full_status_with_store(cwd: &Path, store: &CredentialStore) -> Value {
         .filter(|s| !s.is_empty());
     let local_branches = branches(&root, "refs/heads");
     let changes = status(cwd);
+    let operation = operation_in_progress(&root);
+    let merge_conflicts = if operation == Some("merge") {
+        conflicts::paths(&root).ok()
+    } else {
+        None
+    };
 
     // 面板要显示的已存凭据：只有远程是 https / ssh 才可能有（`none` 类型不存
     // 也不问，否则每个 git:// 仓库都会白读一次加密文件）。
@@ -770,7 +777,8 @@ pub fn full_status_with_store(cwd: &Path, store: &CredentialStore) -> Value {
         // `git_credentials` 模块文档），勾选框应该置灰并说明原因，而不是让
         // 用户勾一个永远不会生效的框。
         "canRememberCredential": crate::git_credentials::secure_storage_available(),
-        "operation": operation_in_progress(&root),
+        "operation": operation,
+        "mergeConflicts": merge_conflicts,
         "branches": local_branches,
         "tags": branches(&root, "refs/tags"),
         "changes": changes,

@@ -11,6 +11,7 @@ import { isMacPlatform, isWindowsPlatform } from "@/lib/platform-key";
 import { revealNext } from "@/lib/typewriter";
 import { upgradeProjectVersion, VERSION_UPGRADE_LEVELS, type VersionUpgradeLevel, type VersionUpgradePreview } from "@/lib/version-upgrade";
 import type { GitDiffSelection } from "@/lib/git-workspace";
+import { GitConflictDialog } from "./GitConflictDialog";
 import { GitPushDialog, type GitPushPreview } from "./GitPushDialog";
 
 type GitFileStatus = {
@@ -39,6 +40,7 @@ type GitSummary = {
   /// 勾了「记住」不会真的落盘，勾选框应置灰并说明。
   canRememberCredential: boolean;
   operation: "merge" | "rebase" | "cherry-pick" | "revert" | null;
+  mergeConflicts?: string[] | null;
   tags: string[];
   changes: { files: GitFileStatus[]; additions: number; deletions: number };
   untrackedPaths: string[];
@@ -93,6 +95,7 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
   const [message, setMessage] = useState("");
   const [pullRebase, setPullRebase] = useState(false);
   const [pullPrompt, setPullPrompt] = useState<PullPrompt | null>(null);
+  const [conflict, setConflict] = useState<{ cwd: string; path: string } | null>(null);
   const [pushPrompt, setPushPrompt] = useState<{ cwd: string; committed: boolean } | null>(null);
   const [username, setUsername] = useState("");
   const [secret, setSecret] = useState("");
@@ -154,7 +157,9 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
 
   const refresh = useCallback(async () => {
     const res = await fetch(`/api/git?${new URLSearchParams({ cwd }).toString()}`);
-    setSummary(await readApiJson<GitSummary>(res, { hint: t("git.serverErrorHint") }));
+    const data = await readApiJson<GitSummary>(res, { hint: t("git.serverErrorHint") });
+    setSummary(data);
+    return data;
   }, [cwd, t]);
 
   // 一个项目里可以有多个仓库（子项目），从文件浏览器的徽标切换仓库根时先丢掉上一个
@@ -164,6 +169,7 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
     setError(null);
     setPullPrompt(null);
     setPushPrompt(null);
+    setConflict(null);
     setVersionPreview(null);
     setVersionResult(null);
   }, [cwd]);
@@ -225,7 +231,11 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
       const detail = reason instanceof Error ? reason.message : String(reason);
       if (!(action === "push" && extra.previewToken)) {
         setError(detail);
-        void refresh().catch(() => undefined);
+        const current = await refresh().catch(() => undefined);
+        if (action === "pull" && current?.operation === "merge" && current.mergeConflicts?.length) {
+          setError(null);
+          onChanged();
+        }
       }
       return detail;
     } finally {
@@ -356,8 +366,10 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
 
   const activeWorktreeFile = selectedFile?.scope === "unstaged" || selectedFile?.scope === "staged" ? selectedFile : null;
 
-  const staged = summary?.changes.files.filter((file) => file.indexStatus !== " " && file.indexStatus !== "?") ?? [];
-  const unstaged = summary?.changes.files.filter((file) => file.worktreeStatus !== " " || file.indexStatus === "?") ?? [];
+  const mergeConflicts = summary?.operation === "merge" ? summary.mergeConflicts : null;
+  const managesConflicts = Array.isArray(mergeConflicts);
+  const staged = summary?.changes.files.filter((file) => file.indexStatus !== " " && file.indexStatus !== "?" && (!managesConflicts || file.status !== "conflict")) ?? [];
+  const unstaged = summary?.changes.files.filter((file) => (file.worktreeStatus !== " " || file.indexStatus === "?") && (!managesConflicts || file.status !== "conflict")) ?? [];
   const untrackedPaths = summary?.untrackedPaths ?? [];
   const sortedTags = sortTagsDescending(summary?.tags ?? []);
   // 标签名输入框的示例值跟着仓库已有的标签走（建好一个后下次自动往前一步）。
@@ -366,9 +378,17 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
   // worktree would leave the button visible but inert. Gate it on real worktree
   // changes (untracked files are never discarded and stay out of this set).
   const hasDiscardableChanges = unstaged.some((file) => file.status !== "untracked");
-  const conflictCount = summary?.changes.files.filter((file) => file.status === "conflict").length ?? 0;
-  const canCommit = Boolean(message.trim()) && staged.length > 0 && conflictCount === 0;
+  const conflictCount = mergeConflicts?.length ?? summary?.changes.files.filter((file) => file.status === "conflict").length ?? 0;
+  const canCommit = Boolean(message.trim()) && staged.length > 0 && conflictCount === 0 && summary?.operation !== "merge";
   const disabled = busy !== null;
+
+  async function conflictResolved(response: Response) {
+    const data = await readApiJson<GitSummary>(response, { hint: t("git.serverErrorHint") });
+    setSummary(data);
+    const next = data.mergeConflicts?.[0];
+    setConflict(next ? { cwd, path: next } : null);
+    onChanged();
+  }
   const needsHttpsCredential = summary?.credentialKind === "https";
   const needsSshCredential = summary?.credentialKind === "ssh";
   // ssh reports every authentication failure — a passphrase-protected key that
@@ -459,14 +479,25 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
                 <ActionButton label={t("git.updateNow")} action="pull" busy={busy} onClick={requestPull} />
               </div>
             )}
-            {summary.operation && <div className="git-note" data-tone="warn"><span className="git-note-text">{t("git.operationInProgress", { operation: t(`git.operation.${summary.operation}`) })}{conflictCount ? ` ${t("git.operationConflicts", { count: conflictCount })}` : ""}</span><div className="git-note-actions"><ActionButton label={t("git.continue")} busy={busy} action="continue" onClick={() => void run("continue")} /><ActionButton label={t("git.abort")} busy={busy} action="abort" danger onClick={() => void run("abort")} /></div></div>}
+            {summary.operation && <div className="git-note" data-tone="warn">
+              <span className="git-note-text">{managesConflicts && conflictCount === 0 ? t("gitConflict.allResolved") : <>{t("git.operationInProgress", { operation: t(`git.operation.${summary.operation}`) })}{conflictCount ? ` ${t("git.operationConflicts", { count: conflictCount })}` : ""}</>}</span>
+              <div className="git-note-actions"><ActionButton label={t(summary.operation === "merge" ? "gitConflict.continue" : "git.continue")} busy={busy} action="continue" disabled={summary.operation === "merge" && (!managesConflicts || conflictCount > 0)} onClick={() => void run("continue")} /><ActionButton label={t("git.abort")} busy={busy} action="abort" danger onClick={() => void run("abort")} /></div>
+            </div>}
+            {!!mergeConflicts?.length && <div className="git-section">
+              <SectionTitle title={t("gitConflict.remaining", { count: mergeConflicts.length })} />
+              <ul className="git-file-list">
+                {mergeConflicts.map((path) => <li key={path} className="git-file-row"><button type="button" className="git-file-open" disabled={disabled} title={path} onClick={() => setConflict({ cwd, path })}>
+                  <span className="git-file-code" data-status="conflict" aria-hidden="true">C</span><span className="git-file-name">{path}</span>
+                </button></li>)}
+              </ul>
+            </div>}
             <div className="git-section">
               <SectionTitle title={t("git.changesSummary", { additions: summary.changes.additions, deletions: summary.changes.deletions })} action={<>{unstaged.length > 0 && <ActionButton label={t("git.stageAll")} action="stage" busy={busy} onClick={() => void run("stage", { paths: unstaged.map((file) => file.filePath) })} />}{summary?.changes.files.length > 0 && <ActionButton label={t("git.discardAll")} action="discard_all" busy={busy} danger disabled={conflictCount > 0} title={t("git.discardAllTitle")} onClick={() => setConfirmingDiscardAll(true)} />}</>} />
               <FileList files={unstaged} empty={t("git.noUnstagedChanges")} busy={busy} selectedPath={activeWorktreeFile?.scope === "unstaged" ? activeWorktreeFile.path : undefined} onOpenDiff={(file) => onSelectFile({ scope: "unstaged", path: file.filePath })} onStage={(filePath) => void run("stage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} />
             </div>
             <div className="git-section">
-              <SectionTitle title={t("git.stagedSummary", { count: staged.length })} action={staged.length > 0 ? <ActionButton label={t("git.unstageAll")} action="unstage" busy={busy} onClick={() => void run("unstage", { paths: staged.map((file) => file.filePath) })} /> : undefined} />
-              <FileList files={staged} empty={t("git.nothingStaged")} busy={busy} selectedPath={activeWorktreeFile?.scope === "staged" ? activeWorktreeFile.path : undefined} onOpenDiff={(file) => onSelectFile({ scope: "staged", path: file.filePath })} onUnstage={(filePath) => void run("unstage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} />
+              <SectionTitle title={t("git.stagedSummary", { count: staged.length })} action={staged.length > 0 && summary.operation !== "merge" ? <ActionButton label={t("git.unstageAll")} action="unstage" busy={busy} onClick={() => void run("unstage", { paths: staged.map((file) => file.filePath) })} /> : undefined} />
+              <FileList files={staged} empty={t("git.nothingStaged")} busy={busy} selectedPath={activeWorktreeFile?.scope === "staged" ? activeWorktreeFile.path : undefined} onOpenDiff={(file) => onSelectFile({ scope: "staged", path: file.filePath })} onUnstage={summary.operation === "merge" ? undefined : (filePath) => void run("unstage", { paths: [filePath] })} onDiscard={(file) => setConfirmingDiscardFile(file.filePath)} />
             </div>
             <div className="git-section">
               <SectionTitle title={t("git.commit")} />
@@ -502,6 +533,7 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
             </div>
           </>}
         </div>
+        {conflict?.cwd === cwd && <GitConflictDialog key={conflict.path} cwd={cwd} path={conflict.path} remaining={conflictCount} onClose={() => setConflict(null)} onResolved={conflictResolved} />}
         {pushPrompt?.cwd === cwd && <GitPushDialog
           cwd={cwd} committed={pushPrompt.committed} onCancel={() => setPushPrompt(null)} onPush={confirmPush}
         />}

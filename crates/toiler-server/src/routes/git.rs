@@ -221,7 +221,7 @@ async fn in_history_repository<T: serde::Serialize + Send + 'static>(
         let Some(root) = gitsvc::repository_root(&cwd) else {
             return Err((400, "Not a Git repository".to_owned()));
         };
-        // 历史操作作用于整个仓库，获准访问子目录不代表获准访问父仓库。
+        // 操作作用于整个仓库，获准访问子目录不代表获准访问父仓库。
         if !state.roots().allows_real(&root) {
             return Err((403, "Access denied".to_owned()));
         }
@@ -233,6 +233,43 @@ async fn in_history_repository<T: serde::Serialize + Send + 'static>(
         Ok(Err((status, message))) => git_error(status, &message),
         Err(message) => git_error(500, &message),
     }
+}
+
+#[derive(Deserialize)]
+pub struct ConflictQuery {
+    cwd: Option<String>,
+    path: String,
+}
+
+pub async fn conflict_file(
+    State(state): State<AppState>,
+    _trusted: Trusted,
+    Query(query): Query<ConflictQuery>,
+) -> Response {
+    in_history_repository(state, query.cwd, move |root| {
+        gitsvc::conflicts::read(root, &query.path)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+pub struct ResolveConflictBody {
+    cwd: Option<String>,
+    path: String,
+    token: String,
+    resolution: gitsvc::conflicts::Resolution,
+}
+
+pub async fn resolve_conflict(
+    State(state): State<AppState>,
+    _trusted: Trusted,
+    Json(body): Json<ResolveConflictBody>,
+) -> Response {
+    in_history_repository(state, body.cwd, move |root| {
+        gitsvc::conflicts::resolve(root, &body.path, &body.token, body.resolution)?;
+        Ok(gitsvc::full_status(root))
+    })
+    .await
 }
 
 pub async fn history_refs(

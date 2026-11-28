@@ -4287,6 +4287,90 @@ async fn git_history_cherry_pick_keeps_conflicts_for_resolution() {
     std::fs::remove_dir_all(sandbox).unwrap();
 }
 
+/// 三栏弹窗逐个提交合并结果，状态区只移除已确认的文件。
+#[tokio::test]
+async fn git_workspace_resolves_one_conflict_at_a_time() {
+    let sandbox = fixture_root("git-merge-conflicts");
+    let repo = sandbox.join("repo");
+    let store = sandbox.join("store");
+    for path in [&repo, &store] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let git = |args: &[&str]| history_fixture_git(&sandbox, &repo, args);
+    let files = ["a 文本.txt", "b.txt"];
+    let write_both = |text| {
+        for file in files {
+            std::fs::write(repo.join(file), text).unwrap();
+        }
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.name", "测试用户"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "commit.gpgSign", "false"]);
+    write_both("base\n");
+    git(&["add", "."]);
+    git(&["commit", "-qm", "base"]);
+    git(&["checkout", "-qb", "incoming"]);
+    write_both("remote\n");
+    git(&["commit", "-qam", "incoming"]);
+    git(&["checkout", "-q", "main"]);
+    write_both("local\n");
+    git(&["commit", "-qam", "main"]);
+    let router = app_with_agent_dir(&store, &repo, Some(&store));
+    let cwd = url_encode(&repo.to_string_lossy());
+    let status_url = format!("/api/git?cwd={cwd}");
+    let conflict_url =
+        |path: &str| format!("/api/git/conflict?cwd={cwd}&path={}", url_encode(path));
+    let started = call(
+        router.clone(),
+        "POST",
+        "/api/git",
+        Some(&json!({"cwd":repo,"action":"merge","branch":"incoming"}).to_string()),
+        &[],
+    )
+    .await;
+    assert_eq!(started.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        get(router.clone(), &status_url).await.json()["mergeConflicts"],
+        json!(files)
+    );
+    let invalid = get(router.clone(), &conflict_url("../gitconfig")).await;
+    assert_eq!(invalid.status, StatusCode::BAD_REQUEST);
+    for (index, path) in files.iter().enumerate() {
+        let response = get(router.clone(), &conflict_url(path)).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+        let conflict = response.json();
+        assert_eq!(conflict["local"], "local\n");
+        assert_eq!(conflict["incoming"], "remote\n");
+        assert!(conflict["result"].as_str().unwrap().contains("<<<<<<<"));
+        let resolved = call(router.clone(), "POST", "/api/git/conflict", Some(&json!({"cwd":repo,"path":path,"token":conflict["token"],"resolution":{"kind":"text","content":"local and remote\n"}}).to_string()), &[]).await;
+        assert_eq!(resolved.status, StatusCode::OK, "{}", resolved.text());
+        assert_eq!(
+            resolved.json()["mergeConflicts"],
+            json!(&files[index + 1..])
+        );
+        assert_eq!(resolved.json()["operation"], "merge");
+    }
+    let continued = call(
+        router,
+        "POST",
+        "/api/git",
+        Some(&json!({"cwd":repo,"action":"continue"}).to_string()),
+        &[],
+    )
+    .await;
+    assert_eq!(continued.status, StatusCode::OK, "{}", continued.text());
+    assert!(continued.json()["operation"].is_null());
+    assert_eq!(
+        git(&["rev-list", "--parents", "-1", "HEAD"])
+            .split_whitespace()
+            .count(),
+        3
+    );
+    assert!(git(&["status", "--porcelain"]).is_empty());
+    std::fs::remove_dir_all(sandbox).unwrap();
+}
+
 /// 分支与标签菜单使用全名引用，对临时远端执行实际推送、更新和删除。
 #[tokio::test]
 async fn git_history_ref_menu_uses_the_selected_ref_and_checked_out_target() {
