@@ -6,11 +6,19 @@
 .repository { margin-right:auto; padding-left:8px; border-left:1px solid var(--border); }
 .topBar .back { display:flex; flex:none; gap:5px; width:auto; padding:0 7px; white-space:nowrap; }
 .body { container:git-workspace / inline-size; flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; }
-.regions { display:grid; flex:1; min-height:0; grid-template-columns:clamp(218px,24%,324px) minmax(0,1fr); grid-template-rows:minmax(0,43fr) minmax(0,57fr); }
-.changes, .diff, .history { min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
-.changes { grid-row:1 / 3; border-right:1px solid var(--border); background:var(--sidebar-bg); }
-.diff { border-bottom:1px solid var(--border); }
-.history > section { flex:1; }
+.regions { display:grid; flex:1; min-height:0; grid-template-columns:clamp(218px,24%,324px) minmax(0,1fr); grid-template-rows:minmax(0,var(--git-workspace-diff-height,53fr)) 8px minmax(0,47fr); }
+.changes, .diffRegion, .diffView, .diff, .history { min-width:0; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
+.changes { grid-row:1 / 4; border-right:1px solid var(--border); background:var(--sidebar-bg); }
+.diffRegion { grid-area:1 / 2; container:git-diff / inline-size; }
+.diffView, .diff, .history > section { flex:1; }
+.diffView[hidden] { display:none; }
+.history { grid-area:3 / 2; }
+.separator { grid-area:2 / 2; display:grid; place-items:center; cursor:row-resize; touch-action:none; user-select:none; background:var(--bg-chrome); border-block:1px solid var(--border); }
+.separator::after { content:""; width:32px; height:2px; border-radius:2px; background:var(--text-dim); }
+.separator:hover, .regions[data-resizing] .separator { background:var(--bg-hover); }
+.separator:is(:hover, :focus-visible)::after, .regions[data-resizing] .separator::after { background:var(--accent); }
+.separator:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.changes button[data-conflict-file][aria-pressed="true"] { background:var(--bg-selected); }
 .paneBar { display:flex; flex:none; align-items:center; min-height:36px; gap:8px; padding:0 10px 0 12px; border-bottom:1px solid var(--border); background:var(--bg-chrome); }
 .paneBar > svg { flex:none; color:var(--text-muted); }
 .changes .paneBar h2 { margin-right:auto; }
@@ -29,8 +37,10 @@
   .navigation button { min-height:36px; font-size:12px; color:var(--text-muted); cursor:pointer; }
   .navigation button[aria-pressed="true"] { box-shadow:inset 0 -2px var(--accent); color:var(--text); }
   .regions { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr); }
-  .changes { grid-row:auto; border-right:0; }
+  .changes, .diffRegion, .history { grid-area:1 / 1; }
+  .changes { border-right:0; }
+  .separator,
   .body:not([data-pane="changes"]) .changes,
-  .body:not([data-pane="diff"]) .diff,
+  .body:not([data-pane="diff"]) .diffRegion,
   .body:not([data-pane="history"]) .history { display:none; }
 }

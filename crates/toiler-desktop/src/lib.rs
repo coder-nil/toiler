@@ -24,6 +24,8 @@ mod interface_zoom;
 mod lan_proxy;
 mod mobile;
 #[cfg(target_os = "macos")]
+mod native_edit_menu;
+#[cfg(target_os = "macos")]
 mod native_titlebar;
 mod seasonal_icon;
 pub mod server;
@@ -484,7 +486,7 @@ fn spawn_signal_watcher(_handle: tauri::AppHandle) {}
 pub fn run() {
     toiler_server::boot::init_tracing();
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .manage(ServerState(Mutex::new(None)))
         .manage(StartupWindow::default())
@@ -502,7 +504,12 @@ pub fn run() {
             terminal::terminal_write,
             terminal::terminal_resize,
             terminal::terminal_close,
-        ])
+        ]);
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(native_edit_menu::build)
+        .on_menu_event(native_edit_menu::handle);
+    let app = builder
         .setup(|app| {
             // 把自己标记成「桌面壳」，并把 pid 交给服务层。两个变量都在 pi 里由
             // spawn node 时的 env 注入；toiler 同进程，直接写进进程环境即可：

@@ -9,6 +9,18 @@ export const RIGHT_PANEL_FALLBACK_WIDTH = 560;
 export const RIGHT_PANEL_MIN_WIDTH = 300;
 export const RIGHT_PANEL_MAX_WIDTH = 1200;
 
+export const GIT_WORKSPACE_SPLITTER_HEIGHT = 8;
+
+/** 短窗口仍为两边保留空间，宽度改用标签页时不会影响纵向分隔值。 */
+export function getGitWorkspaceSplitBounds(height: number) {
+  const available = Math.max(0, Math.floor(height) - GIT_WORKSPACE_SPLITTER_HEIGHT);
+  return {
+    min: Math.min(230, Math.floor(available * 0.52)),
+    max: available - Math.min(132, Math.floor(available * 0.34)),
+    initial: Math.round(available * 0.53),
+  };
+}
+
 export const GIT_HISTORY_REFS_DEFAULT_WIDTH = 180;
 export const GIT_HISTORY_REFS_MIN_WIDTH = 122;
 export const GIT_HISTORY_REFS_MAX_WIDTH = 480;

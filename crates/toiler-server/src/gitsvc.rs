@@ -208,6 +208,17 @@ fn read_git_stdout<T: Send + 'static>(
     extra_env: &[(&str, String)],
     read: impl FnOnce(ChildStdout) -> Result<T, GitError> + Send + 'static,
 ) -> Result<T, GitError> {
+    read_git_stdout_matching(cwd, args, timeout, extra_env, |code| code == 0, read)
+}
+
+fn read_git_stdout_matching<T: Send + 'static>(
+    cwd: &Path,
+    args: &[&str],
+    timeout: Duration,
+    extra_env: &[(&str, String)],
+    accepts_code: impl FnOnce(i32) -> bool,
+    read: impl FnOnce(ChildStdout) -> Result<T, GitError> + Send + 'static,
+) -> Result<T, GitError> {
     // 本机没装 git 时直接返回，不去 spawn。在 Windows 上每次 spawn 找不到
     // 可执行文件都要把 PATH 扫一遍，面板刷新是高频路径，没必要白花这个代价。
     if !git_available() {
@@ -259,7 +270,7 @@ fn read_git_stdout<T: Send + 'static>(
     let stdout = out_handle.join();
     let stderr = err_handle.join().unwrap_or_default();
     let stderr = String::from_utf8_lossy(&stderr);
-    if !status.success() {
+    if !status.code().is_some_and(accepts_code) {
         let message = stderr.trim();
         return Err(err(if message.is_empty() {
             format!("git 退出码 {:?}", status.code())

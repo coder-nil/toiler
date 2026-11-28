@@ -1,8 +1,8 @@
 //! 普通合并的三栏内容取自 Git 索引，而不是可能已变化的远程跟踪引用。
 
 use super::{
-    err, operation_in_progress, read_git_stdout, repo_lock, run_git, run_git_raw, GitError,
-    ACTION_TIMEOUT, MAX_DIFF_FILE_BYTES, STATUS_TIMEOUT,
+    err, operation_in_progress, read_git_stdout, read_git_stdout_matching, repo_lock, run_git,
+    run_git_raw, GitError, ACTION_TIMEOUT, MAX_DIFF_FILE_BYTES, STATUS_TIMEOUT,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -35,6 +35,7 @@ pub(crate) struct ConflictFile {
     incoming: Option<String>,
     token: String,
     marker_size: usize,
+    diff3: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -46,6 +47,7 @@ pub(crate) enum Resolution {
 
 struct Snapshot {
     data: ConflictFile,
+    base_oid: Option<String>,
     path: PathBuf,
     metadata: Option<Metadata>,
 }
@@ -59,6 +61,26 @@ fn text(bytes: Vec<u8>) -> Result<String, GitError> {
         return Err(err("冲突编辑器仅支持 256 KiB 以内的 UTF-8 文本"));
     }
     String::from_utf8(bytes).map_err(|_| err("冲突编辑器仅支持 UTF-8 文本"))
+}
+
+fn read_blob(root: &Path, oid: &str) -> Result<String, GitError> {
+    let size = run_git(root, &["cat-file", "-s", oid], STATUS_TIMEOUT)?;
+    if size.parse::<usize>().map_or(true, |size| size > LIMIT) {
+        return Err(err("冲突编辑器仅支持 256 KiB 以内的 UTF-8 文本"));
+    }
+    text(read_git_stdout(
+        root,
+        &["cat-file", "blob", oid],
+        STATUS_TIMEOUT,
+        &[],
+        |out| {
+            let mut bytes = Vec::new();
+            out.take(LIMIT as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(io_error)?;
+            Ok(bytes)
+        },
+    )?)
 }
 
 fn snapshot(root: &Path, path: &str) -> Result<Snapshot, GitError> {
@@ -90,6 +112,7 @@ fn snapshot(root: &Path, path: &str) -> Result<Snapshot, GitError> {
         STATUS_TIMEOUT,
     )?;
     let mut sides = [None, None];
+    let mut base_oid = None;
     let mut present = false;
     for (entry, _) in entries(&raw).filter(|(_, name)| *name == path) {
         let fields: Vec<_> = entry.split_whitespace().collect();
@@ -100,29 +123,11 @@ fn snapshot(root: &Path, path: &str) -> Result<Snapshot, GitError> {
         if !matches!(*mode, "100644" | "100755") {
             return Err(err("请在终端处理符号链接或子模块冲突"));
         }
-        if let Some(index) = match *stage {
-            "2" => Some(0),
-            "3" => Some(1),
-            _ => None,
-        } {
-            let size = run_git(root, &["cat-file", "-s", oid], STATUS_TIMEOUT)?;
-            if size.parse::<usize>().map_or(true, |size| size > LIMIT) {
-                return Err(err("冲突编辑器仅支持 256 KiB 以内的 UTF-8 文本"));
-            }
-            let bytes = read_git_stdout(
-                root,
-                &["cat-file", "blob", oid],
-                STATUS_TIMEOUT,
-                &[],
-                |out| {
-                    let mut bytes = Vec::new();
-                    out.take(LIMIT as u64 + 1)
-                        .read_to_end(&mut bytes)
-                        .map_err(io_error)?;
-                    Ok(bytes)
-                },
-            )?;
-            sides[index] = Some(text(bytes)?);
+        match *stage {
+            "1" => base_oid = Some((*oid).to_owned()),
+            "2" => sides[0] = Some(read_blob(root, oid)?),
+            "3" => sides[1] = Some(read_blob(root, oid)?),
+            _ => {}
         }
     }
     if !present {
@@ -185,16 +190,69 @@ fn snapshot(root: &Path, path: &str) -> Result<Snapshot, GitError> {
             incoming,
             token: format!("{:x}", digest.finalize()),
             marker_size,
+            diff3: None,
         },
+        base_oid,
         path: target,
         metadata,
     })
 }
 
+// 只重放 Git 索引中的三个版本以恢复祖先上下文，不修改仓库、不执行自定义合并驱动。
+// 临时文件必须是私有的：其内容可能是 .env 一类的敏感配置。
+fn diff3(root: &Path, snapshot: &Snapshot) -> Option<String> {
+    let data = &snapshot.data;
+    if data.marker_size > 1000 || !has_markers(data.result.as_deref()?, data.marker_size) {
+        return None;
+    }
+    let (local, incoming) = (data.local.as_deref()?, data.incoming.as_deref()?);
+    let base = read_blob(root, snapshot.base_oid.as_deref()?).ok()?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("toiler-diff3-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    let temp = builder.tempdir().ok()?;
+    for (name, content) in [("local", local), ("base", &base), ("incoming", incoming)] {
+        fs::write(temp.path().join(name), content).ok()?;
+    }
+    let marker_size = data.marker_size.to_string();
+    let bytes = read_git_stdout_matching(
+        temp.path(),
+        &[
+            "merge-file",
+            "--diff3",
+            "-p",
+            "--marker-size",
+            &marker_size,
+            "local",
+            "base",
+            "incoming",
+        ],
+        STATUS_TIMEOUT,
+        &[],
+        // Git 用 1–127 表示仍有冲突的块数，不是命令错误。
+        |code| (0..=127).contains(&code),
+        |out| {
+            let mut bytes = Vec::new();
+            out.take(LIMIT as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(io_error)?;
+            Ok(bytes)
+        },
+    )
+    .ok()?;
+    text(bytes).ok()
+}
+
 pub(crate) fn read(root: &Path, path: &str) -> Result<ConflictFile, GitError> {
     let lock = repo_lock(root);
     let _guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    Ok(snapshot(root, path)?.data)
+    let mut snapshot = snapshot(root, path)?;
+    snapshot.data.diff3 = diff3(root, &snapshot);
+    Ok(snapshot.data)
 }
 
 fn has_markers(content: &str, size: usize) -> bool {
@@ -320,7 +378,14 @@ mod tests {
         let conflict = read(&repo.0, file).unwrap();
         assert_eq!(conflict.local.as_deref(), Some("local\n"));
         assert_eq!(conflict.incoming.as_deref(), Some("remote\n"));
+        let diff3 = conflict
+            .diff3
+            .as_deref()
+            .expect("有共同祖先的文本冲突可重放");
+        assert!(diff3.contains("||||||| base\nbase\n=======\n"));
+        assert_eq!(read(&repo.0, deleted).unwrap().diff3, None);
         let result = conflict.result.unwrap();
+        assert_eq!(fs::read_to_string(repo.0.join(file)).unwrap(), result);
         assert!(has_markers(&result, conflict.marker_size));
         assert!(resolve(
             &repo.0,

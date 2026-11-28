@@ -486,6 +486,10 @@ const TOOL_PROMPTS: &[ToolPrompt] = &[
                 "开始多步骤工作前，用 action=replace 传入一个简洁有序的列表。id 保持稳定，替换时给出完整列表。",
             ),
             (
+                "Use action=update with one existing id and only the fields you intend to change. Do not send tasks on update. Omit title unless intentionally renaming that task; never use title for the overall plan name.",
+                "用 action=update 更新单条任务时，传入一个已有 id 和要修改的字段，不要传 tasks。只有确实要给该条任务改名时才传 title，不要填整个计划的标题。",
+            ),
+            (
                 "Immediately before working on a task, update it to in_progress. Keep at most one task in_progress at a time.",
                 "开始处理某个任务前，先把它更新为 in_progress。同一时刻最多只能有一个任务处于 in_progress。",
             ),

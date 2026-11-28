@@ -6,6 +6,7 @@ import { type EditorProps, type OnMount } from "@monaco-editor/react";
 // ESM 入口——那个入口在模块顶层就碰 window，Next.js 的 SSR 预渲染会把
 // "use client" 的模块也走一遍 import，值导入会直接让服务端崩溃。
 import type * as monaco from "monaco-editor";
+import { listenForNativeEditorHistory } from "@/lib/editor-history";
 
 export interface MonacoEditorHandle {
   focus: () => void;
@@ -272,6 +273,11 @@ export function MonacoFileEditor({
       undoRedoSilently(isUndo);
     };
     document.addEventListener("keydown", handleUndoRedoKey, true);
+    const removeNativeHistoryListener = listenForNativeEditorHistory((action) => {
+      if (!editor.getDomNode()?.contains(document.activeElement) || !editor.getModel()) return false;
+      undoRedoSilently(action === "undo");
+      return true;
+    });
 
     // 粘贴单独成一步：WebKit 的原生粘贴可能和前面的键入落到同一个 undo 元素，
     // 一次 Cmd+Z 就只撤掉一半（或看起来「粘贴的内容撤不掉」）。在 Monaco 处理
@@ -287,6 +293,7 @@ export function MonacoFileEditor({
     undoStateListenerRef.current = () => {
       document.removeEventListener("keydown", handleUndoRedoKey, true);
       document.removeEventListener("paste", handlePasteBoundary, true);
+      removeNativeHistoryListener();
     };
 
     // 工具栏按钮的可用状态：撤销本身也会改内容，所以同一个回调同时负责两者。

@@ -1,7 +1,7 @@
 //! `task_progress`：结构化任务列表。
 //!
-//! 对应 pi-desktop 的 `lib/task-progress-tool.ts`。工具名、参数 schema、
-//! 校验错误、返回文本与 `details` 形状都与 pi 一致；差异只在**状态怎么出门**：
+//! 对应 pi-desktop 的 `lib/task-progress-tool.ts`。工具名、参数形状、
+//! 返回文本与 `details` 兼容 pi；这里另外处理进度展示、自动推进和混用参数：
 //!
 //! | 项 | pi（TS） | 这里 |
 //! |---|---|---|
@@ -9,9 +9,9 @@
 //! | 恢复 | `session_start` / `session_tree` 时从分支里的 `toolResult.details` 重建 | 开会话与 `navigate_tree` 后从 v3 文件里最后一条 `task_progress` 的 details 重建 |
 //! | 进行中 | 完全由模型给定；它跳过 `in_progress` 直接写 `completed` 时，界面就一条活跃项都没有 | 程序自己维护「进行中」游标（见 [`advance`]）：没有任何 `in_progress` 时把下一条 `pending` 提上来 |
 //!
-//! 最后一行是唯一的语义差异：参数、校验、返回文本、`details` 形状仍然逐字对齐 pi，
-//! 变的只是存进去的 `status` 值。模型经常一步到位把某条写成 `completed`，如果界面
-//! 于是停在「还有 2 项未完成」却说不出在做哪一条，任务面板就等于失效了。
+//! `update` 若混入 `tasks` 数组，只按顶层 `id` 更新状态和细节，不读任何标题：
+//! 模型可能把计划总标题填在顶层 `title`，每次更新一条就会逐步盖掉原任务标题。
+//! 正常单条改名仍用不带 `tasks` 的 `update`。
 //!
 //! 为什么要镜像进 `get_state`：前端渲染任务框读的是
 //! `state.extensionStatuses` / `state.extensionWidgets`（`useAgentSession.ts`），
@@ -282,7 +282,7 @@ pub fn create_task_progress_tool(store: Arc<TaskProgressStore>) -> Arc<dyn Agent
                         "type": "array",
                         "minItems": 1,
                         "maxItems": MAX_TASKS,
-                        "description": "Required for replace: the complete ordered task list. Existing tasks are replaced atomically.",
+                        "description": "Only for action=replace: the complete ordered task list. Existing tasks are replaced atomically. Omit on update and clear.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -318,7 +318,12 @@ pub fn create_task_progress_tool(store: Arc<TaskProgressStore>) -> Arc<dyn Agent
                         "maxLength": 100,
                         "description": "Required for update: existing task identifier",
                     },
-                    "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+                    "title": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500,
+                        "description": "Only for an intentional rename of the task identified by id on action=update. Never pass the overall plan title. Omit when updating status or detail without renaming.",
+                    },
                     "status": {
                         "type": "string",
                         "enum": ["pending", "in_progress", "completed", "failed", "blocked", "skipped"],
@@ -460,9 +465,15 @@ fn parse_tasks(params: &Value) -> Result<Vec<TaskItem>, AgentError> {
 }
 
 fn patch_from(params: &Value) -> Result<TaskPatch, AgentError> {
-    let title = match params.get("title").and_then(Value::as_str) {
-        Some(text) => Some(normalize_text(text, "task title", 500)?),
-        None => None,
+    // `tasks` 只用于 replace；混用时顶层 title 可能是总标题，不代表单项改名。
+    let title = if params.get("tasks").is_some_and(Value::is_array) {
+        None
+    } else {
+        params
+            .get("title")
+            .and_then(Value::as_str)
+            .map(|text| normalize_text(text, "task title", 500))
+            .transpose()?
     };
     let status = match params.get("status").and_then(Value::as_str) {
         Some(raw) => Some(normalize_status(Some(raw))?),
@@ -684,6 +695,89 @@ mod tests {
             item("b", TaskStatus::Pending),
         ]);
         assert_eq!(store.tasks()[1].status, TaskStatus::InProgress);
+    }
+
+    #[tokio::test]
+    async fn update_with_extra_list_preserves_titles_in_results_and_widget() {
+        let (store, mut events) = store();
+        let mut implement = item("implement", TaskStatus::InProgress);
+        implement.title = "按截图实现三栏合并与冲突操作".into();
+        let plan = vec![
+            item("locate", TaskStatus::Completed),
+            implement,
+            item("verify", TaskStatus::Pending),
+        ];
+        store.replace(plan.clone());
+        events.try_recv().unwrap();
+        events.try_recv().unwrap();
+
+        let detail =
+            "三栏编辑、同步滚动、冲突块导航、逐块／批量采纳和应用前校验已实现；开始进行完整验证。";
+        let result = create_task_progress_tool(store.clone())
+            .execute(
+                "call-1",
+                json!({
+                    "action": "update",
+                    "id": "implement",
+                    "status": "completed",
+                    "detail": detail,
+                    "tasks": [{
+                        "id": "implement",
+                        "title": "按截图实现三栏合并与冲突操作",
+                        "status": "completed",
+                        "detail": "",
+                    }],
+                    "title": "完善 Git 合并冲突编辑器",
+                }),
+                CancellationToken::new(),
+                Arc::new(|_| {}),
+            )
+            .await
+            .unwrap();
+
+        let mut expected = plan;
+        expected[1].status = TaskStatus::Completed;
+        expected[1].detail = Some(detail.into());
+        // 下一项只按既有规则推进状态，不接受本次更新的标题或细节。
+        expected[2].status = TaskStatus::InProgress;
+        assert_eq!(store.tasks(), expected);
+        assert_eq!(result.details, json!({ "tasks": expected }));
+        assert_eq!(events.try_recv().unwrap()["method"], "setStatus");
+        let widget = events.try_recv().unwrap();
+        assert_eq!(widget["method"], "setWidget");
+        assert_eq!(
+            widget["widgetLines"],
+            json!([
+                "已完成 2/3",
+                "✓ 任务 locate",
+                format!("✓ 按截图实现三栏合并与冲突操作 — {detail}"),
+                "● 任务 verify",
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn update_without_list_can_rename_only_the_matching_id() {
+        let (store, _events) = store();
+        let mut expected = vec![
+            item("a", TaskStatus::InProgress),
+            item("b", TaskStatus::Pending),
+        ];
+        store.replace(expected.clone());
+
+        let result = create_task_progress_tool(store.clone())
+            .execute(
+                "call-1",
+                json!({ "action": "update", "id": "b", "title": "验证结果" }),
+                CancellationToken::new(),
+                Arc::new(|_| {}),
+            )
+            .await
+            .unwrap();
+
+        expected[1].title = "验证结果".into();
+        assert_eq!(store.tasks(), expected);
+        assert_eq!(result.details, json!({ "tasks": expected }));
     }
 
     #[tokio::test]

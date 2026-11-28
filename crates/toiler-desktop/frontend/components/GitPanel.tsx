@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { Loader2, Minus, Plus, RefreshCw, Trash2, Undo2, Upload } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/hooks/useI18n";
@@ -11,7 +11,7 @@ import { isMacPlatform, isWindowsPlatform } from "@/lib/platform-key";
 import { revealNext } from "@/lib/typewriter";
 import { upgradeProjectVersion, VERSION_UPGRADE_LEVELS, type VersionUpgradeLevel, type VersionUpgradePreview } from "@/lib/version-upgrade";
 import type { GitDiffSelection } from "@/lib/git-workspace";
-import { GitConflictDialog } from "./GitConflictDialog";
+import { GitConflictEditor, type GitConflictEditorHandle } from "./GitConflictEditor";
 import { GitPushDialog, type GitPushPreview } from "./GitPushDialog";
 
 type GitFileStatus = {
@@ -87,9 +87,15 @@ interface GitPanelProps {
   onChanged: () => void;
   onSelectFile: (file: GitDiffSelection) => void;
   selectedFile: GitDiffSelection | null;
+  conflictTarget: HTMLDivElement | null;
+  conflictActive: boolean;
+  conflictEditorRef: RefObject<GitConflictEditorHandle | null>;
+  onShowConflict: () => void;
+  onHideConflict: () => void;
 }
 
-export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName, historyMutation, onClose, onChanged, onSelectFile, selectedFile }: GitPanelProps) {
+export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName, historyMutation, onClose, onChanged, onSelectFile, selectedFile,
+  conflictTarget, conflictActive, conflictEditorRef, onShowConflict, onHideConflict }: GitPanelProps) {
   const { locale, t } = useI18n();
   const [summary, setSummary] = useState<GitSummary | null>(null);
   const [message, setMessage] = useState("");
@@ -382,11 +388,32 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
   const canCommit = Boolean(message.trim()) && staged.length > 0 && conflictCount === 0 && summary?.operation !== "merge";
   const disabled = busy !== null;
 
+  function closeConflict() {
+    setConflict(null);
+    onHideConflict();
+  }
+
+  function openConflict(path: string) {
+    if (conflict?.path === path) { onShowConflict(); return; }
+    const open = () => { setConflict({ cwd, path }); onShowConflict(); };
+    if (conflictEditorRef.current) conflictEditorRef.current.requestLeave(open);
+    else open();
+  }
+
+  function abortOperation() {
+    const abort = () => { void run("abort").then((error) => { if (error === null) closeConflict(); }); };
+    if (conflictEditorRef.current) conflictEditorRef.current.requestLeave(abort);
+    else abort();
+  }
+
   async function conflictResolved(response: Response) {
     const data = await readApiJson<GitSummary>(response, { hint: t("git.serverErrorHint") });
     setSummary(data);
     const next = data.mergeConflicts?.[0];
-    setConflict(next ? { cwd, path: next } : null);
+    if (next) {
+      setConflict({ cwd, path: next });
+      onShowConflict();
+    } else closeConflict();
     onChanged();
   }
   const needsHttpsCredential = summary?.credentialKind === "https";
@@ -481,12 +508,12 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
             )}
             {summary.operation && <div className="git-note" data-tone="warn">
               <span className="git-note-text">{managesConflicts && conflictCount === 0 ? t("gitConflict.allResolved") : <>{t("git.operationInProgress", { operation: t(`git.operation.${summary.operation}`) })}{conflictCount ? ` ${t("git.operationConflicts", { count: conflictCount })}` : ""}</>}</span>
-              <div className="git-note-actions"><ActionButton label={t(summary.operation === "merge" ? "gitConflict.continue" : "git.continue")} busy={busy} action="continue" disabled={summary.operation === "merge" && (!managesConflicts || conflictCount > 0)} onClick={() => void run("continue")} /><ActionButton label={t("git.abort")} busy={busy} action="abort" danger onClick={() => void run("abort")} /></div>
+              <div className="git-note-actions"><ActionButton label={t(summary.operation === "merge" ? "gitConflict.continue" : "git.continue")} busy={busy} action="continue" disabled={summary.operation === "merge" && (!managesConflicts || conflictCount > 0)} onClick={() => void run("continue")} /><ActionButton label={t("git.abort")} busy={busy} action="abort" danger onClick={abortOperation} /></div>
             </div>}
             {!!mergeConflicts?.length && <div className="git-section">
               <SectionTitle title={t("gitConflict.remaining", { count: mergeConflicts.length })} />
               <ul className="git-file-list">
-                {mergeConflicts.map((path) => <li key={path} className="git-file-row"><button type="button" className="git-file-open" disabled={disabled} title={path} onClick={() => setConflict({ cwd, path })}>
+                {mergeConflicts.map((path) => <li key={path} className="git-file-row"><button type="button" className="git-file-open" data-conflict-file disabled={disabled} title={path} aria-pressed={conflictActive && conflict?.path === path} onClick={() => openConflict(path)}>
                   <span className="git-file-code" data-status="conflict" aria-hidden="true">C</span><span className="git-file-name">{path}</span>
                 </button></li>)}
               </ul>
@@ -533,7 +560,11 @@ export function GitPanel({ cwd, sessionId, refreshTarget, refreshButtonClassName
             </div>
           </>}
         </div>
-        {conflict?.cwd === cwd && <GitConflictDialog key={conflict.path} cwd={cwd} path={conflict.path} remaining={conflictCount} onClose={() => setConflict(null)} onResolved={conflictResolved} />}
+        {conflictTarget && conflict?.cwd === cwd && createPortal(
+          <GitConflictEditor key={conflict.path} cwd={cwd} path={conflict.path} branch={summary?.branch ?? null} remaining={conflictCount}
+            active={conflictActive} handleRef={conflictEditorRef} onReveal={onShowConflict} onClose={closeConflict} onResolved={conflictResolved} />,
+          conflictTarget,
+        )}
         {pushPrompt?.cwd === cwd && <GitPushDialog
           cwd={cwd} committed={pushPrompt.committed} onCancel={() => setPushPrompt(null)} onPush={confirmPush}
         />}

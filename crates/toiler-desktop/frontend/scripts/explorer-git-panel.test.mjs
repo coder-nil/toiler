@@ -3,7 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createJiti } from "jiti";
 
-const { subscribeToWindowForeground } = await createJiti(import.meta.url).import("../lib/window-foreground.ts");
+const jiti = createJiti(import.meta.url);
+const { subscribeToWindowForeground } = await jiti.import("../lib/window-foreground.ts");
+const { getGitWorkspaceSplitBounds } = await jiti.import("../lib/panel-layout.ts");
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 const sidebar = await read("components/SessionSidebar.tsx");
@@ -11,6 +13,7 @@ const shell = await read("components/AppShell.tsx");
 const panel = await read("components/GitPanel.tsx");
 const workspace = await read("components/GitWorkspace.tsx");
 const history = await read("components/GitHistoryPanel.tsx");
+const conflictEditor = await read("components/GitConflictEditor.tsx");
 const explorer = sidebar.match(/<section className=\{styles\.explorer\}[\s\S]*?<\/section>/)?.[0];
 
 test("侧栏项目和子仓库入口打开同一个 Git 工作区，不替换文件树", () => {
@@ -32,7 +35,7 @@ test("Git 工作区隐藏但不卸载聊天，保留返回入口并刷新侧栏"
 
 test("进入 Git 工作区自动收起侧栏，返回聊天时重新展开", () => {
   assert.match(shell, /const toggleGitWorkspace = useCallback[\s\S]*?setGitWorkspace\(\{ cwd, contextCwd \}\);\s*setSidebarOpen\(false\);/);
-  assert.match(shell, /const closeGitWorkspace = useCallback\(\(\) => \{\s*setGitWorkspace\(null\);\s*setSidebarOpen\(true\);/);
+  assert.match(shell, /const closeGitWorkspace = useCallback\(\(\) => guardGitDraft\(\(\) => \{\s*setGitWorkspace\(null\);\s*setSidebarOpen\(true\);/);
 });
 
 test("当前更改与历史文件都送到共用差异区，保留各自的比较基准", () => {
@@ -41,6 +44,21 @@ test("当前更改与历史文件都送到共用差异区，保留各自的比�
   assert.match(history, /onSelectFile\(\{ scope: "commit", hash: commit\.hash, path: file\.path, oldPath: file\.oldPath \}\)/);
   assert.match(workspace, /<WorkspaceDiff cwd=\{cwd\} selection=\{selection\}/);
   assert.doesNotMatch(history, /showModal\(|<dialog\b/);
+});
+
+test("冲突编辑器位于文件对比区域，浏览其他差异时不卸载草稿", () => {
+  assert.match(workspace, /id=\{diffId\}[\s\S]*?ref=\{setConflictTarget\} hidden=\{!showingConflict\}/);
+  assert.match(panel, /conflictTarget && conflict\?\.cwd === cwd && createPortal\([\s\S]*?<GitConflictEditor[\s\S]*?conflictTarget,/);
+  assert.doesNotMatch(conflictEditor, /showModal\(|<dialog\b|document\.body/);
+  assert.match(shell, /conflictEditorRef\.current\.requestLeave\(leave\)/);
+});
+
+test("右侧上下分隔条在短窗口中仍为两个区域保留空间", () => {
+  assert.deepEqual(getGitWorkspaceSplitBounds(680), { min: 230, max: 540, initial: 356 });
+  assert.deepEqual(getGitWorkspaceSplitBounds(360), { min: 183, max: 233, initial: 187 });
+  assert.deepEqual(getGitWorkspaceSplitBounds(0), { min: 0, max: 0, initial: 0 });
+  assert.match(workspace, /growthDirection: "down"/);
+  assert.match(workspace, /sizing\.separatorProps[\s\S]*?aria-controls=\{diffId\}/);
 });
 
 test("Git 面板在远程区显示地址，分支同步数字仍由工作树选择框展示", () => {

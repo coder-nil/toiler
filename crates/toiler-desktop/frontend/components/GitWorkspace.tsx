@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { ArrowLeft, GitBranch, GitCompareArrows, PanelLeft } from "lucide-react";
 import { useI18n } from "@/hooks/useI18n";
+import { useResizablePanel } from "@/hooks/useResizablePanel";
 import { readApiJson } from "@/lib/api-json";
 import { getFileName } from "@/lib/file-paths";
 import { workspaceDiffUrl, type GitDiffSelection } from "@/lib/git-workspace";
-import { CHAT_TOP_BAR_HEIGHT } from "@/lib/panel-layout";
+import { CHAT_TOP_BAR_HEIGHT, getGitWorkspaceSplitBounds } from "@/lib/panel-layout";
+import type { GitConflictEditorHandle } from "./GitConflictEditor";
 import { DiffView } from "./FileViewer";
 import { GitHistoryPanel } from "./GitHistoryPanel";
 import { GitPanel } from "./GitPanel";
@@ -20,22 +22,53 @@ interface Props {
   sessionId: string | null;
   sidebarOpen: boolean;
   refreshKey: number;
+  conflictEditorRef: RefObject<GitConflictEditorHandle | null>;
   onToggleSidebar: () => void;
   onClose: () => void;
   onChanged: () => void;
 }
 
-export function GitWorkspace({ cwd, sessionId, sidebarOpen, refreshKey, onToggleSidebar, onClose, onChanged }: Props) {
+export function GitWorkspace({ cwd, sessionId, sidebarOpen, refreshKey, conflictEditorRef, onToggleSidebar, onClose, onChanged }: Props) {
   const { t } = useI18n();
   const [selection, setSelection] = useState<GitDiffSelection | null>(null);
   const [pane, setPane] = useState<Pane>("changes");
   const [refreshTarget, setRefreshTarget] = useState<HTMLDivElement | null>(null);
   const [historyMutation, setHistoryMutation] = useState(0);
+  const [conflictTarget, setConflictTarget] = useState<HTMLDivElement | null>(null);
+  const [showingConflict, setShowingConflict] = useState(false);
+  const [regionHeight, setRegionHeight] = useState(0);
+  const diffId = useId();
   const body = useRef<HTMLDivElement>(null);
+  const diffHeight = useRef(getGitWorkspaceSplitBounds(680).initial);
+  const bounds = getGitWorkspaceSplitBounds(regionHeight || 680);
+  const getMaxDiffHeight = useCallback(() => bounds.max, [bounds.max]);
+  const getDefaultDiffHeight = useCallback(() => getGitWorkspaceSplitBounds(regionHeight || body.current?.clientHeight || 680).initial, [regionHeight]);
+  const sizing = useResizablePanel({
+    ariaLabel: t("gitWorkspace.resizeDiff"), cssVariable: "--git-workspace-diff-height",
+    defaultWidth: bounds.initial, getDefaultWidth: getDefaultDiffHeight, getMaxWidth: getMaxDiffHeight, minWidth: bounds.min,
+    maxWidth: bounds.max, growthDirection: "down", widthRef: diffHeight,
+    storageKey: "toiler-git-workspace-diff-height",
+  });
+  const regions = sizing.panelRef;
+  useLayoutEffect(() => {
+    const element = regions.current;
+    if (!element) return;
+    const measure = () => setRegionHeight(element.clientHeight);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [regions]);
   const back = useRef<HTMLButtonElement>(null);
   useEffect(() => { back.current?.focus({ preventScroll: true }); }, []);
 
+  function showConflict() {
+    setShowingConflict(true);
+    setPane("diff");
+  }
+
   function selectFile(file: GitDiffSelection) {
+    setShowingConflict(false);
     setSelection(file);
     setPane("diff");
     const tab = body.current?.querySelector<HTMLButtonElement>('[data-workspace-tab="diff"]');
@@ -66,13 +99,20 @@ export function GitWorkspace({ cwd, sessionId, sidebarOpen, refreshKey, onToggle
           {t(`gitWorkspace.${name}`)}
         </button>)}
       </nav>
-      <div className={styles.regions}>
+      <div ref={regions} className={styles.regions} data-resizing={sizing.isResizing || undefined}>
         <section className={styles.changes} aria-label={t("gitWorkspace.changes")}>
           <header className={styles.paneBar}><h2>{t("gitWorkspace.changes")}</h2><div ref={setRefreshTarget} /></header>
           <GitPanel cwd={cwd} sessionId={sessionId} refreshTarget={refreshTarget} refreshButtonClassName={styles.iconButton}
-            historyMutation={historyMutation} onClose={onClose} onChanged={onChanged} onSelectFile={selectFile} selectedFile={selection} />
+            historyMutation={historyMutation} onClose={onClose} onChanged={onChanged} onSelectFile={selectFile} selectedFile={selection}
+            conflictTarget={conflictTarget} conflictActive={showingConflict} conflictEditorRef={conflictEditorRef}
+            onShowConflict={showConflict} onHideConflict={() => setShowingConflict(false)} />
         </section>
-        <WorkspaceDiff cwd={cwd} selection={selection} refreshKey={refreshKey} />
+        <div id={diffId} className={styles.diffRegion}>
+          <div hidden={showingConflict} className={styles.diffView}><WorkspaceDiff cwd={cwd} selection={selection} refreshKey={refreshKey} /></div>
+          {/* 隐藏而不卸载，返回冲突时 Monaco 保留草稿和撤销栈。 */}
+          <div ref={setConflictTarget} hidden={!showingConflict} className={styles.diffView} />
+        </div>
+        <div {...sizing.separatorProps} className={styles.separator} aria-controls={diffId} title={t("gitWorkspace.resizeDiff")} />
         <div className={styles.history}>
           <GitHistoryPanel cwd={cwd} refreshKey={refreshKey} onSelectFile={selectFile} selectedFile={selection}
             onChanged={() => { setHistoryMutation((value) => value + 1); onChanged(); }} />

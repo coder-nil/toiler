@@ -7,6 +7,7 @@ import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar } from "./SessionSidebar";
 import { ChatWindow } from "./ChatWindow";
 import { GitWorkspace } from "./GitWorkspace";
+import type { GitConflictEditorHandle } from "./GitConflictEditor";
 import { TabBar, type Tab } from "./TabBar";
 import { openFileTab, markFileTabRevealHandled, renameFileTab, saveFileViewerState, saveFileDirtyState } from "./file-tab-state";
 import { ProjectTrustDialog } from "./ProjectTrustDialog";
@@ -176,6 +177,11 @@ export function AppShell() {
   const [gitWorkspace, setGitWorkspace] = useState<{ cwd: string; contextCwd: string } | null>(null);
   const [gitWorkspaceRefreshKey, setGitWorkspaceRefreshKey] = useState(0);
   const gitEntryRef = useRef<HTMLElement | null>(null);
+  const conflictEditorRef = useRef<GitConflictEditorHandle>(null);
+  const guardGitDraft = useCallback((leave: () => void) => {
+    if (conflictEditorRef.current) conflictEditorRef.current.requestLeave(leave);
+    else leave();
+  }, []);
   const filePanelVisible = rightPanelOpen && !gitWorkspace;
   const chatScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const cancelChatScrollPreservationRef = useRef<(() => void) | null>(null);
@@ -647,7 +653,9 @@ export function AppShell() {
     const isInitialProjectAdoption = activeProjectKeyRef.current === null;
     const currentFreshCwd = newSessionCwd ?? activeCwd;
     setActiveCwd(cwd);
-    setGitWorkspace((target) => target?.contextCwd === cwd ? target : null);
+    if (gitWorkspace && gitWorkspace.contextCwd !== cwd) {
+      guardGitDraft(() => setGitWorkspace((target) => target?.contextCwd === cwd ? target : null));
+    }
     // Skip if cwd is null (initial mount).
     if (!cwd) return;
     const newProject = projectKey ?? projectRoot ?? cwd;
@@ -710,10 +718,10 @@ export function AppShell() {
       );
     }
     router.replace("/", { scroll: false });
-  }, [activeCwd, invalidateWorkspaceRestore, newSessionCwd, router, selectedSession, restoreWorkspaceContext]);
+  }, [activeCwd, gitWorkspace, guardGitDraft, invalidateWorkspaceRestore, newSessionCwd, router, selectedSession, restoreWorkspaceContext]);
 
   const handleSelectSession = useCallback((session: SessionInfo, isRestore = false) => {
-    if (!isRestore) setGitWorkspace(null);
+    if (!isRestore) guardGitDraft(() => setGitWorkspace(null));
     invalidateWorkspaceRestore();
     activeNewSessionDraftKeyRef.current = null;
     // Re-clicking the already-open session must not remount the chat and
@@ -746,10 +754,10 @@ export function AppShell() {
     if (!isRestore) {
       router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
     }
-  }, [invalidateWorkspaceRestore, router, isMobile, selectedSession]);
+  }, [guardGitDraft, invalidateWorkspaceRestore, router, isMobile, selectedSession]);
 
   const handleNewSession = useCallback((sessionId: string, cwd: string) => {
-    setGitWorkspace(null);
+    guardGitDraft(() => setGitWorkspace(null));
     invalidateWorkspaceRestore();
     const draftKey = `new:${sessionId}:${cwd}`;
     activeNewSessionDraftKeyRef.current = draftKey;
@@ -764,7 +772,7 @@ export function AppShell() {
     setActiveTopPanel(null);
     if (isMobile) setSidebarOpen(false);
     router.replace("/", { scroll: false });
-  }, [invalidateWorkspaceRestore, router, isMobile]);
+  }, [guardGitDraft, invalidateWorkspaceRestore, router, isMobile]);
 
   // Client-built transient SessionInfo (new session / fork) lacks the
   // server-computed projectKey, which the same-project check in
@@ -935,26 +943,29 @@ export function AppShell() {
     setGitWorkspaceRefreshKey((key) => key + 1);
   }, [handleExplorerRefresh]);
 
-  const closeGitWorkspace = useCallback(() => {
+  const closeGitWorkspace = useCallback(() => guardGitDraft(() => {
     setGitWorkspace(null);
     setSidebarOpen(true);
     requestAnimationFrame(() => {
       if (!isMobile && gitEntryRef.current?.isConnected) gitEntryRef.current.focus({ preventScroll: true });
       else topBarRef.current?.focus({ preventScroll: true });
     });
-  }, [isMobile]);
+  }), [guardGitDraft, isMobile]);
 
   const toggleGitWorkspace = useCallback((cwd: string, contextCwd: string) => {
     if (gitWorkspace?.cwd === cwd) {
       closeGitWorkspace();
       return;
     }
-    gitEntryRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setActiveTopPanel(null);
-    setMobileToolbarMoreOpen(false);
-    setGitWorkspace({ cwd, contextCwd });
-    setSidebarOpen(false);
-  }, [closeGitWorkspace, gitWorkspace?.cwd]);
+    const entry = document.activeElement;
+    guardGitDraft(() => {
+      gitEntryRef.current = entry instanceof HTMLElement ? entry : null;
+      setActiveTopPanel(null);
+      setMobileToolbarMoreOpen(false);
+      setGitWorkspace({ cwd, contextCwd });
+      setSidebarOpen(false);
+    });
+  }, [closeGitWorkspace, gitWorkspace?.cwd, guardGitDraft]);
 
   const handleSessionForked = useCallback((newSessionId: string) => {
     invalidateWorkspaceRestore();
@@ -2352,7 +2363,7 @@ export function AppShell() {
         </div>
         {gitWorkspace && <GitWorkspace key={gitWorkspace.cwd} cwd={gitWorkspace.cwd}
           sessionId={selectedSession?.id ?? null} sidebarOpen={sidebarOpen} refreshKey={gitWorkspaceRefreshKey}
-          onToggleSidebar={handleSidebarToggle} onClose={closeGitWorkspace} onChanged={refreshAfterGitChange} />}
+          conflictEditorRef={conflictEditorRef} onToggleSidebar={handleSidebarToggle} onClose={closeGitWorkspace} onChanged={refreshAfterGitChange} />}
       </div>
 
       <div
